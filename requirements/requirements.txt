@@ -18,7 +18,7 @@ gym-notices==0.0.8
 gymnax==0.0.6
 importlib_metadata==7.1.0
 importlib_resources==6.4.0
-jax==0.4.21
+jax==0.4.28
 jax-tqdm==0.2.1
 jaxlib==0.4.28
 kiwisolver==1.4.5
@@ -33,11 +33,13 @@ opt-einsum==3.3.0
 optax==0.2.2
 orbax-checkpoint==0.5.14
 packaging==24.0
+pandas==2.2.2
 pillow==10.3.0
 protobuf==5.27.0
 Pygments==2.18.0
 pyparsing==3.1.2
 python-dateutil==2.9.0.post0
+pytz==2024.1
 PyYAML==6.0.1
 rich==13.7.1
 scipy==1.13.1
@@ -47,4 +49,5 @@ tensorstore==0.1.59
 toolz==0.12.1
 tqdm==4.66.4
 typing_extensions==4.12.0
+tzdata==2024.1
 zipp==3.18.2

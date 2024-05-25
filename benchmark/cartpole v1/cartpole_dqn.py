@@ -1,104 +1,66 @@
 import time
 import jax
-from jax import jit
-from jax import lax
-import jax.numpy as jnp
-import flax.linen as nn
-from flax.linen.initializers import constant, orthogonal
-from typing import Sequence
-import gymnax
 import optax
-from jax_tqdm import scan_tqdm
-import numpy as np
-
-import matplotlib
-matplotlib.use('TkAgg')
-
-
-import os
-import sys
-# sys.path.append(os.getcwd()+"/blackjax/agents")
-# sys.path.append(os.getcwd()+"/blackjax/utils")
-sys.path.append("C:\\Users\\Repositories\\BlackJax_RL\\blackjax\\agents")
-sys.path.append("C:\\Users\\Repositories\\BlackJax_RL\\blackjax\\utils")
-
-# from DQN2 import make_train, Transition
-from DDQN import make_train, Transition
-from VizOutput import *
+from agents import dqn
+import gymnax
+from cartpole_nn_gallery import *
+from postprocessing import PostProcessor
 
 
 if __name__ == '__main__':
 
-
-
-    class NN_model(nn.Module):
-        action_dim: Sequence[int]
-
-        @nn.compact
-        def __call__(self, x):
-
-            q = nn.Dense(128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-            q = nn.relu(q)
-            q = nn.Dense(64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(q)
-            q = nn.relu(q)
-            q = nn.Dense(32, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(q)
-            q = nn.relu(q)
-            q = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(q)
-
-            return q.reshape(-1, self.action_dim)
-
-
-    # from jax.config import config
-    # config.update('jax_disable_jit', True)
-
-
     env, env_params = gymnax.make("CartPole-v1")
 
-    config = {
-        "STATE_SIZE": 4,
-        "INIT_NN_PARAMS": None,
-        "Q-MODEL": NN_model,
-        "TOTAL_STEPS": 500_000,
-        "NUM_ENVS": 1,
-        "BATCH_SIZE": 128,
-        "BUFFER_SIZE": 10_000,
-        "TAU": 0.005,
-        "TARGET_UPDATE_PERIOD": 100,
-        "INIT_BUFFER": None,
-        "RANDOM_ACTION_FN": lambda rng, state: jax.random.choice(rng, jnp.arange(2)),
-        "EPS_FN": lambda i_episode: 0.05 + (0.90 - 0.05) * jnp.exp(-i_episode / 50_000),
-        "GAMMA": 0.99,
-        "LR": 1e-4,
-        "ENV": env,
-        "ENV_PARAMS": env_params,
-        "STORE_AGENT": False,
-        "BASE_TRANSITION": base_transition,
-        "AGENT_EVAL_FN": lambda i_step, runner: 0,
-        "MAX_GRAD_NORM": 1,
-        "ANNEAL_LR": False,
-        "LOSS_FN": optax.l2_loss,
-        # "LOSS_FN": optax.huber_loss,
-        # "OPTIMIZER": optax.adam,
-        # "OPTIMIZER": optax.adamw,
-        "OPTIMIZER": optax.rmsprop,
-        "OPT_EPS": 1e-5,
-    }
+    transition_temp = dqn.Transition(
+        state=jnp.zeros((1, 4), dtype=jnp.float32),
+        action=jnp.zeros(1, dtype=jnp.int32),
+        reward=jnp.zeros(1, dtype=jnp.float32),
+        next_state=jnp.zeros((1, 4), dtype=jnp.float32),
+        terminated=jnp.zeros(1, dtype=jnp.bool_),
+        info={
+            "discount": jnp.array((), dtype=jnp.float32),
+            "returned_episode": jnp.array((), dtype=jnp.bool_),
+            "returned_episode_lengths": jnp.array((), dtype=jnp.int32),
+            "returned_episode_returns": jnp.array((), dtype=jnp.float32),
+        }
+    )
 
+    def optimizer_fn(optimizer_params):
+        return optax.chain(
+            optax.clip_by_global_norm(optimizer_params.grad_clip),
+            optax.rmsprop(learning_rate=optimizer_params.lr, eps=optimizer_params.eps)
+            )
 
-    train_jit = jax.jit(make_train(config))
+    config = dqn.AgentConfig(
+        q_network=DQN_NN_model,
+        transition_template=transition_temp,
+        n_steps=500,
+        buffer_type="FLAT",
+        buffer_size=10_000,
+        batch_size=128,
+        target_update_method="PERIODIC",
+        store_agent=False,
+        act_randomly=lambda rng, state, n_actions: jax.random.choice(rng, jnp.arange(n_actions)),
+        get_performance=lambda i_step, runner: 0,
+        set_optimizer=optimizer_fn,
+        loss_fn=optax.l2_loss,
+        epsilon_type="DECAY",
+        epsilon_params=(0.9, 0.05, 50_000)
+    )
+
+    # from jax.config import config as jconfig
+    # jconfig.update('jax_disable_jax.jit', True)
+
+    agent = dqn.DDQN_Agent(env, env_params, config)
+
     rng = jax.random.PRNGKey(42)
     t0 = time.time()
-    out = jax.block_until_ready(train_jit(rng))
+    hyperparams = dqn.HyperParameters(0.99, 4, dqn.OptimizerParams(5e-5, 0.01 / 32, 1))
+    runner, metrics = agent.train(rng, hyperparams)
+
     print(f"time: {time.time() - t0:.2f} s")
 
+    pp = PostProcessor(out)
+    fig = pp._plot_rewards(N=100)
 
-    N = 100
-    rewards = extract_rewards(out["metrics"]["done"], out["metrics"]["reward"])
-    running_rewards = (jnp.cumsum(rewards)[N:] - jnp.cumsum(rewards)[:-N]) / N
-    fig = plt.figure()
-    plt.plot(rewards, c='b', alpha=0.4)
-    plt.plot(jnp.arange(N, rewards.size), running_rewards, c='b')
-
-
-    A = np.asarray(out["metrics"]["dummy"].squeeze())
 
