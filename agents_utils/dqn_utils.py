@@ -44,6 +44,16 @@ class QuantileHyperParameters(HyperParameters):
     huber_K: jnp.float32 = 1.0
 
 
+@struct.dataclass
+class Runner:
+    training: TrainState
+    env_state: LogEnvState
+    state: jnp.ndarray
+    rng: chex.PRNGKey
+    buffer_state: fbx.trajectory_buffer.BufferState
+    hyperparams: Union[HyperParameters, CategoricalHyperParameters, QuantileHyperParameters]
+
+
 class AgentConfig(NamedTuple):
     n_steps: jnp.int32
     buffer_size: jnp.int32
@@ -52,7 +62,7 @@ class AgentConfig(NamedTuple):
     transition_template: Transition
     loss_fn: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray]
     set_optimizer: Callable[[OptimizerParams], Type[optax.chain]]
-    get_performance: Callable[[jnp.int32, Tuple], Any] = lambda i_step, runner: 0
+    get_performance: Callable[[jnp.int32, Runner], Any] = lambda i_step, runner: 0
     act_randomly: Callable[[jax.Array, jnp.ndarray, jnp.int32], jnp.int32] =\
         lambda rng, state, n_actions: jax.random.choice(rng, jnp.arange(n_actions)),
     buffer_type: str = "FLAT"
@@ -69,14 +79,4 @@ class CategoricalAgentConfig(AgentConfig):
 
 class QuantileAgentConfig(AgentConfig):
     n_qunatiles: jnp.int32 = 21
-
-
-@struct.dataclass
-class Runner:
-    training: TrainState
-    env_state: LogEnvState
-    state: jnp.ndarray
-    rng: chex.PRNGKey
-    buffer_state: fbx.trajectory_buffer.BufferState
-    hyperparams: Union[HyperParameters, CategoricalHyperParameters, QuantileHyperParameters]
 
