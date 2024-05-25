@@ -34,7 +34,7 @@ if __name__ == '__main__':
     config = dqn.AgentConfig(
         q_network=DQN_NN_model,
         transition_template=transition_temp,
-        n_steps=500,
+        n_steps=500_000,
         buffer_type="FLAT",
         buffer_size=10_000,
         batch_size=128,
@@ -48,19 +48,17 @@ if __name__ == '__main__':
         epsilon_params=(0.9, 0.05, 50_000)
     )
 
-    # from jax.config import config as jconfig
-    # jconfig.update('jax_disable_jax.jit', True)
-
     agent = dqn.DDQN_Agent(env, env_params, config)
 
     rng = jax.random.PRNGKey(42)
     t0 = time.time()
-    hyperparams = dqn.HyperParameters(0.99, 4, dqn.OptimizerParams(5e-5, 0.01 / 32, 1))
+    optimizer_params = dqn.OptimizerParams(5e-5, 0.01 / 32, 1)
+    hyperparams = dqn.HyperParameters(0.99, 4, optimizer_params)
     runner, metrics = agent.train(rng, hyperparams)
 
     print(f"time: {time.time() - t0:.2f} s")
 
-    pp = PostProcessor(out)
+    pp = PostProcessor(runner, metrics)
     fig = pp._plot_rewards(N=100)
 
 

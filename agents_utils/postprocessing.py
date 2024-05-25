@@ -3,15 +3,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.pyplot import cm
 from matplotlib import colors
-# import matplotlib
-# matplotlib.use("TkAgg")
+import matplotlib
+matplotlib.use("TkAgg")
 
 
 class PostProcessor:
 
-    def __init__(self, results):
-        self.last_runner = results["runner"]
-        self.metrics = results["metrics"]
+    def __init__(self, runner, metrics):
+        self.last_runner = runner
+        self.metrics = metrics
         self._collect_output()
 
     def _collect_output(self):
