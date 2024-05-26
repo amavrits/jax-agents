@@ -755,6 +755,31 @@ class CategoricalDQN_Agent(DQNAgentBase):
     """
 
     @partial(jax.jit, static_argnums=(0,))
+    def _p(self, params: dict, state: jnp.ndarray) -> jnp.ndarray:
+        """
+        Calculation of the probability change per atom for a state using the policy network for the Categorical DQN
+        agent. This probability can be used to derive the action-state (Q) values.
+        :param params: Parameter of the policy network.
+        :param state: State where the action-state values will be calculated.
+        :return: Probability change at atoms.
+        """
+
+        logits = self.q_network.apply(params, state)
+        p = jax.nn.softmax(logits, axis=-1)
+
+        return p
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _q_from_p(self, p: jnp.ndarray) -> jnp.ndarray:
+        """
+        Calculates the state-action (Q) value given the probability change at atoms.
+        :param p: Probability change at atoms.
+        :return: The state-action (Q) values.
+        """
+
+        return jnp.dot(p, self.config.atoms)
+
+    @partial(jax.jit, static_argnums=(0,))
     def _q(self, params: dict, state: jnp.ndarray) -> jnp.ndarray:
         """
         Calculation of the action-state (Q) values for a state using the policy network for the Categorical DQN agent.
@@ -764,8 +789,8 @@ class CategoricalDQN_Agent(DQNAgentBase):
         :return: Action-state values for the input state.
         """
 
-        p_state = jax.nn.softmax(self.q_network.apply(params, state), axis=-1)
-        q_state = jnp.dot(p_state, self.config.atoms)
+        p_state = self._p(params, state)
+        q_state = self._q_from_p(p_state)
         return q_state
 
 
@@ -806,11 +831,12 @@ class CategoricalDQN_Agent(DQNAgentBase):
         :return: Target action state values for the next state met after the episode step.
         """
 
-        q_next_state = self._q(lax.stop_gradient(params), next_state)
+        p_next_state = self._p(lax.stop_gradient(target_params), next_state)
+        q_next_state = self._q_from_p(p_next_state)
         action_next_state = jnp.argmax(q_next_state, axis=-1).squeeze()
-
-        p_next_state = jax.nn.softmax(self.q_network.apply(lax.stop_gradient(target_params), next_state), axis=-1)
-        p_next_state_action = jnp.take_along_axis(p_next_state, action_next_state[:, jnp.newaxis, jnp.newaxis], axis=1).squeeze()
+        p_next_state_action = jnp.take_along_axis(p_next_state,
+                                                  action_next_state[:, jnp.newaxis, jnp.newaxis],
+                                                  axis=1).squeeze()
 
         T_Z = reward.reshape(-1, 1) + gamma * jnp.logical_not(terminated.reshape(-1, 1)) * self.config.atoms
         T_Z = jnp.clip(T_Z, self.config.atoms.min(), self.config.atoms.max())
@@ -936,14 +962,14 @@ class QRDDQN_Agent(DQNAgentBase):
         :return: Target action state values for the next state met after the episode step.
         """
 
-        q_next_state = self._q(lax.stop_gradient(params), next_state)
+        q_next_state = self._q(lax.stop_gradient(target_params), next_state)
         action_next_state = jnp.argmax(q_next_state, axis=-1).squeeze()
 
-        q_next_state = self.q_network.apply(lax.stop_gradient(target_params), next_state)
-        q_next_state_action = jnp.take_along_axis(q_next_state, action_next_state[:, jnp.newaxis, jnp.newaxis], axis=1).squeeze()
-        q_target = reward.reshape(-1, 1) + gamma * q_next_state_action * jnp.logical_not(terminated.reshape(-1, 1))
+        quants_next_state = self.q_network.apply(lax.stop_gradient(target_params), next_state)
+        quants_next_state_action = jnp.take_along_axis(quants_next_state, action_next_state[:, jnp.newaxis, jnp.newaxis], axis=1).squeeze()
+        target = reward.reshape(-1, 1) + gamma * quants_next_state_action * jnp.logical_not(terminated.reshape(-1, 1))
 
-        return q_target
+        return target
 
 
     @partial(jax.jit, static_argnums=(0,))
