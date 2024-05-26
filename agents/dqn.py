@@ -38,12 +38,15 @@ from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnv
 from abc import abstractmethod
 from functools import partial
 from typing import Tuple, Dict, NamedTuple, Callable, Any, Type, Union, Optional
+import warnings
 
 sys.path.append('./')
 try:
     from agent_utils.dqn_datastructures import *
 except:
     raise
+
+warnings.filterwarnings("ignore")
 
 
 HyperParametersType = Union[HyperParameters, CategoricalHyperParameters, QuantileHyperParameters]

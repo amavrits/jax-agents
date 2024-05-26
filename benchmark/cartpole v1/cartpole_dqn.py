@@ -12,10 +12,12 @@ try:
 except:
     raise
 
+
 if __name__ == '__main__':
 
     env, env_params = gymnax.make("CartPole-v1")
 
+    """Set up transition template, given the state representation in the cartpole environment"""
     transition_temp = dqn.Transition(
         state=jnp.zeros((1, 4), dtype=jnp.float32),
         action=jnp.zeros(1, dtype=jnp.int32),
@@ -30,12 +32,14 @@ if __name__ == '__main__':
         }
     )
 
+    """Set up function for initializing the optimizer"""
     def optimizer_fn(optimizer_params):
         return optax.chain(
             optax.clip_by_global_norm(optimizer_params.grad_clip),
             optax.rmsprop(learning_rate=optimizer_params.lr, eps=optimizer_params.eps)
             )
 
+    """Define configuration for agent training"""
     config = dqn.AgentConfig(
         q_network=DQN_NN_model,
         transition_template=transition_temp,
@@ -53,17 +57,22 @@ if __name__ == '__main__':
         epsilon_params=(0.9, 0.05, 50_000)
     )
 
+    """Set up agent"""
     agent = dqn.DDQN_Agent(env, env_params, config)
 
-    rng = jax.random.PRNGKey(42)
-    t0 = time.time()
+    """Define optimizer parameters and training hyperparameters"""
     optimizer_params = dqn.OptimizerParams(5e-5, 0.01 / 32, 1)
     hyperparams = dqn.HyperParameters(0.99, 4, optimizer_params)
+
+    """Draw random key"""
+    rng = jax.random.PRNGKey(42)
+    t0 = time.time()
+    
+    """Train agent"""
     runner, metrics = agent.train(rng, hyperparams)
 
     print(f"time: {time.time() - t0:.2f} s")
 
+    """ Post-process and plot results"""
     pp = PostProcessor(runner, metrics)
     fig = pp._plot_rewards(N=100)
-
-
