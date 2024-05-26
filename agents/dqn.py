@@ -24,8 +24,7 @@ References
 
 """
 
-
-from dqn_datastructures import *
+import sys
 import jax
 import jax.numpy as jnp
 from jax import lax
@@ -33,10 +32,18 @@ from jax_tqdm import scan_tqdm
 import optax
 import distrax
 import chex
+import flashbax as fbx
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from abc import abstractmethod
 from functools import partial
+from typing import Tuple, Dict, NamedTuple, Callable, Any, Type, Union, Optional
+
+sys.path.append('./')
+try:
+    from agent_utils.dqn_datastructures import *
+except:
+    raise
 
 
 HyperParametersType = Union[HyperParameters, CategoricalHyperParameters, QuantileHyperParameters]

@@ -1,11 +1,16 @@
+import sys
 import time
 import jax
 import optax
-from agents import dqn
 import gymnax
 from cartpole_nn_gallery import *
-from postprocessing import PostProcessor
 
+sys.path.append('./')
+try:
+    from agents import dqn
+    from agent_utils.postprocessing import PostProcessor
+except:
+    raise
 
 if __name__ == '__main__':
 
@@ -44,7 +49,7 @@ if __name__ == '__main__':
         get_performance=lambda i_step, runner: 0,
         set_optimizer=optimizer_fn,
         loss_fn=optax.l2_loss,
-        epsilon_type="DECAY",
+        epsilon_fn_style="DECAY",
         epsilon_params=(0.9, 0.05, 50_000)
     )
 
