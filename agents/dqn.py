@@ -83,6 +83,7 @@ class DQNAgentBase:
 
         return '\n'.join(output_lst)
 
+
     def _init_eps_fn(self, epsilon_type: str, epsilon_params: tuple) -> None:
         """
         Initialization of the epsilon function, allowing different forms of epsilon decays over training.

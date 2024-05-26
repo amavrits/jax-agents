@@ -33,53 +33,15 @@ class PostProcessor:
         policy = np.argmax(Q_table, axis=1)
         return policy
 
-    def _plot_rewards(self, N=2_000):
+    def _plot_rewards(self, running_window=2_000):
         episode_rewards = self._episode_rewards(self.dones, self.step_rewards)
-        running_rewards = (np.cumsum(episode_rewards)[N:] - np.cumsum(episode_rewards)[:-N]) / N
+        running_rewards = (np.cumsum(episode_rewards)[running_window:] - np.cumsum(episode_rewards)[:-running_window]) / running_window
 
         fig = plt.figure()
         plt.plot(episode_rewards, c='b', alpha=0.4)
-        plt.plot(np.arange(N, episode_rewards.size), running_rewards, c='b')
+        plt.plot(np.arange(running_window, episode_rewards.size), running_rewards, c='b')
         plt.xlabel("Episode", fontsize=14)
         plt.ylabel("Reward [-]", fontsize=14)
-
-        return fig
-
-    @staticmethod
-    def _viz_policy(policy):
-
-        policy = policy.reshape(-1, 10)
-
-        fig, ax = plt.subplots(figsize=(12, 8))
-
-        cmap = colors.ListedColormap(['royalblue', 'limegreen', 'firebrick', 'orange'])
-        bounds = [0, 0.5, 1.5, 2.5, 3]
-        norm = colors.BoundaryNorm(bounds, cmap.N)
-
-        im = ax.imshow(policy, cmap=cmap, norm=norm)
-        ax.set_xlabel('Dealer hand', fontsize=12)
-        ax.set_ylabel('Player hand', fontsize=12, labelpad=12)
-        plt.gca().xaxis.set_label_position('top')
-        plt.gca().xaxis.tick_top()
-
-        ticks_loc = [i - 2 for i in range(2, policy.shape[1] + 2)]
-        ax.set_xticks(ticks_loc)
-        ax.set_xticklabels(list(policy.columns))
-
-        ticks_loc = [i - 4 for i in range(4, policy.shape[0] + 4)]
-        ax.set_yticks(ticks_loc)
-        ax.set_yticklabels(list(policy.index))
-
-        ax.set_xticks(np.arange(-.5, len(policy.columns), 1), minor=True)
-        ax.set_yticks(np.arange(-.5, len(policy.index), 1), minor=True)
-        ax.grid(which='minor', color='k', linewidth=.5)
-
-        cbar = plt.colorbar(im, ticks=[0, 1, 2, 3])
-        cbar.ax.set_yticklabels(['Stand', 'Hit', 'Double', 'Split'])
-        cbar.ax.get_yaxis().labelpad = 15
-        cbar.ax.set_ylabel('Best action', rotation=270)
         plt.close()
 
         return fig
-
-
