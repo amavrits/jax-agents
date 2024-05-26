@@ -23,7 +23,7 @@ References
        quantile regression. In Proceedings of the AAAI conference on artificial intelligence (Vol. 32, No. 1).
 
 """
-
+import dataclasses
 import sys
 import jax
 import jax.numpy as jnp
@@ -71,6 +71,17 @@ class DQNAgentBase:
         self.config = config
         self._init_env(env, env_params)
         self._init_eps_fn(self.config.epsilon_fn_style, self.config.epsilon_params)
+
+
+    def __str__(self) -> str:
+        """
+        Returns a string containing only the non-default field values.
+        """
+
+        output_lst = [field + ': ' + str(getattr(self.config, field)) for field in self.config._fields]
+        output_lst = ['Agent configuration:', '----------------------'] + output_lst
+
+        return '\n'.join(output_lst)
 
     def _init_eps_fn(self, epsilon_type: str, epsilon_params: tuple) -> None:
         """
@@ -1046,5 +1057,4 @@ class QRDDQN_Agent(DQNAgentBase):
 
 
 if __name__ == "__main__":
-
     pass

@@ -59,6 +59,7 @@ if __name__ == '__main__':
 
     """Set up agent"""
     agent = dqn.DDQN_Agent(env, env_params, config)
+    print(agent.__str__())
 
     """Define optimizer parameters and training hyperparameters"""
     optimizer_params = dqn.OptimizerParams(5e-5, 0.01 / 32, 1)
