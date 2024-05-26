@@ -25,7 +25,7 @@ References
 """
 
 
-from dqn_utils import *
+from dqn_datastructures import *
 import jax
 import jax.numpy as jnp
 from jax import lax
@@ -60,7 +60,7 @@ class DQNAgentBase:
 
         self.config = config
         self._init_env(env, env_params)
-        self._init_eps_fn(self.config.epsilon_type, self.config.epsilon_params)
+        self._init_eps_fn(self.config.epsilon_fn_style, self.config.epsilon_params)
 
     def _init_eps_fn(self, epsilon_type: str, epsilon_params: tuple) -> None:
         """
@@ -121,7 +121,7 @@ class DQNAgentBase:
     def _init_optimizer(self, optimizer_params: OptimizerParams) -> optax.chain:
         """
         Optimizer initialization. This method calls on a user defined function. In this way, the optimizer can be
-        initialiazed within the "train" method, and thus several combinations of its parameters can be ran with
+        initialized within the "train" method, and thus several combinations of its parameters can be ran with
         jax.vmap.
         TODO: Implement choice of optimizer via AgentConfig.
         :param optimizer_params: A NamedTuple containing the parametrization of the optimizer.
@@ -134,7 +134,7 @@ class DQNAgentBase:
     @partial(jax.jit, static_argnums=(0,))
     def _init_q_network(self, rng: chex.PRNGKey) -> Tuple[jax.Array, Dict]:
         """
-        Initialization of the policy netwrok (Q-model as a Neural Network).
+        Initialization of the policy network (Q-model as a Neural Network).
         :param rng: Random key for initialization.
         :return: A random key after splitting the input and the initial parameters of the policy network.
         """
@@ -165,11 +165,11 @@ class DQNAgentBase:
         """
         Environment step.
         :param rng: Random key for initialization.
-        :param env_state: The envrionment state in LogEnvState format.
+        :param env_state: The environment state in LogEnvState format.
         :param action: The action selected by the agent.
         :return: A tuple of: a random key after splitting the input, the next state in array and LogEnvState formats,
                  the collected reward after executing the action, episode termination and a dictionary of optional
-                 additonal information.
+                 additional information.
         """
 
         rng, step_rng = jax.random.split(rng)
@@ -193,9 +193,9 @@ class DQNAgentBase:
         :param reward: The collected reward after executing the action.
         :param next_state: The next state of the episode step in array format.
         :param terminated: Episode termination.
-        :param info: Dictionary of optional additonal information.
+        :param info: Dictionary of optional additional information.
         :return: A transition object storing information about the state before and after executing the episode step,
-                 the executed action, the collected reward, episode termination and optional additonal information.
+                 the executed action, the collected reward, episode termination and optional additional information.
         """
 
         transition = Transition(state.squeeze(),
@@ -262,7 +262,7 @@ class DQNAgentBase:
         Updates the parameters of the target network using the parameters of the policy network and the agent's
         hyperparameters. The update can be either periodic or incremental. In the former case, the policy parameters are
         copied to target parameters with fixed frequency of steps (not episodes), indicated by "target_update_param".
-        In the latter, the target parmaeters are updated in every step with the policy parameters, but the extent of
+        In the latter, the target parameters are updated in every step with the policy parameters, but the extent of
         update in controlled by the hyperparameter "target_update_param".
         :param runner: The step runner object, containing information about the current status of the agent's training,
                        the state of the environment and training hyperparameters.
@@ -353,7 +353,7 @@ class DQNAgentBase:
     def _make_metrics(self, runner: Runner, reward: jnp.float32, terminated: jnp.bool_) -> Dict:
         """
         Generate metrics of performed step, which is accumulated over steps and passed as output via lax.scan. The
-        metrics always include: episode termination and the collected reward in step. Upon the user's request, this
+        metrics include at least: episode termination and the collected reward in step. Upon the user's request, this
         method can also return the performance of the agent, based on an input function given by the user in the
         configuration of the agent during initialization, and a return of the policy network parameters.
         :param runner: The step runner object, containing information about the current status of the agent's training,
@@ -374,7 +374,6 @@ class DQNAgentBase:
             metric = {
                 "done": terminated,
                 "reward": reward,
-                "performance": self.config.get_performance(runner.training.step, runner)
             }
 
         return metric
@@ -559,7 +558,7 @@ class DQNAgentBase:
 
 class DQN_Agent(DQNAgentBase):
     """
-    Implementation of the Deep Q-Network agent (DQN) according to [1]_.
+    Implementation of the Deep Q-Network agent (DQN) according to [1].
     """
 
     @partial(jax.jit, static_argnums=(0,))
@@ -630,7 +629,7 @@ class DQN_Agent(DQNAgentBase):
               hyperparams: HyperParametersType) -> jnp.ndarray:
         """
         Calculation of the training loss of the policy network for the DQN agent.
-        Based on equation 2 of [1]_.
+        Based on equation 2 of [1].
         :param params: Parameter of the policy network.
         :param target_params: Parameter of the target  network.
         :param current_state: State before performing the episode step for which the Bellman equation is calculated and
@@ -652,7 +651,7 @@ class DQN_Agent(DQNAgentBase):
 
 class DDQN_Agent(DQNAgentBase):
     """
-    Implementation of the Double Deep Q-Network agent (DDQN) according to [2]_.
+    Implementation of the Double Deep Q-Network agent (DDQN) according to [2].
     """
 
     @partial(jax.jit, static_argnums=(0,))
@@ -698,7 +697,7 @@ class DDQN_Agent(DQNAgentBase):
         .. math::
             {Q}_{target} = {R}_{t+1} + \gamma Q({S}_{t+1}, {argmax}_{\alpha}[Q({S}_{t+1}, \alpha;{\theta}_{t});
             {\theta}_{t}^{-}])
-        (Based on the unnumbered equation in page 6 of [2]_.)
+        (Based on the unnumbered equation in page 6 of [2].)
         :param params: Parameter of the policy network.
         :param target_params: Parameter of the target  network.
         :param next_state: Next state of the episode step where the target action-state values will be calculated.
@@ -730,7 +729,7 @@ class DDQN_Agent(DQNAgentBase):
               hyperparams: HyperParametersType) -> jnp.ndarray:
         """
         Calculation of the training loss of the policy network for the DDQN agent.
-        Based on equation 2 of [1]_ (which is the loss of the DQN paper).
+        Based on equation 2 of [1] (which is the loss of the DQN paper).
         :param params: Parameter of the policy network.
         :param target_params: Parameter of the target  network.
         :param current_state: State before performing the episode step for which the Bellman equation is calculated and
@@ -752,14 +751,14 @@ class DDQN_Agent(DQNAgentBase):
 
 class CategoricalDQN_Agent(DQNAgentBase):
     """
-    Implementation of the Categorical Deep Q-Network agent (Categorical DQN) according to [3]_.
+    Implementation of the Categorical Deep Q-Network agent (Categorical DQN) according to [3].
     """
 
     @partial(jax.jit, static_argnums=(0,))
     def _q(self, params: dict, state: jnp.ndarray) -> jnp.ndarray:
         """
         Calculation of the action-state (Q) values for a state using the policy network for the Categorical DQN agent.
-        (Implemented as in the second line of Algorithm 1 of [3]_)
+        (Implemented as in the second line of Algorithm 1 of [3])
         :param params: Parameter of the policy network.
         :param state: State where the action-state values will be calculated.
         :return: Action-state values for the input state.
@@ -797,7 +796,7 @@ class CategoricalDQN_Agent(DQNAgentBase):
                   gamma: Union[jnp.float32, jnp.ndarray]) -> jnp.ndarray:
         """
         Calculation of the target action-state (Q) value for the next state of an episode step for the Categorical DQN
-        agent. Based on equation 7 of [3]_.)
+        agent. Based on equation 7 of [3].)
         :param params: Parameter of the policy network.
         :param target_params: Parameter of the target  network.
         :param next_state: Next state of the episode step where the target action-state values will be calculated.
@@ -840,8 +839,8 @@ class CategoricalDQN_Agent(DQNAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _cross_entropy(self, target: jnp.array, logit_p: jnp.array) -> jnp.ndarray:
         """
-        Cross-entorpy loss for estimation of the KL divergence, which is the training loss of the Categorical DQN agent.
-        :param target: Assessemnt of the target state-action (Q) values using the episode rewards and the target network
+        Cross-entropy loss for estimation of the KL divergence, which is the training loss of the Categorical DQN agent.
+        :param target: Assessment of the target state-action (Q) values using the episode rewards and the target network
                        estimates.
         :param logit_p: Logit of the probability estimates of the policy network.
         :return: Estimate of the cross-entropy loss.
@@ -883,14 +882,14 @@ class CategoricalDQN_Agent(DQNAgentBase):
 
 class QRDDQN_Agent(DQNAgentBase):
     """
-    Implementation of the Quantile Regression Deep Q-Network agent (QRDQN) according to [4]_.
+    Implementation of the Quantile Regression Deep Q-Network agent (QRDQN) according to [4].
     """
 
     @partial(jax.jit, static_argnums=(0,))
     def _q(self, params: Dict, state: jnp.ndarray) -> jnp.ndarray:
         """
         Calculation of the action-state (Q) values for a state using the policy network for the QRDDQN agent.
-        (Implemented as in the fourth line of Algorithm 1 of [4]_)
+        (Implemented as in the fourth line of Algorithm 1 of [4])
         :param params: Parameter of the policy network.
         :param state: State where the action-state values will be calculated.
         :return: Action-state values for the input state.
@@ -927,7 +926,7 @@ class QRDDQN_Agent(DQNAgentBase):
                   gamma: Union[jnp.float32, jnp.ndarray]) -> jnp.ndarray:
         """
         Calculation of the target action-state (Q) value for the next state of an episode step for the QRDQN agent.
-        Based on equation 13 of [4]_.)
+        Based on equation 13 of [4].)
         :param params: Parameter of the policy network.
         :param target_params: Parameter of the target  network.
         :param next_state: Next state of the episode step where the target action-state values will be calculated.
@@ -950,11 +949,11 @@ class QRDDQN_Agent(DQNAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _huber_loss(self, q: jnp.array, target: jnp.array, huber_K) -> jnp.ndarray:
         """
-        Calculation of the Huber loss function, according to equation 9 of [4]_. The loss function is controlled by the
+        Calculation of the Huber loss function, according to equation 9 of [4]. The loss function is controlled by the
         hyperparameter "huber_K", which is passed via QuantileHyperParameters during training. As a result, several
         values of this hyperparameter can be run via jax.vmap towards fine-tuning.
         :param q: Estimate of state-action (Q) values by the policy network.
-        :param target: Assessemnt of the target state-action (Q) values using the episode rewards and the target network
+        :param target: Assessment of the target state-action (Q) values using the episode rewards and the target network
                        estimates.
         :param huber_K: Hyperparameter of the Huber loss function.
         :return: Estimate of the Huber loss.
@@ -990,7 +989,7 @@ class QRDDQN_Agent(DQNAgentBase):
               hyperparams: HyperParametersType) -> jnp.ndarray:
         """
         Calculation of the training loss of the policy network for the QRDQN agent.
-        Based on equation 10 of [4]_.
+        Based on equation 10 of [4].
         :param params: Parameter of the policy network.
         :param target_params: Parameter of the target  network.
         :param current_state: State before performing the episode step for which the Bellman equation is calculated and
