@@ -76,5 +76,5 @@ if __name__ == '__main__':
 
     """ Post-process and plot results"""
     pp = PostProcessor(runner, metrics)
-    fig = pp._plot_rewards(running_window=100)
-    fig.show()
+    fig = pp._plot_rewards(running_window=100, close_plot=False)
+
