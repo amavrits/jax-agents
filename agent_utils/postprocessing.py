@@ -33,7 +33,7 @@ class PostProcessor:
         policy = np.argmax(Q_table, axis=1)
         return policy
 
-    def _plot_rewards(self, running_window=2_000):
+    def _plot_rewards(self, running_window=2_000, close_plot=False):
         episode_rewards = self._episode_rewards(self.dones, self.step_rewards)
         running_rewards = (np.cumsum(episode_rewards)[running_window:] - np.cumsum(episode_rewards)[:-running_window]) / running_window
 
@@ -42,6 +42,7 @@ class PostProcessor:
         plt.plot(np.arange(running_window, episode_rewards.size), running_rewards, c='b')
         plt.xlabel("Episode", fontsize=14)
         plt.ylabel("Reward [-]", fontsize=14)
-        plt.close()
+
+        if close_plot: plt.close()
 
         return fig
