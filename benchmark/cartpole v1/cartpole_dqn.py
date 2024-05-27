@@ -5,6 +5,9 @@ import optax
 import gymnax
 import numpy as np
 from cartpole_nn_gallery import *
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
 
 sys.path.append('./')
 try:
@@ -44,7 +47,7 @@ if __name__ == '__main__':
     config = dqn.AgentConfig(
         q_network=DQN_NN_model,
         transition_template=transition_temp,
-        n_steps=50000,
+        n_steps=500_000,
         buffer_type="FLAT",
         buffer_size=10_000,
         batch_size=128,
@@ -63,7 +66,7 @@ if __name__ == '__main__':
     print(agent.__str__())
 
     """Define optimizer parameters and training hyperparameters"""
-    optimizer_params = dqn.OptimizerParams(5e-5, 0.01 / 32, 1)
+    optimizer_params = dqn.OptimizerParams(5e-3, 1e-3, 1)
     hyperparams = dqn.HyperParameters(0.99, 4, optimizer_params)
 
     """Draw random key"""
@@ -72,41 +75,28 @@ if __name__ == '__main__':
 
     """Train agent"""
     t0 = time.time()
-    runner, metrics = agent.train(rng_train, hyperparams)
+    runner, training_metrics = agent.train(rng_train, hyperparams)
     print(f"time: {time.time() - t0:.2f} s")
 
     """ Post-process results"""
-    agent.collect_train(runner, metrics)
+    agent.collect_train(runner)
+    training_rewards = agent.summarize(training_metrics["done"], training_metrics["reward"])
 
     """Evaluate agent performance"""
-    eval_metrics = agent.eval(rng_eval, n_evals=100)
+    eval_metrics = agent.eval(rng_eval, n_evals=500_000)
+    eval_rewards = agent.summarize(eval_metrics["done"], eval_metrics["reward"])
 
     """ Plot results"""
     running_window = 100
-    episode_rewards = get_episode_rewards(agent.training_metrics["done"], agent.training_metrics["reward"])
-    running_rewards = get_running_metric(episode_rewards, running_window)
-
-
-    A = np.asarray(agent.training_metrics["done"])
-    AA = np.asarray(agent.training_metrics["reward"])
-
-    df = pd.DataFrame(data={"episode": agent.training_metrics["done"].cumsum(), "reward": agent.training_metrics["reward"]})
-    df["episode"] = df["episode"].shift().fillna(0)
-    episodes_df = df.groupby("episode").agg("sum")
-
-
-
-
-
-    import matplotlib
-    matplotlib.use("TkAgg")
-    import matplotlib.pyplot as plt
+    running_training_rewards = (np.cumsum(training_rewards.episode_metric)[running_window:] -
+                                np.cumsum(training_rewards.episode_metric)[:-running_window]) / running_window
+    running_eval_rewards = (np.cumsum(eval_rewards.episode_metric)[running_window:] -
+                                np.cumsum(eval_rewards.episode_metric)[:-running_window]) / running_window
 
     fig = plt.figure()
-    plt.plot(episode_rewards, c='b', alpha=0.4)
-    plt.plot(np.arange(running_window, episode_rewards.size), running_rewards, c='b')
+    plt.plot(training_rewards.episode_metric, c='b', alpha=0.4)
+    plt.plot(np.arange(running_window, training_rewards.episode_metric.size), running_training_rewards, c='b')
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Reward [-]", fontsize=14)
     plt.close()
-    fig.savefig(r'C:\Users\mavritsa\OneDrive - Stichting Deltares\Desktop\AAA.png')
-
+    fig.savefig(sys.path[0]+r'\figs\DDQN training.png')

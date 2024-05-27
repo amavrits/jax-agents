@@ -16,11 +16,13 @@ BufferStateType = fbx.trajectory_buffer.BufferState
 
 
 @dataclass
-class Stats:
+class MetricStats:
     """
     Dataclass summarizing statistics of a metric sample connected to the agent's performance (collected during either
     training or evaluation).
     """
+    """Metric per episode"""
+    episode_metric: np.ndarray
     """Sample average"""
     mean: np.float32
     """Sample variance"""
@@ -66,10 +68,12 @@ class QAgentEvaluator:
 
 
     def collect_train(self, runner: Runner = None, metrics: Dict = None) -> None:
-        """Collects training of output (the final state of the runner after training and the collected metrics)."""
+        """
+        Collects training of output (the final state of the runner after training and the collected metrics).
+        """
+
         self.agent_trained = True
         self.training_runner = runner
-        self.training_metrics = metrics
         self._pp()
 
 
@@ -80,8 +84,54 @@ class QAgentEvaluator:
             - Extracting the buffer from the runner so that the training history can be exported.
         :return:
         """
+
         self.agent_params = self.training_runner.training.params
         self.buffer = self.training_runner.buffer_state
+
+
+    @staticmethod
+    def _summary_stats(episode_metric: np.ndarray) -> MetricStats:
+        """
+        Summarizes statistics for sample of episode metric (to be used for training or evaluation).
+        :param episode_metric: Metric collected in training or evaluation adjusted for each episode.
+        :return: Summary of episode metric.
+        """
+
+        return MetricStats(
+            episode_metric=episode_metric,
+            mean=episode_metric.mean(),
+            var=episode_metric.var(),
+            std=episode_metric.std(),
+            min=episode_metric.min(),
+            max=episode_metric.max(),
+            median=np.median(episode_metric),
+            has_nans=np.any(np.isnan(episode_metric)),
+        )
+
+
+    def summarize(self, dones: Union[np.ndarray, jnp.ndarray], metric: Union[np.ndarray, jnp.ndarray]) -> MetricStats:
+        """
+        Adjusts metric per episode and summarizes (to be used for training or evaluation).
+        :param dones: Whether an episode has terminated in each step.
+        :param metric: Metric per step.
+        :return: Summary of metric per episode.
+        """
+
+        if not isinstance(dones, np.ndarray):
+            dones = np.asarray(dones).astype(np.bool_)
+
+        if not isinstance(metric, np.ndarray):
+            metric = np.asarray(metric).astype(np.float32)
+
+        last_done = np.where(dones)[0].max()
+        episodes = np.cumsum(dones[:last_done])
+        episodes = np.append(0, episodes)
+
+        metric = metric[:last_done + 1]
+
+        episode_metric = np.array([np.sum(metric[episodes == i]) for i in np.arange(episodes.max()+1)])
+
+        return self._summary_stats(episode_metric)
 
 
     @partial(jax.jit, static_argnums=(0,))
@@ -136,22 +186,3 @@ class QAgentEvaluator:
         )
 
         return eval_metrics
-
-
-    @staticmethod
-    def _stats(metric: np.ndarray) -> Stats:
-        """
-        Fills in the Stats dataclass with the summary statistics of the input metric.
-        :param metric: The examined metric in numpy array format.
-        :return: A Stats dataclass containing the summary statistics of the metric.
-        """
-        return Stats(
-            mean=metric.mean(),
-            var=metric.var(),
-            std=metric.std(),
-            min=metric.min(),
-            max=metric.max(),
-            median=np.median(metric),
-            has_nans=np.isnan(metric)
-        )
-
