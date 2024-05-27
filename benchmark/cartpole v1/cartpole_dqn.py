@@ -5,14 +5,11 @@ import optax
 import gymnax
 import numpy as np
 from cartpole_nn_gallery import *
-import matplotlib
-matplotlib.use("TkAgg")
-import matplotlib.pyplot as plt
 
 sys.path.append('./')
 try:
     from agents import dqn
-    from agent_utils.postprocessing import PostProcessor
+    from agent_utils.q_agent_eval import QAgentEvaluator
 except:
     raise
 
@@ -47,7 +44,7 @@ if __name__ == '__main__':
     config = dqn.AgentConfig(
         q_network=DQN_NN_model,
         transition_template=transition_temp,
-        n_steps=500,
+        n_steps=50000,
         buffer_type="FLAT",
         buffer_size=10_000,
         batch_size=128,
@@ -71,24 +68,45 @@ if __name__ == '__main__':
 
     """Draw random key"""
     rng = jax.random.PRNGKey(42)
-    t0 = time.time()
-    
+    rng_train, rng_eval = jax.random.split(rng)
+
     """Train agent"""
-    runner, metrics = agent.train(rng, hyperparams)
+    t0 = time.time()
+    runner, metrics = agent.train(rng_train, hyperparams)
+    print(f"time: {time.time() - t0:.2f} s")
 
     """ Post-process results"""
     agent.collect_train(runner, metrics)
 
-    print(f"time: {time.time() - t0:.2f} s")
+    """Evaluate agent performance"""
+    eval_metrics = agent.eval(rng_eval, n_evals=100)
 
     """ Plot results"""
     running_window = 100
-    episode_rewards = agent.get_episode_rewards(agent.dones, agent.rewards)
-    running_rewards = agent.get_running_metric(episode_rewards, running_window)
+    episode_rewards = get_episode_rewards(agent.training_metrics["done"], agent.training_metrics["reward"])
+    running_rewards = get_running_metric(episode_rewards, running_window)
+
+
+    A = np.asarray(agent.training_metrics["done"])
+    AA = np.asarray(agent.training_metrics["reward"])
+
+    df = pd.DataFrame(data={"episode": agent.training_metrics["done"].cumsum(), "reward": agent.training_metrics["reward"]})
+    df["episode"] = df["episode"].shift().fillna(0)
+    episodes_df = df.groupby("episode").agg("sum")
+
+
+
+
+
+    import matplotlib
+    matplotlib.use("TkAgg")
+    import matplotlib.pyplot as plt
 
     fig = plt.figure()
     plt.plot(episode_rewards, c='b', alpha=0.4)
     plt.plot(np.arange(running_window, episode_rewards.size), running_rewards, c='b')
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Reward [-]", fontsize=14)
+    plt.close()
+    fig.savefig(r'C:\Users\mavritsa\OneDrive - Stichting Deltares\Desktop\AAA.png')
 

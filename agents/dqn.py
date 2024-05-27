@@ -43,7 +43,7 @@ import warnings
 sys.path.append('./')
 try:
     from agent_utils.dqn_datastructures import *
-    from agent_utils.postprocessing import PostProcessor
+    from agent_utils.q_agent_eval import QAgentEvaluator
 except:
     raise
 
@@ -55,7 +55,7 @@ AgentConfigType = Union[AgentConfig, CategoricalAgentConfig, QuantileAgentConfig
 BufferStateType = fbx.trajectory_buffer.BufferState
 
 
-class DQNAgentBase(PostProcessor):
+class DQNAgentBase(QAgentEvaluator):
     """
     The base class for Deep Q-Learning agents, which employ different variations of Deep Q-Networks.
     """
@@ -65,7 +65,7 @@ class DQNAgentBase(PostProcessor):
         Instance variables defined in parent class:
             agent_trained: bool = False # Whether the agent has been trained.
             agent_params: Optional[Union[Dict, FrozenDict]] = None # Optimal policy network parameters after post-
-                          processing by parent class
+                          processing by parent class.
             training_runner: Optional[Runner] = None # Runner object after training.
             training_metrics: Optional[Dict] = None # Metrics collected during training.
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
@@ -204,6 +204,7 @@ class DQNAgentBase(PostProcessor):
         rng, step_rng = jax.random.split(rng)
         next_state, next_env_state, reward, terminated, info =\
             self.env.step(step_rng, env_state, action.squeeze(), self.env_params)
+
         return rng, next_state, next_env_state, reward, terminated, info
 
 
@@ -347,7 +348,7 @@ class DQNAgentBase(PostProcessor):
           buffer.
         - Updating the policy network.
         - Updating the target network.
-        - generating metrics regarding the step.
+        - Generating metrics regarding the step.
         :param runner: The step runner object, containing information about the current status of the agent's training,
                        the state of the environment and training hyperparameters.
         :param i_step: Current training step. Required for printing the progressbar via jax_tqdm.
@@ -494,16 +495,16 @@ class DQNAgentBase(PostProcessor):
 
         rng, runner_rng = jax.random.split(rng)
 
-        step_runner = Runner(training, env_state, state, runner_rng, buffer_state, hyperparams)
+        runner = Runner(training, env_state, state, runner_rng, buffer_state, hyperparams)
 
-        step_runner, metrics = lax.scan(
+        runner, metrics = lax.scan(
             scan_tqdm(self.config.n_steps)(self._step),
-            step_runner,
+            runner,
             jnp.arange(self.config.n_steps),
             self.config.n_steps
         )
 
-        return step_runner, metrics
+        return runner, metrics
 
     @partial(jax.jit, static_argnums=(0,))
     def q(self, state: jnp.ndarray) -> jnp.ndarray:
