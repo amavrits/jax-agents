@@ -1,48 +1,69 @@
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.pyplot import cm
-from matplotlib import colors
-import matplotlib
-matplotlib.use("TkAgg")
+import jax
+import jax.numpy as jnp
+import flashbax as fbx
+from dataclasses import dataclass
+from typing import Tuple, Dict, NamedTuple, Callable, Any, Type, Union, Optional
+from agent_utils.dqn_datastructures import *
+
+
+HyperParametersType = Union[HyperParameters, CategoricalHyperParameters, QuantileHyperParameters]
+BufferStateType = fbx.trajectory_buffer.BufferState
+
+@dataclass
+class Stats:
+    mean: np.float32
+    var: np.float32
+    std: np.float32
+    min: np.float32
+    max: np.float32
+    median: np.float32
+    has_nans: np.bool_
 
 
 class PostProcessor:
+    agent_trained: bool = False
+    agent_params: Optional[FrozenDict] = None
+    training_runner: Optional[Runner] = None
+    training_metrics: Optional[Dict] = None
 
-    def __init__(self, runner, metrics):
-        self.last_runner = runner
-        self.metrics = metrics
+    def collect_train(self, runner: Optional[Runner] = None, metrics: Optional[Dict] = None) -> None:
+        self.agent_trained = True
+        self.training_runner = runner
+        self.training_metrics = metrics
+        self._pp()
+
+    def _pp(self) -> None:
+        self.agent_params = self.training_runner.training.params
+        self.buffer = self.training_runner.buffer_state
         self._collect_output()
 
     def _collect_output(self):
-        self.dones = np.asarray(self.metrics["done"])
-        self.step_rewards = np.asarray(self.metrics["reward"])
+        self.dones = np.asarray(self.training_metrics["done"])
+        self.rewards = np.asarray(self.training_metrics["reward"])
+        self.reward_stats = self._stats(self.rewards)
 
     @staticmethod
-    def _episode_rewards(dones, step_rewards):
-        df = pd.DataFrame(data={"episode": dones.cumsum(), "reward": step_rewards})
+    def _stats(metric: np.ndarray) -> Stats:
+        return Stats(
+            mean=metric.mean(),
+            var=metric.var(),
+            std=metric.std(),
+            min=metric.min(),
+            max=metric.max(),
+            median=np.median(metric),
+            has_nans=np.isnan(metric)
+        )
+
+    #TODO: Make property
+    @staticmethod
+    def get_running_metric(metric, running_window):
+        return (np.cumsum(metric)[running_window:] - np.cumsum(metric)[:-running_window]) / running_window
+
+    @staticmethod
+    def get_episode_rewards(dones, rewards):
+        df = pd.DataFrame(data={"episode": dones.cumsum(), "reward": rewards})
         df["episode"] = df["episode"].shift().fillna(0)
         episodes_df = df.groupby("episode").agg("sum")
-        episode_rewards = episodes_df['reward'].to_numpy()
-        return episode_rewards
-
-    @staticmethod
-    def _policy(q_network, params, mesh):
-        Q_table = q_network.apply(params, mesh)
-        Q_table = np.asarray(Q_table)
-        policy = np.argmax(Q_table, axis=1)
-        return policy
-
-    def _plot_rewards(self, running_window=2_000, close_plot=False):
-        episode_rewards = self._episode_rewards(self.dones, self.step_rewards)
-        running_rewards = (np.cumsum(episode_rewards)[running_window:] - np.cumsum(episode_rewards)[:-running_window]) / running_window
-
-        fig = plt.figure()
-        plt.plot(episode_rewards, c='b', alpha=0.4)
-        plt.plot(np.arange(running_window, episode_rewards.size), running_rewards, c='b')
-        plt.xlabel("Episode", fontsize=14)
-        plt.ylabel("Reward [-]", fontsize=14)
-
-        if close_plot: plt.close()
-
-        return fig
+        return episodes_df['reward'].to_numpy()

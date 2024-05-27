@@ -43,6 +43,7 @@ import warnings
 sys.path.append('./')
 try:
     from agent_utils.dqn_datastructures import *
+    from agent_utils.postprocessing import PostProcessor
 except:
     raise
 
@@ -54,13 +55,19 @@ AgentConfigType = Union[AgentConfig, CategoricalAgentConfig, QuantileAgentConfig
 BufferStateType = fbx.trajectory_buffer.BufferState
 
 
-class DQNAgentBase:
+class DQNAgentBase(PostProcessor):
     """
     The base class for Deep Q-Learning agents, which employ different variations of Deep Q-Networks.
     """
 
     def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfigType) -> None:
         """
+        Instance variables defined in parent class:
+            agent_trained: bool = False # Whether the agent has been trained.
+            agent_params: Optional[Union[Dict, FrozenDict]] = None # Optimal policy network parameters after post-
+                          processing by parent class
+            training_runner: Optional[Runner] = None # Runner object after training.
+            training_metrics: Optional[Dict] = None # Metrics collected during training.
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
         :param env_params: A dataclass containing the parametrization of the environment.
         :param config: The configuration of the agent as one of the following objects: AgentConfig,
@@ -498,16 +505,30 @@ class DQNAgentBase:
 
         return step_runner, metrics
 
+    @partial(jax.jit, static_argnums=(0,))
+    def q(self, state: jnp.ndarray) -> jnp.ndarray:
+        """
+        Calculates the state-action (Q) values for a state using the policy network parameters defined as optimal in
+        post-processing (by the parent class).
+        :param state: State where the state-action values will be calculated.
+        :return: The state-action (Q) values for the state
+        """
+
+        if not self.agent_trained:
+            raise Exception("The agent has not been trained.")
+        else:
+            return self._q(self.agent_params, state)
+
 
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
     def _q(self, params: Dict, state: jnp.ndarray) -> jnp.ndarray:
         """
-        Placeholder for agent-specific method for calculating the action-state (Q) values for a state using the policy
+        Placeholder for agent-specific method for calculating the state-action (Q) values for a state using the policy
         network.
         :param params: Parameter of the policy network.
-        :param state: State where the action-state values will be calculated.
-        :return: Action-state values for the input state.
+        :param state: State where the state-action values will be calculated.
+        :return: State-action values for the input state.
         """
 
         pass
@@ -516,12 +537,12 @@ class DQNAgentBase:
     @partial(jax.jit, static_argnums=(0,))
     def _q_state_action(self, params: Dict, state: jnp.ndarray, action: jnp.int32) -> jnp.ndarray:
         """
-        Place holder for agent-specific method for calculating the action-state (Q) value for a state and a selected
+        Place holder for agent-specific method for calculating the state-action (Q) value for a state and a selected
         action using the policy network.
         :param params: Parameter of the policy network.
-        :param state: State where the action-state values will be calculated.
+        :param state: State where the state-action values will be calculated.
         :param action: Action for which the state-action value will be calculated
-        :return: Action-state value for the input state and action.
+        :return: State-action value for the input state and action.
         """
 
         pass
@@ -536,11 +557,11 @@ class DQNAgentBase:
                   terminated: jnp.bool_,
                   gamma: Union[jnp.float32, jnp.ndarray]) -> jnp.ndarray:
         """
-        Place holder for agent-specific method for calculating the target action-state (Q) value for the next state of
+        Place holder for agent-specific method for calculating the target state-action (Q) value for the next state of
         an episode step.
         :param params: Parameter of the policy network.
         :param target_params: Parameter of the target  network.
-        :param next_state: Next state of the episode step where the target action-state values will be calculated.
+        :param next_state: Next state of the episode step where the target state-action values will be calculated.
         :param reward: The reward collected during the episode step.
         :param terminated: Termination of the episode during the performed step.
         :param gamma: The discount parameter of the Bellman equation.
@@ -568,7 +589,7 @@ class DQNAgentBase:
                               where the agent is trained.
         :param action: The action executed in the episode step.
         :param reward: The reward collected during the episode step.
-        :param next_state: Next state of the episode step where the target action-state values will be calculated.
+        :param next_state: Next state of the episode step where the target state-action values will be calculated.
         :param terminated: Termination of the episode during the performed step.
         :param hyperparams: The training hyperparameters, as described in the "train" method.
         :return: The loss between the estimate of the state value by the policy network and the calculation of the
@@ -586,10 +607,10 @@ class DQN_Agent(DQNAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _q(self, params: Dict, state: jnp.ndarray) -> jnp.ndarray:
         """
-        Calculation of the action-state (Q) values for a state using the policy network for the DQN agent.
+        Calculation of the state-action (Q) values for a state using the policy network for the DQN agent.
         :param params: Parameter of the policy network.
-        :param state: State where the action-state values will be calculated.
-        :return: Action-state values for the input state.
+        :param state: State where the state-action values will be calculated.
+        :return: State-action values for the input state.
         """
 
         q_state = self.q_network.apply(params, state)
@@ -599,12 +620,12 @@ class DQN_Agent(DQNAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _q_state_action(self, params: Dict, state: jnp.ndarray, action: jnp.int32) -> jnp.ndarray:
         """
-        Calculation of the action-state (Q) value for a state and a selected action using the policy network  for the
+        Calculation of the state-action (Q) value for a state and a selected action using the policy network  for the
         DQN agent.
         :param params: Parameter of the policy network.
-        :param state: State where the action-state values will be calculated.
+        :param state: State where the state-action values will be calculated.
         :param action: Action for which the state-action value will be calculated
-        :return: Action-state value for the input state and action.
+        :return: State-action value for the input state and action.
         """
 
         action_batch_one_hot = jax.nn.one_hot(action.squeeze(), num_classes=self.n_actions)
@@ -622,12 +643,12 @@ class DQN_Agent(DQNAgentBase):
                   terminated: jnp.ndarray,
                   gamma: Union[jnp.float32, jnp.ndarray]) -> jnp.ndarray:
         """
-        Calculation of the target action-state (Q) value for the next state of an episode step for the DQN agent.
+        Calculation of the target state-action (Q) value for the next state of an episode step for the DQN agent.
         .. math::
             {Q}_{target} = {R}_{t+1} + \gamma max_{\alpha}[Q({S}_{t+1}, \alpha; {\theta}_{t}^{-}]
         :param params: Parameter of the policy network.
         :param target_params: Parameter of the target  network.
-        :param next_state: Next state of the episode step where the target action-state values will be calculated.
+        :param next_state: Next state of the episode step where the target state-action values will be calculated.
         :param reward: The reward collected during the episode step.
         :param terminated: Termination of the episode during the performed step.
         :param gamma: The discount parameter of the Bellman equation.
@@ -658,7 +679,7 @@ class DQN_Agent(DQNAgentBase):
                               where the agent is trained.
         :param action: The action executed in the episode step.
         :param reward: The reward collected during the episode step.
-        :param next_state: Next state of the episode step where the target action-state values will be calculated.
+        :param next_state: Next state of the episode step where the target state-action values will be calculated.
         :param terminated: Termination of the episode during the performed step.
         :param hyperparams: The training hyperparameters, as described in the "train" method.
         :return: The loss between the estimate of the state value by the policy network and the calculation of the
@@ -679,10 +700,10 @@ class DDQN_Agent(DQNAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _q(self, params: Dict, state: jnp.ndarray) -> jnp.ndarray:
         """
-        DDQN calculation of the action-state (Q) values for a state using the policy network.
+        DDQN calculation of the state-action (Q) values for a state using the policy network.
         :param params: Parameter of the policy network.
-        :param state: State where the action-state values will be calculated.
-        :return: Action-state values for the input state.
+        :param state: State where the state-action values will be calculated.
+        :return: State-action values for the input state.
         """
 
         q_state = self.q_network.apply(params, state)
@@ -692,12 +713,12 @@ class DDQN_Agent(DQNAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _q_state_action(self, params: Dict, state: jnp.ndarray, action: jnp.int32) -> jnp.ndarray:
         """
-        Calculation of the action-state (Q) value for a state and a selected action using the policy network  for the
+        Calculation of the state-action (Q) value for a state and a selected action using the policy network  for the
         DDQN agent.
         :param params: Parameter of the policy network.
-        :param state: State where the action-state values will be calculated.
+        :param state: State where the state-action values will be calculated.
         :param action: Action for which the state-action value will be calculated
-        :return: Action-state value for the input state and action.
+        :return: State-action value for the input state and action.
         """
 
         action_batch_one_hot = jax.nn.one_hot(action.squeeze(), num_classes=self.n_actions)
@@ -715,14 +736,14 @@ class DDQN_Agent(DQNAgentBase):
                   terminated: jnp.ndarray,
                   gamma: Union[jnp.float32, jnp.ndarray]) -> jnp.ndarray:
         """
-        Calculation of the target action-state (Q) value for the next state of an episode step for the DDQN agent.
+        Calculation of the target state-action (Q) value for the next state of an episode step for the DDQN agent.
         .. math::
             {Q}_{target} = {R}_{t+1} + \gamma Q({S}_{t+1}, {argmax}_{\alpha}[Q({S}_{t+1}, \alpha;{\theta}_{t});
             {\theta}_{t}^{-}])
         (Based on the unnumbered equation in page 6 of [2].)
         :param params: Parameter of the policy network.
         :param target_params: Parameter of the target  network.
-        :param next_state: Next state of the episode step where the target action-state values will be calculated.
+        :param next_state: Next state of the episode step where the target state-action values will be calculated.
         :param reward: The reward collected during the episode step.
         :param terminated: Termination of the episode during the performed step.
         :param gamma: The discount parameter of the Bellman equation.
@@ -758,7 +779,7 @@ class DDQN_Agent(DQNAgentBase):
                               where the agent is trained.
         :param action: The action executed in the episode step.
         :param reward: The reward collected during the episode step.
-        :param next_state: Next state of the episode step where the target action-state values will be calculated.
+        :param next_state: Next state of the episode step where the target state-action values will be calculated.
         :param terminated: Termination of the episode during the performed step.
         :param hyperparams: The training hyperparameters, as described in the "train" method.
         :return: The loss between the estimate of the state value by the policy network and the calculation of the
@@ -780,9 +801,9 @@ class CategoricalDQN_Agent(DQNAgentBase):
     def _p(self, params: dict, state: jnp.ndarray) -> jnp.ndarray:
         """
         Calculation of the probability change per atom for a state using the policy network for the Categorical DQN
-        agent. This probability can be used to derive the action-state (Q) values.
+        agent. This probability can be used to derive the state-action (Q) values.
         :param params: Parameter of the policy network.
-        :param state: State where the action-state values will be calculated.
+        :param state: State where the state-action values will be calculated.
         :return: Probability change at atoms.
         """
 
@@ -804,11 +825,11 @@ class CategoricalDQN_Agent(DQNAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _q(self, params: dict, state: jnp.ndarray) -> jnp.ndarray:
         """
-        Calculation of the action-state (Q) values for a state using the policy network for the Categorical DQN agent.
+        Calculation of the state-action (Q) values for a state using the policy network for the Categorical DQN agent.
         (Implemented as in the second line of Algorithm 1 of [3])
         :param params: Parameter of the policy network.
-        :param state: State where the action-state values will be calculated.
-        :return: Action-state values for the input state.
+        :param state: State where the state-action values will be calculated.
+        :return: State-action values for the input state.
         """
 
         p_state = self._p(params, state)
@@ -819,12 +840,12 @@ class CategoricalDQN_Agent(DQNAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _q_state_action(self, params: Dict, state: jnp.ndarray, action: jnp.int32) -> jnp.ndarray:
         """
-        Calculation of the action-state (Q) value for a state and a selected action using the policy network  for the
+        Calculation of the state-action (Q) value for a state and a selected action using the policy network  for the
         Categorical DQN agent.
         :param params: Parameter of the policy network.
-        :param state: State where the action-state values will be calculated.
+        :param state: State where the state-action values will be calculated.
         :param action: Action for which the state-action value will be calculated
-        :return: Action-state value for the input state and action.
+        :return: State-action value for the input state and action.
         """
 
         action_batch_one_hot = jax.nn.one_hot(action.squeeze(), num_classes=self.n_actions)
@@ -842,11 +863,11 @@ class CategoricalDQN_Agent(DQNAgentBase):
                   terminated: jnp.ndarray,
                   gamma: Union[jnp.float32, jnp.ndarray]) -> jnp.ndarray:
         """
-        Calculation of the target action-state (Q) value for the next state of an episode step for the Categorical DQN
+        Calculation of the target state-action (Q) value for the next state of an episode step for the Categorical DQN
         agent. Based on equation 7 of [3].)
         :param params: Parameter of the policy network.
         :param target_params: Parameter of the target  network.
-        :param next_state: Next state of the episode step where the target action-state values will be calculated.
+        :param next_state: Next state of the episode step where the target state-action values will be calculated.
         :param reward: The reward collected during the episode step.
         :param terminated: Termination of the episode during the performed step.
         :param gamma: The discount parameter of the Bellman equation.
@@ -915,7 +936,7 @@ class CategoricalDQN_Agent(DQNAgentBase):
                               where the agent is trained.
         :param action: The action executed in the episode step.
         :param reward: The reward collected during the episode step.
-        :param next_state: Next state of the episode step where the target action-state values will be calculated.
+        :param next_state: Next state of the episode step where the target state-action values will be calculated.
         :param terminated: Termination of the episode during the performed step.
         :param hyperparams: The training hyperparameters, as described in the "train" method.
         :return: The loss between the estimate of the state value by the policy network and the calculation of the
@@ -936,11 +957,11 @@ class QRDDQN_Agent(DQNAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _q(self, params: Dict, state: jnp.ndarray) -> jnp.ndarray:
         """
-        Calculation of the action-state (Q) values for a state using the policy network for the QRDDQN agent.
+        Calculation of the state-action (Q) values for a state using the policy network for the QRDDQN agent.
         (Implemented as in the fourth line of Algorithm 1 of [4])
         :param params: Parameter of the policy network.
-        :param state: State where the action-state values will be calculated.
-        :return: Action-state values for the input state.
+        :param state: State where the state-action values will be calculated.
+        :return: State-action values for the input state.
         """
 
         q_state = self.q_network.apply(params, state).mean(axis=-1)
@@ -950,12 +971,12 @@ class QRDDQN_Agent(DQNAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _q_state_action(self, params: Dict, state: jnp.ndarray, action: jnp.int32) -> jnp.ndarray:
         """
-        Calculation of the action-state (Q) value for a state and a selected action using the policy network  for the
+        Calculation of the state-action (Q) value for a state and a selected action using the policy network  for the
         QRDQN agent.
         :param params: Parameter of the policy network.
-        :param state: State where the action-state values will be calculated.
+        :param state: State where the state-action values will be calculated.
         :param action: Action for which the state-action value will be calculated
-        :return: Action-state value for the input state and action.
+        :return: State-action value for the input state and action.
         """
 
         action_batch_one_hot = jax.nn.one_hot(action.squeeze(), num_classes=self.n_actions)
@@ -973,11 +994,11 @@ class QRDDQN_Agent(DQNAgentBase):
                   terminated: jnp.ndarray,
                   gamma: Union[jnp.float32, jnp.ndarray]) -> jnp.ndarray:
         """
-        Calculation of the target action-state (Q) value for the next state of an episode step for the QRDQN agent.
+        Calculation of the target state-action (Q) value for the next state of an episode step for the QRDQN agent.
         Based on equation 13 of [4].)
         :param params: Parameter of the policy network.
         :param target_params: Parameter of the target  network.
-        :param next_state: Next state of the episode step where the target action-state values will be calculated.
+        :param next_state: Next state of the episode step where the target state-action values will be calculated.
         :param reward: The reward collected during the episode step.
         :param terminated: Termination of the episode during the performed step.
         :param gamma: The discount parameter of the Bellman equation.
@@ -1044,7 +1065,7 @@ class QRDDQN_Agent(DQNAgentBase):
                               where the agent is trained.
         :param action: The action executed in the episode step.
         :param reward: The reward collected during the episode step.
-        :param next_state: Next state of the episode step where the target action-state values will be calculated.
+        :param next_state: Next state of the episode step where the target state-action values will be calculated.
         :param terminated: Termination of the episode during the performed step.
         :param hyperparams: The training hyperparameters, as described in the "train" method.
         :return: The loss between the estimate of the state value by the policy network and the calculation of the

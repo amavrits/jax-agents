@@ -3,7 +3,11 @@ import time
 import jax
 import optax
 import gymnax
+import numpy as np
 from cartpole_nn_gallery import *
+import matplotlib
+matplotlib.use("TkAgg")
+import matplotlib.pyplot as plt
 
 sys.path.append('./')
 try:
@@ -43,7 +47,7 @@ if __name__ == '__main__':
     config = dqn.AgentConfig(
         q_network=DQN_NN_model,
         transition_template=transition_temp,
-        n_steps=500_000,
+        n_steps=500,
         buffer_type="FLAT",
         buffer_size=10_000,
         batch_size=128,
@@ -72,9 +76,19 @@ if __name__ == '__main__':
     """Train agent"""
     runner, metrics = agent.train(rng, hyperparams)
 
+    """ Post-process results"""
+    agent.collect_train(runner, metrics)
+
     print(f"time: {time.time() - t0:.2f} s")
 
-    """ Post-process and plot results"""
-    pp = PostProcessor(runner, metrics)
-    fig = pp._plot_rewards(running_window=100, close_plot=False)
+    """ Plot results"""
+    running_window = 100
+    episode_rewards = agent.get_episode_rewards(agent.dones, agent.rewards)
+    running_rewards = agent.get_running_metric(episode_rewards, running_window)
+
+    fig = plt.figure()
+    plt.plot(episode_rewards, c='b', alpha=0.4)
+    plt.plot(np.arange(running_window, episode_rewards.size), running_rewards, c='b')
+    plt.xlabel("Episode", fontsize=14)
+    plt.ylabel("Reward [-]", fontsize=14)
 
