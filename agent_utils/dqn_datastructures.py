@@ -1,3 +1,4 @@
+import numpy as np
 import jax
 import jax.numpy as jnp
 from flax.training.train_state import TrainState
@@ -9,6 +10,7 @@ import flashbax as fbx
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
 from typing import Tuple, Dict, NamedTuple, Callable, Any, Type, Union, Optional
+from dataclasses import dataclass
 
 
 class TrainStateDQN(TrainState):
@@ -81,6 +83,19 @@ class Runner:
     hyperparams: Union[HyperParameters, CategoricalHyperParameters, QuantileHyperParameters]
 
 
+@struct.dataclass
+class EvalRunner:
+    """
+    Runner for agent evaluation.
+    """
+    """State of the environment"""
+    env_state: LogEnvState
+    """State of the environment in array"""
+    state: jnp.ndarray
+    """Random key, required for reproducibility of results and control of randomness"""
+    rng: chex.PRNGKey
+
+
 class AgentConfig(NamedTuple):
     """Configuration of the DQN and DDQN agents, passed at initialization of instance."""
     """Number of training steps (not episodes)"""
@@ -130,3 +145,26 @@ class QuantileAgentConfig(AgentConfig):
     """Number of quantiles"""
     n_qunatiles: jnp.int32 = 21
 
+
+@dataclass
+class MetricStats:
+    """
+    Dataclass summarizing statistics of a metric sample connected to the agent's performance (collected during either
+    training or evaluation).
+    """
+    """Metric per episode"""
+    episode_metric: Union[np.ndarray, jnp.ndarray]
+    """Sample average"""
+    mean: Union[np.float32, jnp.float32]
+    """Sample variance"""
+    var: Union[np.float32, jnp.float32]
+    """Sample standard deviation"""
+    std: Union[np.float32, jnp.float32]
+    """Sample minimum"""
+    min: Union[np.float32, jnp.float32]
+    """Sample maximum"""
+    max: Union[np.float32, jnp.float32]
+    """Sample median"""
+    median: Union[np.float32, jnp.float32]
+    """Whether the sample contains nan values"""
+    has_nans: Union[np.bool_, jnp.bool_]

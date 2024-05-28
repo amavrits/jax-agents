@@ -12,7 +12,6 @@ import matplotlib.pyplot as plt
 sys.path.append('./')
 try:
     from agents import dqn
-    from agent_utils.q_agent_eval import QAgentEvaluator
 except:
     raise
 
