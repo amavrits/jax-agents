@@ -156,48 +156,42 @@ class DQNAgentBase(ABC):
 
     def _init_optimizer(self, optimizer_params: OptimizerParams) -> optax.chain:
         """
-        Optimizer initialization. This method uses the optimizer name defined in the agent configuration to initialize
-        the appropriate optimizer. In this way, the optimizer can be initialized within the "train" method, and thus
-        several combinations of its parameters can be ran with jax.vmap.
-        TODO: Implement choice of optimizer via AgentConfig.
+        Optimizer initialization. This method uses the optax optimizer function given in the agent configuration to
+        initialize the appropriate optimizer. In this way, the optimizer can be initialized within the "train" method,
+        and thus several combinations of its parameters can be ran with jax.vmap.
+        Jitting is neither possible nor necessary, since the method returns an optax.chain class, not numerical output.
         :param optimizer_params: A NamedTuple containing the parametrization of the optimizer.
         :return: An optimizer in optax.chain.
         """
 
-        if self.config.optimizer_name is not None and self.config.optimizer is None:
-            set_by_name = True
-        elif self.config.optimizer_name is None and self.config.optimizer is not None:
-            set_by_name = False
-        else:
-            raise Exception("Both or neither of 'optimizer', 'optimizer_name' have been given in AgentConfig."
-                            "Please set exactly one of them.")
+        optimizer_params_dict = optimizer_params._asdict()  # Transform from NamedTuple to dict
+        optimizer_params_dict.pop('grad_clip', None)  # Remove 'grad_clip', since it is not part of the optimizer args.
 
-        if set_by_name:
 
-            if self.config.optimizer_name.lower() == "rmsprop":
-                tx = optax.chain(
-                    optax.clip_by_global_norm(optimizer_params.grad_clip),
-                    optax.rmsprop(learning_rate=optimizer_params.lr, eps=optimizer_params.eps)
-                )
-            elif self.config.optimizer_name.lower() == "adam":
-                tx = optax.chain(
-                    optax.clip_by_global_norm(optimizer_params.grad_clip),
-                    optax.adam(learning_rate=optimizer_params.lr, eps=optimizer_params.eps)
-                )
-            elif self.config.optimizer_name.lower() == "adamw":
-                tx = optax.chain(
-                    optax.clip_by_global_norm(optimizer_params.grad_clip),
-                    optax.adamw(learning_rate=optimizer_params.lr, eps=optimizer_params.eps)
-                )
-            else:
-                raise Exception("This optimizer has not been implemented yet.")
+        """
+        Get dictionary of optimizer parameters to pass in optimizer. The procedure preserves parameters that:
+            - are given in the OptimizerParams NamedTuple and are requested as args by the optimizer
+            - are requested as args by the optimizer and are given in the OptimizerParams NamedTuple
+        """
 
-        else:
+        optimizer_arg_names = self.config.optimizer.__code__.co_varnames  # List names of args of optimizer.
 
-            tx = optax.chain(
-                optax.clip_by_global_norm(optimizer_params.grad_clip),
-                self.config.optimizer(learning_rate=optimizer_params.lr)
-            )
+        # Keep only the optimizer arg names that are also part of the OptimizerParams (dict from NamedTuple)
+        optimizer_arg_names = [
+            arg_name for arg_name in optimizer_arg_names if arg_name in list(optimizer_params_dict.keys())
+        ]
+        if len(optimizer_arg_names) == 0:
+            raise Exception("The defined optimizer parameters do not include relevant arguments for this optimizer."
+                            "The optimizer has not been implemented yet. Define your own OptimizerParams object.")
+
+        # Keep only the optimizer params that are arg names for the specific optimizer
+        optimizer_params_dict = {arg_name: optimizer_params_dict[arg_name] for arg_name in optimizer_arg_names}
+
+        # No need to scale by -1.0. 'TrainState.apply_gradients' is used for training, which subtracts the update.
+        tx = optax.chain(
+            optax.clip_by_global_norm(optimizer_params.grad_clip),
+            self.config.optimizer(**optimizer_params_dict)
+        )
 
         return tx
 
@@ -527,7 +521,6 @@ class DQNAgentBase(ABC):
         rng, network_params = self._init_q_network(rng)
 
         tx = self._init_optimizer(hyperparams.optimizer_params)
-        # tx = optax.chain(optax.clip_by_global_norm(hyperparams.optimizer_params.grad_clip), self.config.optimizer(learning_rate=hyperparams.optimizer_params.lr))
 
         training = TrainStateDQN.create(apply_fn=self.q_network.apply,
                                         params=network_params,
@@ -749,7 +742,7 @@ class DQNAgentBase(ABC):
         :return: Training hsitory from buffer re-organized in xarray. If the buffer is not full, it returns only the
                  non-empty positions.
         """
-        
+
         buffer_size = self.buffer.current_index if not self.buffer.is_full else self.buffer.experience.terminated.size
 
         state = np.asarray(self.buffer.experience.state.squeeze())[:buffer_size]
@@ -927,7 +920,7 @@ class DQN_Agent(DQNAgentBase):
 
         q_state_action = self._q_state_action(params, current_state, action)
         q_target = self._q_target(params, target_params, next_state, reward, terminated, hyperparams.gamma)
-        loss = jnp.mean(jax.vmap(self.config["LOSS_FN"])(q_state_action, q_target), axis=0)
+        loss = jnp.mean(jax.vmap(self.config.loss_fn)(q_state_action, q_target), axis=0)
         return loss
 
 

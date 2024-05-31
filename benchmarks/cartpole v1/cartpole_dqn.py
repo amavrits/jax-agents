@@ -40,7 +40,7 @@ if __name__ == '__main__':
     def optimizer_fn(optimizer_params):
         return optax.chain(
             optax.clip_by_global_norm(optimizer_params.grad_clip),
-            optax.rmsprop(learning_rate=optimizer_params.lr, eps=optimizer_params.eps)
+            optax.rmsprop(learning_rate=optimizer_params.learning_rate, eps=optimizer_params.eps)
             )
 
     """Define configuration for agent training"""
@@ -55,7 +55,6 @@ if __name__ == '__main__':
         store_agent=False,
         act_randomly=lambda random_key, state, n_actions: jax.random.choice(random_key, jnp.arange(n_actions)),
         get_performance=lambda i_step, step_runner: 0,
-        # optimizer_name="rmsprop",
         optimizer=optax.rmsprop,
         loss_fn=optax.l2_loss,
         epsilon_fn_style="DECAY",
@@ -69,7 +68,7 @@ if __name__ == '__main__':
 
 
     """Define optimizer parameters and training hyperparameters"""
-    optimizer_params = dqn.OptimizerParams(5e-3, 1e-3, 1)
+    optimizer_params = dqn.OptimizerParams(learning_rate=5e-3, eps=1e-3, grad_clip=1)
     hyperparams = dqn.HyperParameters(0.99, 4, optimizer_params)
 
 

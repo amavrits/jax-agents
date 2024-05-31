@@ -43,7 +43,7 @@ class Transition(NamedTuple):
 class OptimizerParams(NamedTuple):
     """Parameters of the training optimizer"""
     """Learning rate"""
-    lr: Union[jnp.float32, jnp.ndarray] = 1e-3
+    learning_rate: Union[jnp.float32, jnp.ndarray] = 1e-3
 
     """Epsilon of the optimizer"""
     eps: Union[jnp.float32, jnp.ndarray] = 1e-3
@@ -129,15 +129,8 @@ class AgentConfig(NamedTuple):
     """Template of transition, so that the buffer can be configured"""
     transition_template: Transition
 
-    """Optimizer name. This is used in agent to select an optimizer for training from the implemented list. Even though 
-    this approach is inconvenient, it allows for running multiple combinations of the optimizer parameters via jax.vmap.
-    To be used when 'optimizer' is not defined
-    """
-    optimizer_name: Optional[str] = None
-
-    """Optimizer. This is used in agent to set an optimizer for training from the implemented list. Even though this 
-    approach is inconvenient, it allows for running multiple combinations of the optimizer parameters via jax.vmap. To 
-    be used when 'optimizer_name' is not defined
+    """Optax optimizer to be used in training. Giving only the optimizer class allows for initializing within the 
+    self.train method and eventually running multiple combinations of the optimizer parameters via jax.vmap.
     """
     optimizer: Optional[base.GradientTransformation] = None
 
