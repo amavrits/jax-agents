@@ -28,6 +28,7 @@ import sys
 import os
 import jax
 import jax.numpy as jnp
+import pandas as pd
 from jax import lax
 from jax_tqdm import scan_tqdm
 import optax
@@ -35,6 +36,7 @@ import distrax
 import chex
 import flashbax as fbx
 import numpy as np
+import xarray as xr
 from flax.core import FrozenDict
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
@@ -63,10 +65,11 @@ class DQNAgentBase(ABC):
     The base class for Deep Q-Learning agents, which employ different variations of Deep Q-Networks.
     """
 
-    agent_trained: bool = False  # Whether the agent has been trained.
-    agent_params: Optional[Union[Dict, FrozenDict]] = None  # Optimal policy network parameters after post-processing.
-    training_runner: Optional[Runner] = None  # Runner object after training.
-    training_metrics: Optional[Dict] = None  # Metrics collected during training.
+    agent_trained: ClassVar[bool] = False  # Whether the agent has been trained.
+    agent_params: ClassVar[Optional[Union[Dict, FrozenDict]]] = None  # Optimal policy network parameters after post-processing.
+    training_runner: ClassVar[Optional[Runner]] = None  # Runner object after training.
+    training_metrics: ClassVar[Optional[Dict]] = None  # Metrics collected during training.
+    buffer: ClassVar[Optional[BufferStateType]] = None  # Metrics collected during training.
 
     def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfigType) -> None:
         """
@@ -591,7 +594,7 @@ class DQNAgentBase(ABC):
         pass
 
 
-    """ METHODS FOR APPLYING """
+    """ METHODS FOR APPLYING AGENT"""
 
     @partial(jax.jit, static_argnums=(0,))
     def q(self, state: jnp.ndarray) -> jnp.ndarray:
@@ -617,10 +620,10 @@ class DQNAgentBase(ABC):
         :return: The action of the optimal policy.
         """
 
-        if not self.agent_trained:
-            raise Exception("The agent has not been trained.")
-        else:
+        if self.agent_trained:
             return jnp.argmax(self._q(self.agent_params, state), axis=jnp.max(state.shape))
+        else:
+            raise Exception("The agent has not been trained.")
 
 
     """ METHODS FOR PERFORMANCE EVALUATION """
@@ -702,6 +705,55 @@ class DQNAgentBase(ABC):
 
         self.agent_params = self.training_runner.training.params
         self.buffer = self.training_runner.buffer_state
+
+
+    @staticmethod
+    def export_buffer(buffer: BufferStateType) -> xr.DataArray:
+        """
+        Exports the history of training steps as xarray. The history is collected from the buffer.
+        :param buffer:
+        :return:
+        """
+        state = np.asarray(buffer.experience.state.squeeze())[:buffer.current_index]
+        action = np.asarray(buffer.experience.action.squeeze())[:buffer.current_index]
+        next_state = np.asarray(buffer.experience.next_state.squeeze())[:buffer.current_index]
+        reward = np.asarray(buffer.experience.reward.squeeze())[:buffer.current_index]
+        terminated = np.asarray(buffer.experience.terminated.squeeze())[:buffer.current_index]
+        episodes = np.cumsum(terminated)
+        history = np.c_[episodes, state, action, next_state, reward, terminated]
+
+        """
+        var_names = [
+            variable name for episodes
+            variable name for states
+            variable name for actions
+            variable name for next states
+            variable name for rewards
+            variable name for termination
+            ]
+        """
+
+        var_names =\
+            ["episode"] +\
+            ["s_"+str(i+1) for i in range(state.shape[1])] +\
+            ["action"] +\
+            ["ns_"+str(i+1) for i in range(state.shape[1])] +\
+            ["reward"] +\
+            ["terminated"]
+
+        if buffer.is_full:
+            description = "Training step history taken from the last %d steps of the buffer." % buffer.current_index
+        else:
+            description = "Training step history taken from the first %d steps of the buffer." % buffer.current_index
+
+        x = xr.DataArray(
+            data=history,
+            dims=["step", "var"],
+            coords={"step": np.arange(buffer.current_index), "var": var_names},
+            attrs={"description": description}
+        )
+
+        return x
 
 
     @staticmethod

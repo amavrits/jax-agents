@@ -47,7 +47,7 @@ if __name__ == '__main__':
     config = dqn.AgentConfig(
         q_network=DQN_NN_model,
         transition_template=transition_temp,
-        n_steps=500_000,
+        n_steps=500,
         buffer_type="FLAT",
         buffer_size=10_000,
         batch_size=128,
@@ -85,7 +85,7 @@ if __name__ == '__main__':
     """ Post-process results"""
     agent.collect_training(runner)
     training_rewards = agent.summarize(training_metrics["done"], training_metrics["reward"])
-
+    buffer_export = agent.export_buffer(agent.buffer)
 
     """Evaluate agent performance"""
     eval_metrics = agent.eval(rng_eval, n_evals=500_000)
