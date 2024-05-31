@@ -1,4 +1,5 @@
 import sys
+import os
 import time
 import jax
 import optax
@@ -9,9 +10,9 @@ import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 
-sys.path.append('./')
+sys.path.append(os.path.join(sys.path[2], 'jax_agents', 'agents'))
 try:
-    from agents import dqn
+    import dqn
 except:
     raise
 
@@ -64,26 +65,32 @@ if __name__ == '__main__':
     agent = dqn.DDQN_Agent(env, env_params, config)
     print(agent.__str__())
 
+
     """Define optimizer parameters and training hyperparameters"""
     optimizer_params = dqn.OptimizerParams(5e-3, 1e-3, 1)
     hyperparams = dqn.HyperParameters(0.99, 4, optimizer_params)
 
+
     """Draw random key"""
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
+
 
     """Train agent"""
     t0 = time.time()
     runner, training_metrics = agent.train(rng_train, hyperparams)
     print(f"time: {time.time() - t0:.2f} s")
 
+
     """ Post-process results"""
-    agent.collect_train(runner)
+    agent.collect_training(runner)
     training_rewards = agent.summarize(training_metrics["done"], training_metrics["reward"])
+
 
     """Evaluate agent performance"""
     eval_metrics = agent.eval(rng_eval, n_evals=500_000)
     eval_rewards = agent.summarize(eval_metrics["done"], eval_metrics["reward"])
+
 
     """ Plot results"""
     running_window = 100
