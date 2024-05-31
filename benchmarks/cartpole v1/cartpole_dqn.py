@@ -47,7 +47,7 @@ if __name__ == '__main__':
     config = dqn.AgentConfig(
         q_network=DQN_NN_model,
         transition_template=transition_temp,
-        n_steps=500,
+        n_steps=500_000,
         buffer_type="FLAT",
         buffer_size=10_000,
         batch_size=128,

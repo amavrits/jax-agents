@@ -707,19 +707,21 @@ class DQNAgentBase(ABC):
         self.buffer = self.training_runner.buffer_state
 
 
-    @staticmethod
-    def export_buffer(buffer: BufferStateType) -> xr.DataArray:
+    def export_buffer(self) -> xr.DataArray:
         """
         Exports the history of training steps as xarray. The history is collected from the buffer.
-        :param buffer:
-        :return:
+        :return: Training buffer re-organized in xarray.
         """
-        state = np.asarray(buffer.experience.state.squeeze())[:buffer.current_index]
-        action = np.asarray(buffer.experience.action.squeeze())[:buffer.current_index]
-        next_state = np.asarray(buffer.experience.next_state.squeeze())[:buffer.current_index]
-        reward = np.asarray(buffer.experience.reward.squeeze())[:buffer.current_index]
-        terminated = np.asarray(buffer.experience.terminated.squeeze())[:buffer.current_index]
+        
+        buffer_size = self.buffer.current_index
+
+        state = np.asarray(self.buffer.experience.state.squeeze())[:buffer_size]
+        action = np.asarray(self.buffer.experience.action.squeeze())[:buffer_size]
+        next_state = np.asarray(self.buffer.experience.next_state.squeeze())[:buffer_size]
+        reward = np.asarray(self.buffer.experience.reward.squeeze())[:buffer_size]
+        terminated = np.asarray(self.buffer.experience.terminated.squeeze())[:buffer_size]
         episodes = np.cumsum(terminated)
+        episodes = np.append(0, episodes[:-1])  # So that episode number changes when True is met in "terminated".
         history = np.c_[episodes, state, action, next_state, reward, terminated]
 
         """
@@ -732,7 +734,6 @@ class DQNAgentBase(ABC):
             variable name for termination
             ]
         """
-
         var_names =\
             ["episode"] +\
             ["s_"+str(i+1) for i in range(state.shape[1])] +\
@@ -741,15 +742,15 @@ class DQNAgentBase(ABC):
             ["reward"] +\
             ["terminated"]
 
-        if buffer.is_full:
-            description = "Training step history taken from the last %d steps of the buffer." % buffer.current_index
+        if self.buffer.is_full:
+            description = "Training step history taken from the last %d steps of the self.buffer." % buffer_size
         else:
-            description = "Training step history taken from the first %d steps of the buffer." % buffer.current_index
+            description = "Training step history taken from the first %d steps of the self.buffer." % buffer_size
 
         x = xr.DataArray(
             data=history,
             dims=["step", "var"],
-            coords={"step": np.arange(buffer.current_index), "var": var_names},
+            coords={"step": np.arange(buffer_size), "var": var_names},
             attrs={"description": description}
         )
 
