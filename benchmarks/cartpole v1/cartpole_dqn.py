@@ -55,11 +55,13 @@ if __name__ == '__main__':
         store_agent=False,
         act_randomly=lambda random_key, state, n_actions: jax.random.choice(random_key, jnp.arange(n_actions)),
         get_performance=lambda i_step, step_runner: 0,
-        set_optimizer=optimizer_fn,
+        # optimizer_name="rmsprop",
+        optimizer=optax.rmsprop,
         loss_fn=optax.l2_loss,
         epsilon_fn_style="DECAY",
         epsilon_params=(0.9, 0.05, 50_000)
     )
+
 
     """Set up agent"""
     agent = dqn.DDQN_Agent(env, env_params, config)
@@ -85,7 +87,8 @@ if __name__ == '__main__':
     """ Post-process results"""
     agent.collect_training(runner)
     training_rewards = agent.summarize(training_metrics["done"], training_metrics["reward"])
-    buffer_export = agent.export_buffer(agent.buffer)
+    buffer_export = agent.export_buffer()
+
 
     """Evaluate agent performance"""
     eval_metrics = agent.eval(rng_eval, n_evals=500_000)

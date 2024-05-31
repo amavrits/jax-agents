@@ -91,7 +91,7 @@ class DQNAgentBase(ABC):
         """
 
         output_lst = [field + ': ' + str(getattr(self.config, field)) for field in self.config._fields]
-        output_lst = ['Agent configuration:', '----------------------'] + output_lst
+        output_lst = ['Agent configuration:'] + output_lst
 
         return '\n'.join(output_lst)
 
@@ -156,15 +156,50 @@ class DQNAgentBase(ABC):
 
     def _init_optimizer(self, optimizer_params: OptimizerParams) -> optax.chain:
         """
-        Optimizer initialization. This method calls on a user defined function. In this way, the optimizer can be
-        initialized within the "train" method, and thus several combinations of its parameters can be ran with
-        jax.vmap.
+        Optimizer initialization. This method uses the optimizer name defined in the agent configuration to initialize
+        the appropriate optimizer. In this way, the optimizer can be initialized within the "train" method, and thus
+        several combinations of its parameters can be ran with jax.vmap.
         TODO: Implement choice of optimizer via AgentConfig.
         :param optimizer_params: A NamedTuple containing the parametrization of the optimizer.
         :return: An optimizer in optax.chain.
         """
 
-        return self.config.set_optimizer(optimizer_params)
+        if self.config.optimizer_name is not None and self.config.optimizer is None:
+            set_by_name = True
+        elif self.config.optimizer_name is None and self.config.optimizer is not None:
+            set_by_name = False
+        else:
+            raise Exception("Both or neither of 'optimizer', 'optimizer_name' have been given in AgentConfig."
+                            "Please set exactly one of them.")
+
+        if set_by_name:
+
+            if self.config.optimizer_name.lower() == "rmsprop":
+                tx = optax.chain(
+                    optax.clip_by_global_norm(optimizer_params.grad_clip),
+                    optax.rmsprop(learning_rate=optimizer_params.lr, eps=optimizer_params.eps)
+                )
+            elif self.config.optimizer_name.lower() == "adam":
+                tx = optax.chain(
+                    optax.clip_by_global_norm(optimizer_params.grad_clip),
+                    optax.adam(learning_rate=optimizer_params.lr, eps=optimizer_params.eps)
+                )
+            elif self.config.optimizer_name.lower() == "adamw":
+                tx = optax.chain(
+                    optax.clip_by_global_norm(optimizer_params.grad_clip),
+                    optax.adamw(learning_rate=optimizer_params.lr, eps=optimizer_params.eps)
+                )
+            else:
+                raise Exception("This optimizer has not been implemented yet.")
+
+        else:
+
+            tx = optax.chain(
+                optax.clip_by_global_norm(optimizer_params.grad_clip),
+                self.config.optimizer(learning_rate=optimizer_params.lr)
+            )
+
+        return tx
 
 
     @partial(jax.jit, static_argnums=(0,))
@@ -492,6 +527,7 @@ class DQNAgentBase(ABC):
         rng, network_params = self._init_q_network(rng)
 
         tx = self._init_optimizer(hyperparams.optimizer_params)
+        # tx = optax.chain(optax.clip_by_global_norm(hyperparams.optimizer_params.grad_clip), self.config.optimizer(learning_rate=hyperparams.optimizer_params.lr))
 
         training = TrainStateDQN.create(apply_fn=self.q_network.apply,
                                         params=network_params,
@@ -710,10 +746,11 @@ class DQNAgentBase(ABC):
     def export_buffer(self) -> xr.DataArray:
         """
         Exports the history of training steps as xarray. The history is collected from the buffer.
-        :return: Training buffer re-organized in xarray.
+        :return: Training hsitory from buffer re-organized in xarray. If the buffer is not full, it returns only the
+                 non-empty positions.
         """
         
-        buffer_size = self.buffer.current_index
+        buffer_size = self.buffer.current_index if not self.buffer.is_full else self.buffer.experience.terminated.size
 
         state = np.asarray(self.buffer.experience.state.squeeze())[:buffer_size]
         action = np.asarray(self.buffer.experience.action.squeeze())[:buffer_size]
