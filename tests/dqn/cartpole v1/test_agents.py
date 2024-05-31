@@ -1,5 +1,5 @@
 import pytest
-import jax_agents.agents.dqn as dpn
+import jaxagents.agents.dqn as dpn
 
 
 class TestAgents:

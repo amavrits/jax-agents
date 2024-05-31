@@ -10,7 +10,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 
-sys.path.append(os.path.join(sys.path[2], 'jax_agents', 'agents'))
+sys.path.append(os.path.join(sys.path[2], 'jaxagents', 'agents'))
 try:
     import dqn
 except:
@@ -53,8 +53,8 @@ if __name__ == '__main__':
         batch_size=128,
         target_update_method="PERIODIC",
         store_agent=False,
-        act_randomly=lambda rng, state, n_actions: jax.random.choice(rng, jnp.arange(n_actions)),
-        get_performance=lambda i_step, runner: 0,
+        act_randomly=lambda random_key, state, n_actions: jax.random.choice(random_key, jnp.arange(n_actions)),
+        get_performance=lambda i_step, step_runner: 0,
         set_optimizer=optimizer_fn,
         loss_fn=optax.l2_loss,
         epsilon_fn_style="DECAY",

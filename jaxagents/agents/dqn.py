@@ -35,15 +35,16 @@ import distrax
 import chex
 import flashbax as fbx
 import numpy as np
+from flax.core import FrozenDict
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from abc import abstractmethod
 from functools import partial
 from abc import ABC
-from typing import Tuple, Dict, NamedTuple, Callable, Any, Type, Union, Optional
+from typing import Tuple, Dict, NamedTuple, Type, Union, Optional, ClassVar
 import warnings
 
-sys.path.append(os.path.join(sys.path[2], 'jax_agents', 'agent_utils'))
+sys.path.append(os.path.join(sys.path[2], 'jaxagents', 'agent_utils'))
 try:
     from dqn_datastructures import *
 except:
@@ -62,16 +63,15 @@ class DQNAgentBase(ABC):
     The base class for Deep Q-Learning agents, which employ different variations of Deep Q-Networks.
     """
 
+    agent_trained: bool = False  # Whether the agent has been trained.
+    agent_params: Optional[Union[Dict, FrozenDict]] = None  # Optimal policy network parameters after post-processing.
+    training_runner: Optional[Runner] = None  # Runner object after training.
+    training_metrics: Optional[Dict] = None  # Metrics collected during training.
+
     def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfigType) -> None:
         """
-        Instance variables defined in parent class:
-            agent_trained: bool = False # Whether the agent has been trained.
-            agent_params: Optional[Union[Dict, FrozenDict]] = None # Optimal policy network parameters after post-
-                          processing by parent class.
-            training_runner: Optional[Runner] = None # Runner object after training.
-            training_metrics: Optional[Dict] = None # Metrics collected during training.
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
-        :param env_params: A dataclass containing the parametrization of the environment.
+        :param env_params: A dataclass named "EnvParams" containing the parametrization of the environment.
         :param config: The configuration of the agent as one of the following objects: AgentConfig,
                        CategoricalAgentConfig, QuantileAgentConfig. For more information
                        on these objects check dqn_utils. The selected object must match the agent.
@@ -165,7 +165,7 @@ class DQNAgentBase(ABC):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _init_q_network(self, rng: chex.PRNGKey) -> Tuple[jax.Array, Dict]:
+    def _init_q_network(self, rng: chex.PRNGKey) -> Tuple[jax.Array, Union[Dict, FrozenDict]]:
         """
         Initialization of the policy network (Q-model as a Neural Network).
         :param rng: Random key for initialization.
@@ -293,7 +293,7 @@ class DQNAgentBase(ABC):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _update_target_network(self, runner: Runner) -> Tuple:
+    def _update_target_network(self, runner: Runner) -> Runner:
         """
         Updates the parameters of the target network using the parameters of the policy network and the agent's
         hyperparameters. The update can be either periodic or incremental. In the former case, the policy parameters are
@@ -380,13 +380,13 @@ class DQNAgentBase(ABC):
 
         runner = self._update_target_network(runner)
 
-        metric = self._make_metrics(runner, reward, terminated)
+        metric = self._generate_metrics(runner, reward, terminated)
 
         return runner, metric
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _make_metrics(self, runner: Runner, reward: jnp.float32, terminated: jnp.bool_) -> Dict:
+    def _generate_metrics(self, runner: Runner, reward: jnp.float32, terminated: jnp.bool_) -> Dict:
         """
         Generate metrics of performed step, which is accumulated over steps and passed as output via lax.scan. The
         metrics include at least: episode termination and the collected reward in step. Upon the user's request, this
@@ -399,18 +399,18 @@ class DQNAgentBase(ABC):
         :return: A dictionary of step metrics.
         """
 
+        metric = {
+            "done": terminated,
+            "reward": reward
+        }
+
         if self.config.store_agent:
-            metric = {
-                "done": terminated,
-                "reward": reward,
-                "performance": self.config.get_performance(runner.training.step, runner),
-                "network_params": jax.tree_util.tree_leaves(runner.training.params)
-            }
-        else:
-            metric = {
-                "done": terminated,
-                "reward": reward,
-            }
+            network_params = {"network_params": jax.tree_util.tree_leaves(runner.training.params)}
+            metric.update(network_params)
+
+        if self.config.get_performance is not None:
+            performance_metric = {"performance": self.config.get_performance(runner.training.step, runner)}
+            metric.update(performance_metric)
 
         return metric
 
@@ -681,13 +681,14 @@ class DQNAgentBase(ABC):
 
     """ METHODS FOR POST-PROCESSING """
 
-    def collect_training(self, runner: Runner = None, metrics: Dict = None) -> None:
+    def collect_training(self, runner: Optional[Runner] = None, metrics: Optional[Dict] = None) -> None:
         """
         Collects training of output (the final state of the runner after training and the collected metrics).
         """
 
         self.agent_trained = True
         self.training_runner = runner
+        self.training_metrics = metrics
         self._pp()
 
 

@@ -55,4 +55,5 @@ toolz==0.12.1
 tqdm==4.66.4
 typing_extensions==4.12.0
 tzdata==2024.1
+xarray==2024.5.0
 zipp==3.18.2
