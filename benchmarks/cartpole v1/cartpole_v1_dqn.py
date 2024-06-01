@@ -1,27 +1,21 @@
-import sys
 import os
 import time
 import jax
 import optax
 import gymnax
 import numpy as np
+from jaxagents.agents import dqn
 from cartpole_nn_gallery import *
 import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
-
-sys.path.append(os.path.join(sys.path[2], 'jaxagents', 'agents'))
-try:
-    import dqn
-except:
-    raise
 
 
 if __name__ == '__main__':
 
     env, env_params = gymnax.make("CartPole-v1")
 
-    """Set up transition template, given the state representation in the cartpole environment"""
+    """Set up transition template, given the state representation in the cartpole environment."""
     transition_temp = dqn.Transition(
         state=jnp.zeros((1, 4), dtype=jnp.float32),
         action=jnp.zeros(1, dtype=jnp.int32),
@@ -107,4 +101,4 @@ if __name__ == '__main__':
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Reward [-]", fontsize=14)
     plt.close()
-    fig.savefig(sys.path[0]+r'\figs\DDQN training.png')
+    fig.savefig(os.path.join(os.getcwd(), r'figs\DDQN training.png'))

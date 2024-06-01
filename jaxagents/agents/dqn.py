@@ -24,11 +24,9 @@ References
 
 """
 
-import sys
-import os
+
 import jax
 import jax.numpy as jnp
-import pandas as pd
 from jax import lax
 from jax_tqdm import scan_tqdm
 import optax
@@ -38,6 +36,7 @@ import flashbax as fbx
 import numpy as np
 import xarray as xr
 from flax.core import FrozenDict
+from jaxagents.agent_utils.dqn_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from abc import abstractmethod
@@ -46,14 +45,7 @@ from abc import ABC
 from typing import Tuple, Dict, NamedTuple, Type, Union, Optional, ClassVar
 import warnings
 
-sys.path.append(os.path.join(sys.path[2], 'jaxagents', 'agent_utils'))
-try:
-    from dqn_datastructures import *
-except:
-    raise
-
 warnings.filterwarnings("ignore")
-
 
 HyperParametersType = Union[HyperParameters, CategoricalHyperParameters, QuantileHyperParameters]
 AgentConfigType = Union[AgentConfig, CategoricalAgentConfig, QuantileAgentConfig]
@@ -63,13 +55,21 @@ BufferStateType = fbx.trajectory_buffer.BufferState
 class DQNAgentBase(ABC):
     """
     The base class for Deep Q-Learning agents, which employ different variations of Deep Q-Networks.
+
+    Training relies on jitting several methods by treating the 'self' arg as static. According to suggested practice,
+    this can prove dangerous (https://jax.readthedocs.io/en/latest/faq.html#how-to-use-jit-with-methods -
+    How to use jit with methods?); in case attrs of 'self' change during training, the changes will not be registered in
+    jit. In this case, neither agent training nor evaluation change any 'self' attrs, so using Strategy 2 of the
+    suggested practice is valid. Otherwise, strategy 3 should have been used.
     """
 
     agent_trained: ClassVar[bool] = False  # Whether the agent has been trained.
-    agent_params: ClassVar[Optional[Union[Dict, FrozenDict]]] = None  # Optimal policy network parameters after post-processing.
+    # Optimal policy network parameters after post-processing.
+    agent_params: ClassVar[Optional[Union[Dict, FrozenDict]]] = None
     training_runner: ClassVar[Optional[Runner]] = None  # Runner object after training.
     training_metrics: ClassVar[Optional[Dict]] = None  # Metrics collected during training.
     buffer: ClassVar[Optional[BufferStateType]] = None  # Metrics collected during training.
+
 
     def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfigType) -> None:
         """
