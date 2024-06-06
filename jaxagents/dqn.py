@@ -36,7 +36,7 @@ import flashbax as fbx
 import numpy as np
 import xarray as xr
 from flax.core import FrozenDict
-from jaxagents.agent_utils.dqn_utils import *
+from .agent_utils.dqn_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from abc import abstractmethod
