@@ -30,12 +30,6 @@ if __name__ == '__main__':
         }
     )
 
-    """Set up function for initializing the optimizer"""
-    def optimizer_fn(optimizer_params):
-        return optax.chain(
-            optax.clip_by_global_norm(optimizer_params.grad_clip),
-            optax.rmsprop(learning_rate=optimizer_params.learning_rate, eps=optimizer_params.eps)
-            )
 
     """Define configuration for agent training"""
     config = dqn.AgentConfig(
