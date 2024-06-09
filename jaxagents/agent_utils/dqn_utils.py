@@ -5,12 +5,16 @@ from flax.training.train_state import TrainState
 from flax.core import FrozenDict
 from flax import struct
 from optax._src import base
-import chex
 import flashbax as fbx
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
 from typing import Tuple, Dict, NamedTuple, Callable, Any, Type, Union, Optional
+from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 from dataclasses import dataclass
+dim1 = "dim1"  # Size of state vector
+dim2 = "1"  # 1
+dim3 = "dim3"  # Number of atoms in Categorical DQN agent
+dim4 = "dim4"  # Size of buffer of filled in buffer slots used for generating metrics
 
 
 class TrainStateDQN(TrainState):
@@ -22,19 +26,19 @@ class TrainStateDQN(TrainState):
 class Transition(NamedTuple):
     """Template for step transition"""
     """Environment state"""
-    state: jnp.ndarray
+    state: Float[Array, "dim1"]
 
     """Action selecetd by agent"""
-    action: jnp.ndarray
+    action: Int[Array, "dim2"]
 
     """Collected reward"""
-    reward: jnp.ndarray
+    reward: Float[Array, "dim2"]
 
     """Next environment state"""
-    next_state: jnp.ndarray
+    next_state: Float[Array, "dim1"]
 
     """Boolean variable indicating episode termination"""
-    terminated: jnp.ndarray
+    terminated: Bool[Array, "dim2"]
 
     """Dictionary of additional information about step"""
     info: Dict
@@ -43,23 +47,23 @@ class Transition(NamedTuple):
 class OptimizerParams(NamedTuple):
     """Parameters of the training optimizer"""
     """Learning rate"""
-    learning_rate: Union[jnp.float32, jnp.ndarray] = 1e-3
+    learning_rate: float = 1e-3
 
     """Epsilon of the optimizer"""
-    eps: Union[jnp.float32, jnp.ndarray] = 1e-3
+    eps: float = 1e-3
 
     """Maximum value for gradient clipping"""
-    grad_clip: Union[jnp.float32, jnp.ndarray] = 1.0
+    grad_clip: float = 1.0
 
 
 class HyperParameters(NamedTuple):
     """Training hyperparameters for the DQN and DDQN agents"""
     """Gamma (discount parameter) of Bellman equation"""
-    gamma: Union[jnp.float32, jnp.ndarray]
+    gamma: float
 
     """Hyperparameter for updating the target network. Depending on updating style, it is either the period of updating
     or the rate of the incremental update."""
-    target_update_param: Union[jnp.float32, jnp.ndarray]
+    target_update_param: float
 
     """Optimizer parameters"""
     optimizer_params: OptimizerParams
@@ -72,7 +76,7 @@ class CategoricalHyperParameters(HyperParameters):
 
 class QuantileHyperParameters(HyperParameters):
     """Training hyperparameters for the QRDQN"""
-    huber_K: jnp.float32 = 1.0
+    huber_K: float = 1.0
 
 
 @struct.dataclass
@@ -85,10 +89,10 @@ class Runner:
     env_state: LogEnvState
 
     """State of the environment in array"""
-    state: jnp.ndarray
+    state: Float[Array, "dim1"]
 
     """Random key, required for reproducibility of results and control of randomness"""
-    rng: chex.PRNGKey
+    rng: PRNGKeyArray
 
     """Training buffer"""
     buffer_state: fbx.trajectory_buffer.BufferState
@@ -106,22 +110,22 @@ class EvalRunner:
     env_state: LogEnvState
 
     """State of the environment in array"""
-    state: jnp.ndarray
+    state: Float[Array, "dim1"]
 
     """Random key, required for reproducibility of results and control of randomness"""
-    rng: chex.PRNGKey
+    rng: PRNGKeyArray
 
 
 class AgentConfig(NamedTuple):
     """Configuration of the DQN and DDQN agents, passed at initialization of instance."""
     """Number of training steps (not episodes)"""
-    n_steps: jnp.int32
+    n_steps: int
 
     """Size of the training buffer"""
-    buffer_size: jnp.int32
+    buffer_size: int
 
     """Size of batch collected from buffer for updating the policy network"""
-    batch_size: jnp.int32
+    batch_size: int
 
     """The arcitecture of the policy (and target) network"""
     q_network: Type[flax.linen.Module]
@@ -138,11 +142,11 @@ class AgentConfig(NamedTuple):
     loss_fn: Optional[Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray]] = None
 
     """Optional function for assessing the agent's performance during training."""
-    get_performance: Optional[Callable[[jnp.int32, Runner], Any]] = None
+    get_performance: Optional[Callable[[int, Runner], Any]] = None
 
     """Optional function for defining the selection of random actions by the agent. This can be used to avoid illegal 
     actions and penalizing in the environment."""
-    act_randomly: Callable[[jax.Array, jnp.ndarray, jnp.int32], jnp.int32] =\
+    act_randomly: Callable[[jax.Array, jnp.ndarray, int], int] =\
         lambda rng, state, n_actions: jax.random.choice(rng, jnp.arange(n_actions))
 
     """Type of the training buffer"""
@@ -165,16 +169,16 @@ class CategoricalAgentConfig(AgentConfig):
     """Configuration of the Categorical DQN agent, passed at initialization of instance."""
     """Atoms in an array. Passing this argument instead of the minimum and maximum values can increase the flexibility
     of applying the agent."""
-    atoms: jnp.ndarray
+    atoms: Float[Array, "dim3"]
 
     """Difference between atoms"""
-    delta_atoms: jnp.ndarray
+    delta_atoms: Float[Array, "dim3"]
 
 
 class QuantileAgentConfig(AgentConfig):
     """Configuration of the QRDQN agent, passed at initialization of instance."""
     """Number of quantiles"""
-    n_qunatiles: jnp.int32 = 21
+    n_qunatiles: int = 21
 
 
 @dataclass
@@ -184,25 +188,25 @@ class MetricStats:
     training or evaluation).
     """
     """Metric per episode"""
-    episode_metric: Union[np.ndarray, jnp.ndarray]
+    episode_metric: Union[np.ndarray, Float[Array, "dim4"]]
 
     """Sample average"""
-    mean: Union[np.float32, jnp.float32]
+    mean: Union[np.float32, Float[Array, "dim4"]]
 
     """Sample variance"""
-    var: Union[np.float32, jnp.float32]
+    var: Union[np.float32, Float[Array, "dim4"]]
 
     """Sample standard deviation"""
-    std: Union[np.float32, jnp.float32]
+    std: Union[np.float32, Float[Array, "dim4"]]
 
     """Sample minimum"""
-    min: Union[np.float32, jnp.float32]
+    min: Union[np.float32, Float[Array, "dim4"]]
 
     """Sample maximum"""
-    max: Union[np.float32, jnp.float32]
+    max: Union[np.float32, Float[Array, "dim4"]]
 
     """Sample median"""
-    median: Union[np.float32, jnp.float32]
+    median: Union[np.float32, Float[Array, "dim4"]]
 
     """Whether the sample contains nan values"""
-    has_nans: Union[np.bool_, jnp.bool_]
+    has_nans: Union[np.bool_, Bool[Array, "dim4"]]
