@@ -50,9 +50,6 @@ warnings.filterwarnings("ignore")
 HyperParametersType = Union[HyperParameters, CategoricalHyperParameters, QuantileHyperParameters]
 AgentConfigType = Union[AgentConfig, CategoricalAgentConfig, QuantileAgentConfig]
 BufferStateType = fbx.trajectory_buffer.BufferState
-dim1 = "dim1"  # Size of state vector
-dim2 = "1"  # 1
-dim3 = dim1  # Batch size
 
 
 class DQNAgentBase(ABC):
@@ -215,7 +212,7 @@ class DQNAgentBase(ABC):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, Float[Array, dim1], Type[LogEnvState]]:
+    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, Float[Array, "state_size"], Type[LogEnvState]]:
         """
         Environment reset.
         :param rng: Random key for initialization.
@@ -228,8 +225,8 @@ class DQNAgentBase(ABC):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _env_step(self, rng: PRNGKeyArray, env_state: Type[NamedTuple], action: Int[Array, dim2]) ->\
-        Tuple[PRNGKeyArray, Float[Array, dim1], Type[LogEnvState], Float[Array, dim2], Bool[Array, dim2], Dict]:
+    def _env_step(self, rng: PRNGKeyArray, env_state: Type[NamedTuple], action: Int[Array, "1"]) ->\
+        Tuple[PRNGKeyArray, Float[Array, "state_size"], Type[LogEnvState], Float[Array, "1"], Bool[Array, "1"], Dict]:
         """
         Environment step.
         :param rng: Random key for initialization.
@@ -251,11 +248,11 @@ class DQNAgentBase(ABC):
 
     @partial(jax.jit, static_argnums=(0,))
     def _make_transition(self,
-                         state: Float[Array, dim1],
-                         action: Int[Array, dim2],
-                         reward: Float[Array, dim2],
-                         next_state: Float[Array, dim1],
-                         terminated: Bool[Array, dim2],
+                         state: Float[Array, "state_size"],
+                         action: Int[Array, "1"],
+                         reward: Float[Array, "1"],
+                         next_state: Float[Array, "state_size"],
+                         terminated: Bool[Array, "1"],
                          info: Dict) -> Transition:
         """
         Creates a transition object based on the input and output of an episode step.
@@ -294,8 +291,8 @@ class DQNAgentBase(ABC):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _select_action(self, rng: PRNGKeyArray, state: Float[Array, dim1], training: TrainStateDQN,
-                       i_step: int) -> Tuple[PRNGKeyArray, Int[Array, dim2]]:
+    def _select_action(self, rng: PRNGKeyArray, state: Float[Array, "state_size"], training: TrainStateDQN,
+                       i_step: int) -> Tuple[PRNGKeyArray, Int[Array, "1"]]:
         """
         The agent selects an action to be executed using an epsilon-greedy policy. The value of epsilon is defined by
         the "get_epsilon" method, which is based on user input, so that different epsilon-decay function can be used.
@@ -421,7 +418,7 @@ class DQNAgentBase(ABC):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _generate_metrics(self, runner: Runner, reward: Float[Array, dim2], terminated: Bool[Array, dim2]) -> Dict:
+    def _generate_metrics(self, runner: Runner, reward: Float[Array, "1"], terminated: Bool[Array, "1"]) -> Dict:
         """
         Generate metrics of performed step, which is accumulated over steps and passed as output via lax.scan. The
         metrics include at least: episode termination and the collected reward in step. Upon the user's request, this
@@ -549,7 +546,7 @@ class DQNAgentBase(ABC):
 
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
-    def _q(self, params: Dict, state: Float[Array, dim1]) -> Float[Array, dim3]:
+    def _q(self, params: Dict, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
         """
         Placeholder for agent-specific method for calculating the state-action (Q) values for a state using the policy
         network.
@@ -562,8 +559,8 @@ class DQNAgentBase(ABC):
 
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
-    def _q_state_action(self, params: Dict, state: Float[Array, dim1], action: Int[Array, dim2])\
-            -> Float[Array, dim3]:
+    def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
+            -> Float[Array, "batch_size"]:
         """
         Place holder for agent-specific method for calculating the state-action (Q) value for a state and a selected
         action using the policy network.
@@ -580,10 +577,10 @@ class DQNAgentBase(ABC):
     def _q_target(self,
                   params: Dict,
                   target_params: Dict,
-                  next_state: Float[Array, dim1],
-                  reward: Float[Array, dim2],
-                  terminated: Bool[Array, dim2],
-                  gamma: float) -> Float[Array, dim3]:
+                  next_state: Float[Array, "state_size"],
+                  reward: Float[Array, "1"],
+                  terminated: Bool[Array, "1"],
+                  gamma: float) -> Float[Array, "batch_size"]:
         """
         Place holder for agent-specific method for calculating the target state-action (Q) value for the next state of
         an episode step.
@@ -603,12 +600,12 @@ class DQNAgentBase(ABC):
     def _loss(self,
               params: Dict,
               target_params: Dict,
-              current_state: Float[Array, dim1],
-              action: Int[Array, dim2],
-              reward: Float[Array, dim2],
-              next_state: Float[Array, dim1],
-              terminated: Bool[Array, dim2],
-              hyperparams: HyperParametersType) -> Float[Array, dim3]:
+              current_state: Float[Array, "state_size"],
+              action: Int[Array, "1"],
+              reward: Float[Array, "1"],
+              next_state: Float[Array, "state_size"],
+              terminated: Bool[Array, "1"],
+              hyperparams: HyperParametersType) -> Float[Array, "batch_size"]:
         """
         Place holder for agent-specific method for calculating the training loss of the policy network.
         :param params: Parameter of the policy network.
@@ -630,7 +627,7 @@ class DQNAgentBase(ABC):
     """ METHODS FOR APPLYING AGENT"""
 
     @partial(jax.jit, static_argnums=(0,))
-    def q(self, state: Float[Array, dim1]) -> Float[Array, dim3]:
+    def q(self, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
         """
         Calculates the state-action (Q) values for a state using the policy network parameters defined as optimal in
         post-processing (by the parent class).
@@ -645,7 +642,7 @@ class DQNAgentBase(ABC):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def policy(self, state: Float[Array, dim1]) -> Float[Array, dim3]:
+    def policy(self, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
         """
         Calculates the action of the optimal policy for a state using the policy network parameters defined as optimal
         in post-processing (by the parent class).
@@ -842,7 +839,7 @@ class DQN_Agent(DQNAgentBase):
     """
 
     @partial(jax.jit, static_argnums=(0,))
-    def _q(self, params: Dict, state: Float[Array, dim1]) -> Float[Array, dim3]:
+    def _q(self, params: Dict, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
         """
         Calculation of the state-action (Q) values for a state using the policy network for the DQN agent.
         :param params: Parameter of the policy network.
@@ -855,8 +852,8 @@ class DQN_Agent(DQNAgentBase):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _q_state_action(self, params: Dict, state: Float[Array, dim1], action: Int[Array, dim2])\
-            -> Float[Array, dim3]:
+    def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
+            -> Float[Array, "batch_size"]:
         """
         Calculation of the state-action (Q) value for a state and a selected action using the policy network  for the
         DQN agent.
@@ -876,10 +873,10 @@ class DQN_Agent(DQNAgentBase):
     def _q_target(self,
                   params: Dict,
                   target_params: Dict,
-                  next_state: Float[Array, dim1],
-                  reward: Float[Array, dim2],
-                  terminated: Bool[Array, dim2],
-                  gamma: float) -> Float[Array, dim3]:
+                  next_state: Float[Array, "state_size"],
+                  reward: Float[Array, "1"],
+                  terminated: Bool[Array, "1"],
+                  gamma: float) -> Float[Array, "batch_size"]:
         """
         Calculation of the target state-action (Q) value for the next state of an episode step for the DQN agent.
         .. math::
@@ -902,12 +899,12 @@ class DQN_Agent(DQNAgentBase):
     def _loss(self,
               params: Dict,
               target_params: Dict,
-              current_state: Float[Array, dim1],
-              action: Int[Array, dim2],
-              reward: Float[Array, dim2],
-              next_state: Float[Array, dim1],
-              terminated: Bool[Array, dim2],
-              hyperparams: HyperParametersType) -> Float[Array, dim3]:
+              current_state: Float[Array, "state_size"],
+              action: Int[Array, "1"],
+              reward: Float[Array, "1"],
+              next_state: Float[Array, "state_size"],
+              terminated: Bool[Array, "1"],
+              hyperparams: HyperParametersType) -> Float[Array, "batch_size"]:
         """
         Calculation of the training loss of the policy network for the DQN agent.
         Based on equation 2 of [1].
@@ -936,7 +933,7 @@ class DDQN_Agent(DQNAgentBase):
     """
 
     @partial(jax.jit, static_argnums=(0,))
-    def _q(self, params: Dict, state: Float[Array, dim1]) -> Float[Array, dim3]:
+    def _q(self, params: Dict, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
         """
         DDQN calculation of the state-action (Q) values for a state using the policy network.
         :param params: Parameter of the policy network.
@@ -949,8 +946,8 @@ class DDQN_Agent(DQNAgentBase):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _q_state_action(self, params: Dict, state: Float[Array, dim1], action: Int[Array, dim2])\
-            -> Float[Array, dim3]:
+    def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
+            -> Float[Array, "batch_size"]:
         """
         Calculation of the state-action (Q) value for a state and a selected action using the policy network  for the
         DDQN agent.
@@ -970,10 +967,10 @@ class DDQN_Agent(DQNAgentBase):
     def _q_target(self,
                   params: Dict,
                   target_params: Dict,
-                  next_state: Float[Array, dim1],
-                  reward: Float[Array, dim2],
-                  terminated: Bool[Array, dim2],
-                  gamma: float) -> Float[Array, dim3]:
+                  next_state: Float[Array, "state_size"],
+                  reward: Float[Array, "1"],
+                  terminated: Bool[Array, "1"],
+                  gamma: float) -> Float[Array, "batch_size"]:
         """
         Calculation of the target state-action (Q) value for the next state of an episode step for the DDQN agent.
         .. math::
@@ -1003,12 +1000,12 @@ class DDQN_Agent(DQNAgentBase):
     def _loss(self,
               params: Dict,
               target_params: Dict,
-              current_state: Float[Array, dim1],
-              action: Int[Array, dim2],
-              reward: Float[Array, dim2],
-              next_state: Float[Array, dim1],
-              terminated: Bool[Array, dim2],
-              hyperparams: HyperParametersType) -> Float[Array, dim3]:
+              current_state: Float[Array, "state_size"],
+              action: Int[Array, "1"],
+              reward: Float[Array, "1"],
+              next_state: Float[Array, "state_size"],
+              terminated: Bool[Array, "1"],
+              hyperparams: HyperParametersType) -> Float[Array, "batch_size"]:
         """
         Calculation of the training loss of the policy network for the DDQN agent.
         Based on equation 2 of [1] (which is the loss of the DQN paper).
@@ -1037,7 +1034,7 @@ class CategoricalDQN_Agent(DQNAgentBase):
     """
 
     @partial(jax.jit, static_argnums=(0,))
-    def _p(self, params: dict, state: Float[Array, dim1]) -> Float[Array, dim3]:
+    def _p(self, params: dict, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
         """
         Calculation of the probability change per atom for a state using the policy network for the Categorical DQN
         agent. This probability can be used to derive the state-action (Q) values.
@@ -1052,7 +1049,7 @@ class CategoricalDQN_Agent(DQNAgentBase):
         return p
 
     @partial(jax.jit, static_argnums=(0,))
-    def _q_from_p(self, p: Float[Array, dim3]) -> Float[Array, dim3]:
+    def _q_from_p(self, p: Float[Array, "batch_size"]) -> Float[Array, "batch_size"]:
         """
         Calculates the state-action (Q) value given the probability change at atoms.
         :param p: Probability change at atoms.
@@ -1062,7 +1059,7 @@ class CategoricalDQN_Agent(DQNAgentBase):
         return jnp.dot(p, self.config.atoms)
 
     @partial(jax.jit, static_argnums=(0,))
-    def _q(self, params: dict, state: Float[Array, dim1]) -> Float[Array, dim3]:
+    def _q(self, params: dict, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
         """
         Calculation of the state-action (Q) values for a state using the policy network for the Categorical DQN agent.
         (Implemented as in the second line of Algorithm 1 of [3])
@@ -1077,8 +1074,8 @@ class CategoricalDQN_Agent(DQNAgentBase):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _q_state_action(self, params: Dict, state: Float[Array, dim1], action: Int[Array, dim2])\
-            -> Float[Array, dim3]:
+    def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
+            -> Float[Array, "batch_size"]:
         """
         Calculation of the state-action (Q) value for a state and a selected action using the policy network  for the
         Categorical DQN agent.
@@ -1098,10 +1095,10 @@ class CategoricalDQN_Agent(DQNAgentBase):
     def _q_target(self,
                   params: Dict,
                   target_params: Dict,
-                  next_state: Float[Array, dim1],
-                  reward: Float[Array, dim2],
-                  terminated: Bool[Array, dim2],
-                  gamma: float) -> Float[Array, dim3]:
+                  next_state: Float[Array, "state_size"],
+                  reward: Float[Array, "1"],
+                  terminated: Bool[Array, "1"],
+                  gamma: float) -> Float[Array, "batch_size"]:
         """
         Calculation of the target state-action (Q) value for the next state of an episode step for the Categorical DQN
         agent. Based on equation 7 of [3].)
@@ -1146,7 +1143,7 @@ class CategoricalDQN_Agent(DQNAgentBase):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _cross_entropy(self, target: jnp.array, logit_p: jnp.array) -> Float[Array, dim3]:
+    def _cross_entropy(self, target: jnp.array, logit_p: jnp.array) -> Float[Array, "batch_size"]:
         """
         Cross-entropy loss for estimation of the KL divergence, which is the training loss of the Categorical DQN agent.
         :param target: Assessment of the target state-action (Q) values using the episode rewards and the target network
@@ -1161,12 +1158,12 @@ class CategoricalDQN_Agent(DQNAgentBase):
     def _loss(self,
               params: Dict,
               target_params: Dict,
-              current_state: Float[Array, dim1],
-              action: Int[Array, dim2],
-              reward: Float[Array, dim2],
-              next_state: Float[Array, dim1],
-              terminated: Bool[Array, dim2],
-              hyperparams: HyperParametersType) -> Float[Array, dim3]:
+              current_state: Float[Array, "state_size"],
+              action: Int[Array, "1"],
+              reward: Float[Array, "1"],
+              next_state: Float[Array, "state_size"],
+              terminated: Bool[Array, "1"],
+              hyperparams: HyperParametersType) -> Float[Array, "batch_size"]:
         """
         Calculation of the training loss of the policy network for the Categorical DQN agent. It is the KL divergence
         (in this case equivalent to the cross-entropy loss) between the target and the policy networks estimates.
@@ -1195,7 +1192,7 @@ class QRDDQN_Agent(DQNAgentBase):
     """
 
     @partial(jax.jit, static_argnums=(0,))
-    def _q(self, params: Dict, state: Float[Array, dim1]) -> Float[Array, dim3]:
+    def _q(self, params: Dict, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
         """
         Calculation of the state-action (Q) values for a state using the policy network for the QRDDQN agent.
         (Implemented as in the fourth line of Algorithm 1 of [4])
@@ -1209,8 +1206,8 @@ class QRDDQN_Agent(DQNAgentBase):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _q_state_action(self, params: Dict, state: Float[Array, dim1], action: Int[Array, dim2])\
-            -> Float[Array, dim3]:
+    def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
+            -> Float[Array, "batch_size"]:
         """
         Calculation of the state-action (Q) value for a state and a selected action using the policy network  for the
         QRDQN agent.
@@ -1230,10 +1227,10 @@ class QRDDQN_Agent(DQNAgentBase):
     def _q_target(self,
                   params: Dict,
                   target_params: Dict,
-                  next_state: Float[Array, dim1],
-                  reward: Float[Array, dim2],
-                  terminated: Bool[Array, dim2],
-                  gamma: float) -> Float[Array, dim3]:
+                  next_state: Float[Array, "state_size"],
+                  reward: Float[Array, "1"],
+                  terminated: Bool[Array, "1"],
+                  gamma: float) -> Float[Array, "batch_size"]:
         """
         Calculation of the target state-action (Q) value for the next state of an episode step for the QRDQN agent.
         Based on equation 13 of [4].)
@@ -1257,7 +1254,7 @@ class QRDDQN_Agent(DQNAgentBase):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _huber_loss(self, q: jnp.array, target: jnp.array, huber_K) -> Float[Array, dim3]:
+    def _huber_loss(self, q: jnp.array, target: jnp.array, huber_K) -> Float[Array, "batch_size"]:
         """
         Calculation of the Huber loss function, according to equation 9 of [4]. The loss function is controlled by the
         hyperparameter "huber_K", which is passed via QuantileHyperParameters during training. As a result, several
@@ -1291,12 +1288,12 @@ class QRDDQN_Agent(DQNAgentBase):
     def _loss(self,
               params: Dict,
               target_params: Dict,
-              current_state: Float[Array, dim1],
-              action: Int[Array, dim2],
-              reward: Float[Array, dim2],
-              next_state: Float[Array, dim1],
-              terminated: Bool[Array, dim2],
-              hyperparams: HyperParametersType) -> Float[Array, dim3]:
+              current_state: Float[Array, "state_size"],
+              action: Int[Array, "1"],
+              reward: Float[Array, "1"],
+              next_state: Float[Array, "state_size"],
+              terminated: Bool[Array, "1"],
+              hyperparams: HyperParametersType) -> Float[Array, "batch_size"]:
         """
         Calculation of the training loss of the policy network for the QRDQN agent.
         Based on equation 10 of [4].

@@ -11,10 +11,6 @@ from gymnax.wrappers.purerl import LogEnvState
 from typing import Tuple, Dict, NamedTuple, Callable, Any, Type, Union, Optional
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 from dataclasses import dataclass
-dim1 = "dim1"  # Size of state vector
-dim2 = "1"  # 1
-dim3 = "dim3"  # Number of atoms in Categorical DQN agent
-dim4 = "dim4"  # Size of buffer of filled in buffer slots used for generating metrics
 
 
 class TrainStateDQN(TrainState):
@@ -26,19 +22,19 @@ class TrainStateDQN(TrainState):
 class Transition(NamedTuple):
     """Template for step transition"""
     """Environment state"""
-    state: Float[Array, "dim1"]
+    state: Float[Array, "state_size"]
 
     """Action selecetd by agent"""
-    action: Int[Array, "dim2"]
+    action: Int[Array, "1"]
 
     """Collected reward"""
-    reward: Float[Array, "dim2"]
+    reward: Float[Array, "1"]
 
     """Next environment state"""
-    next_state: Float[Array, "dim1"]
+    next_state: Float[Array, "state_size"]
 
     """Boolean variable indicating episode termination"""
-    terminated: Bool[Array, "dim2"]
+    terminated: Bool[Array, "1"]
 
     """Dictionary of additional information about step"""
     info: Dict
@@ -89,7 +85,7 @@ class Runner:
     env_state: LogEnvState
 
     """State of the environment in array"""
-    state: Float[Array, "dim1"]
+    state: Float[Array, "state_size"]
 
     """Random key, required for reproducibility of results and control of randomness"""
     rng: PRNGKeyArray
@@ -110,7 +106,7 @@ class EvalRunner:
     env_state: LogEnvState
 
     """State of the environment in array"""
-    state: Float[Array, "dim1"]
+    state: Float[Array, "state_size"]
 
     """Random key, required for reproducibility of results and control of randomness"""
     rng: PRNGKeyArray
@@ -169,10 +165,10 @@ class CategoricalAgentConfig(AgentConfig):
     """Configuration of the Categorical DQN agent, passed at initialization of instance."""
     """Atoms in an array. Passing this argument instead of the minimum and maximum values can increase the flexibility
     of applying the agent."""
-    atoms: Float[Array, "dim3"]
+    atoms: Float[Array, "n_atoms"]
 
     """Difference between atoms"""
-    delta_atoms: Float[Array, "dim3"]
+    delta_atoms: Float[Array, "n_atoms"]
 
 
 class QuantileAgentConfig(AgentConfig):
@@ -188,25 +184,25 @@ class MetricStats:
     training or evaluation).
     """
     """Metric per episode"""
-    episode_metric: Union[np.ndarray, Float[Array, "dim4"]]
+    episode_metric: Union[np.ndarray, Float[Array, "size_metrics"]]
 
     """Sample average"""
-    mean: Union[np.float32, Float[Array, "dim4"]]
+    mean: Union[np.float32, Float[Array, "size_metrics"]]
 
     """Sample variance"""
-    var: Union[np.float32, Float[Array, "dim4"]]
+    var: Union[np.float32, Float[Array, "size_metrics"]]
 
     """Sample standard deviation"""
-    std: Union[np.float32, Float[Array, "dim4"]]
+    std: Union[np.float32, Float[Array, "size_metrics"]]
 
     """Sample minimum"""
-    min: Union[np.float32, Float[Array, "dim4"]]
+    min: Union[np.float32, Float[Array, "size_metrics"]]
 
     """Sample maximum"""
-    max: Union[np.float32, Float[Array, "dim4"]]
+    max: Union[np.float32, Float[Array, "size_metrics"]]
 
     """Sample median"""
-    median: Union[np.float32, Float[Array, "dim4"]]
+    median: Union[np.float32, Float[Array, "size_metrics"]]
 
     """Whether the sample contains nan values"""
-    has_nans: Union[np.bool_, Bool[Array, "dim4"]]
+    has_nans: Union[np.bool_, Bool[Array, "size_metrics"]]
