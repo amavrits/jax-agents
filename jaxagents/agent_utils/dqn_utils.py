@@ -135,14 +135,14 @@ class AgentConfig(NamedTuple):
     optimizer: Optional[base.GradientTransformation] = None
 
     """Type of loss function, not required for the Categorical DQN and QRDQN agents."""
-    loss_fn: Optional[Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray]] = None
+    loss_fn: Optional[Callable[[Float[Array, "batch_size"], Float[Array, "batch_size"]], Float[Array, "1"]]] = None
 
     """Optional function for assessing the agent's performance during training."""
     get_performance: Optional[Callable[[int, Runner], Any]] = None
 
     """Optional function for defining the selection of random actions by the agent. This can be used to avoid illegal 
     actions and penalizing in the environment."""
-    act_randomly: Callable[[jax.Array, jnp.ndarray, int], int] =\
+    act_randomly: Callable[[PRNGKeyArray, Float[Array, "state_size"], int], int] =\
         lambda rng, state, n_actions: jax.random.choice(rng, jnp.arange(n_actions))
 
     """Type of the training buffer"""
@@ -158,7 +158,7 @@ class AgentConfig(NamedTuple):
     epsilon_params: Tuple = (0.9, 0.05, 50_000)
 
     """Whether the parameters and the performance of the agent should be stored during training."""
-    store_agent: jnp.bool_ = False
+    store_agent: bool = False
 
 
 class CategoricalAgentConfig(AgentConfig):
@@ -184,7 +184,7 @@ class MetricStats:
     training or evaluation).
     """
     """Metric per episode"""
-    episode_metric: Union[np.ndarray, Float[Array, "size_metrics"]]
+    episode_metric: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample average"""
     mean: Union[np.float32, Float[Array, "size_metrics"]]

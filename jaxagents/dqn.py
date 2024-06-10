@@ -70,7 +70,6 @@ class DQNAgentBase(ABC):
     training_metrics: ClassVar[Optional[Dict]] = None  # Metrics collected during training.
     buffer: ClassVar[Optional[BufferStateType]] = None  # Metrics collected during training.
 
-
     def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfigType) -> None:
         """
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
@@ -83,7 +82,6 @@ class DQNAgentBase(ABC):
         self.config = config
         self._init_env(env, env_params)
         self._init_eps_fn(self.config.epsilon_fn_style, self.config.epsilon_params)
-
 
     def __str__(self) -> str:
         """
@@ -114,7 +112,6 @@ class DQNAgentBase(ABC):
         else:
             raise Exception("Unknown epsilon function.")
 
-
     def _init_env(self, env: Type[Environment], env_params: EnvParams) -> None:
         """
         Environment initialization.
@@ -127,7 +124,6 @@ class DQNAgentBase(ABC):
         self.env = LogWrapper(env)
         self.env_params = env_params
         self.n_actions = self.env.action_space(self.env_params).n
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _init_buffer(self) -> BufferStateType:
@@ -152,7 +148,6 @@ class DQNAgentBase(ABC):
         buffer_state = self.buffer_fn.init(self.config.transition_template)
 
         return buffer_state
-
 
     def _init_optimizer(self, optimizer_params: OptimizerParams) -> optax.chain:
         """
@@ -195,7 +190,6 @@ class DQNAgentBase(ABC):
 
         return tx
 
-
     @partial(jax.jit, static_argnums=(0,))
     def _init_q_network(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, Union[Dict, FrozenDict]]:
         """
@@ -210,7 +204,6 @@ class DQNAgentBase(ABC):
         network_params = self.q_network.init(network_init_rng, init_x)
         return rng, network_params
 
-
     @partial(jax.jit, static_argnums=(0,))
     def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, Float[Array, "state_size"], Type[LogEnvState]]:
         """
@@ -222,7 +215,6 @@ class DQNAgentBase(ABC):
         rng, reset_rng = jax.random.split(rng)
         state, env_state = self.env.reset(reset_rng, self.env_params)
         return rng, state, env_state
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _env_step(self, rng: PRNGKeyArray, env_state: Type[NamedTuple], action: Int[Array, "1"]) ->\
@@ -276,7 +268,6 @@ class DQNAgentBase(ABC):
 
         return transition
 
-
     @partial(jax.jit, static_argnums=(0,))
     def _store_transition(self, buffer_state: BufferStateType, transition: Transition)\
             -> BufferStateType:
@@ -288,7 +279,6 @@ class DQNAgentBase(ABC):
         """
 
         return self.buffer_fn.add(buffer_state, transition)
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _select_action(self, rng: PRNGKeyArray, state: Float[Array, "state_size"], training: TrainStateDQN,
@@ -322,7 +312,6 @@ class DQNAgentBase(ABC):
         action = jnp.where(exploitation, policy_action, random_action)
 
         return rng, action
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _update_target_network(self, runner: Runner) -> Runner:
@@ -363,7 +352,6 @@ class DQNAgentBase(ABC):
 
         return runner
 
-
     @partial(jax.jit, static_argnums=(0))
     def _fake_update_network(self, runner: Runner) -> Runner:
         """
@@ -374,7 +362,6 @@ class DQNAgentBase(ABC):
         """
 
         return runner
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _step(self, runner: Runner, i_step: int) -> Tuple[Runner, Dict]:
@@ -416,7 +403,6 @@ class DQNAgentBase(ABC):
 
         return runner, metric
 
-
     @partial(jax.jit, static_argnums=(0,))
     def _generate_metrics(self, runner: Runner, reward: Float[Array, "1"], terminated: Bool[Array, "1"]) -> Dict:
         """
@@ -446,7 +432,6 @@ class DQNAgentBase(ABC):
 
         return metric
 
-
     @partial(jax.jit, static_argnums=(0,))
     def _sample_batch(self, rng: PRNGKeyArray, buffer_state: BufferStateType)\
             -> Tuple[PRNGKeyArray, fbx.trajectory_buffer.BufferSample]:
@@ -463,7 +448,6 @@ class DQNAgentBase(ABC):
         batch = self.buffer_fn.sample(buffer_state, batch_sample_rng)
         batch = batch.experience
         return rng, batch
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _update_q_network(self, runner: Runner) -> Runner:
@@ -504,7 +488,6 @@ class DQNAgentBase(ABC):
         runner = runner.replace(rng=rng, training=training)
 
         return runner
-
 
     @jax.block_until_ready
     @partial(jax.jit, static_argnums=(0,))
@@ -640,7 +623,6 @@ class DQNAgentBase(ABC):
         else:
             return self._q(self.agent_params, state)
 
-
     @partial(jax.jit, static_argnums=(0,))
     def policy(self, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
         """
@@ -686,7 +668,6 @@ class DQNAgentBase(ABC):
 
         return runner, metric
 
-
     def eval(self, rng: PRNGKeyArray, n_evals: int = 1e5) -> Dict:
         """
         Evaluates the trained agent's performance in the training environment. So, the performance of the agent can be
@@ -724,7 +705,6 @@ class DQNAgentBase(ABC):
         self.training_metrics = metrics
         self._pp()
 
-
     def _pp(self) -> None:
         """
         Post-processes the training results,, which includes:
@@ -735,7 +715,6 @@ class DQNAgentBase(ABC):
 
         self.agent_params = self.training_runner.training.params
         self.buffer = self.training_runner.buffer_state
-
 
     def export_buffer(self) -> xr.DataArray:
         """
@@ -787,9 +766,8 @@ class DQNAgentBase(ABC):
 
         return x
 
-
     @staticmethod
-    def _summary_stats(episode_metric: np.ndarray) -> MetricStats:
+    def _summary_stats(episode_metric: np.ndarray["size_metrics", float]) -> MetricStats:
         """
         Summarizes statistics for sample of episode metric (to be used for training or evaluation).
         :param episode_metric: Metric collected in training or evaluation adjusted for each episode.
@@ -807,7 +785,8 @@ class DQNAgentBase(ABC):
             has_nans=np.any(np.isnan(episode_metric)),
         )
 
-    def summarize(self, dones: Union[np.ndarray, Bool[Array, "dim5"]], metric: Union[np.ndarray, Float[Array, "dim5"]])\
+    def summarize(self, dones: Union[np.ndarray["size_metrics", bool], Bool[Array, "dim5"]],
+                        metric: Union[np.ndarray["size_metrics", float], Float[Array, "dim5"]])\
             -> MetricStats:
         """
         Adjusts metric per episode and summarizes (to be used for training or evaluation).
@@ -850,7 +829,6 @@ class DQN_Agent(DQNAgentBase):
         q_state = self.q_network.apply(params, state)
         return q_state
 
-
     @partial(jax.jit, static_argnums=(0,))
     def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
             -> Float[Array, "batch_size"]:
@@ -867,7 +845,6 @@ class DQN_Agent(DQNAgentBase):
         q_state = self._q(params, state)
         q_state_action = jnp.sum(q_state * action_batch_one_hot, axis=1)
         return q_state_action
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _q_target(self,
@@ -893,7 +870,6 @@ class DQN_Agent(DQNAgentBase):
         q_target_next_state = self._q(lax.stop_gradient(target_params), next_state)
         q_target = reward.squeeze() + gamma * jnp.max(q_target_next_state, axis=1).squeeze() * jnp.logical_not(terminated.squeeze())
         return q_target
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _loss(self,
@@ -944,7 +920,6 @@ class DDQN_Agent(DQNAgentBase):
         q_state = self.q_network.apply(params, state)
         return q_state
 
-
     @partial(jax.jit, static_argnums=(0,))
     def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
             -> Float[Array, "batch_size"]:
@@ -961,7 +936,6 @@ class DDQN_Agent(DQNAgentBase):
         q_state = self._q(params, state)
         q_state_action = jnp.sum(q_state * action_batch_one_hot, axis=1)
         return q_state_action
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _q_target(self,
@@ -994,7 +968,6 @@ class DDQN_Agent(DQNAgentBase):
             axis=-1).squeeze()
         q_target = reward.squeeze() + gamma * q_target_next_state * jnp.logical_not(terminated.squeeze())
         return q_target
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _loss(self,
@@ -1072,7 +1045,6 @@ class CategoricalDQN_Agent(DQNAgentBase):
         q_state = self._q_from_p(p_state)
         return q_state
 
-
     @partial(jax.jit, static_argnums=(0,))
     def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
             -> Float[Array, "batch_size"]:
@@ -1089,7 +1061,6 @@ class CategoricalDQN_Agent(DQNAgentBase):
         logit_p_state = self.q_network.apply(params, state)
         logit_p_action_state = jnp.sum(logit_p_state * action_batch_one_hot[..., jnp.newaxis], axis=1)
         return logit_p_action_state
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _q_target(self,
@@ -1141,7 +1112,6 @@ class CategoricalDQN_Agent(DQNAgentBase):
 
         return target
 
-
     @partial(jax.jit, static_argnums=(0,))
     def _cross_entropy(self, target: jnp.array, logit_p: jnp.array) -> Float[Array, "batch_size"]:
         """
@@ -1152,7 +1122,6 @@ class CategoricalDQN_Agent(DQNAgentBase):
         :return: Estimate of the cross-entropy loss.
         """
         return distrax.Categorical(probs=target).cross_entropy(distrax.Categorical(logits=logit_p))
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _loss(self,
@@ -1204,7 +1173,6 @@ class QRDDQN_Agent(DQNAgentBase):
         q_state = self.q_network.apply(params, state).mean(axis=-1)
         return q_state
 
-
     @partial(jax.jit, static_argnums=(0,))
     def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
             -> Float[Array, "batch_size"]:
@@ -1221,7 +1189,6 @@ class QRDDQN_Agent(DQNAgentBase):
         q_state = self.q_network.apply(params, state)
         q_state_action = jnp.sum(q_state * action_batch_one_hot[..., jnp.newaxis], axis=1)
         return q_state_action
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _q_target(self,
@@ -1252,7 +1219,6 @@ class QRDDQN_Agent(DQNAgentBase):
 
         return target
 
-
     @partial(jax.jit, static_argnums=(0,))
     def _huber_loss(self, q: jnp.array, target: jnp.array, huber_K) -> Float[Array, "batch_size"]:
         """
@@ -1282,7 +1248,6 @@ class QRDDQN_Agent(DQNAgentBase):
             0
         )
         return jnp.sum(jnp.mean(quantile_huber_loss, 1), 0)
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _loss(self,
