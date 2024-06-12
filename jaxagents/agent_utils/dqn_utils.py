@@ -132,7 +132,7 @@ class AgentConfig(NamedTuple):
     """Optax optimizer to be used in training. Giving only the optimizer class allows for initializing within the 
     self.train method and eventually running multiple combinations of the optimizer parameters via jax.vmap.
     """
-    optimizer: Optional[base.GradientTransformation] = None
+    optimizer: Callable[[Dict], Optional[base.GradientTransformation]]
 
     """Type of loss function, not required for the Categorical DQN and QRDQN agents."""
     loss_fn: Optional[Callable[[Float[Array, "batch_size"], Float[Array, "batch_size"]], Float[Array, "1"]]] = None

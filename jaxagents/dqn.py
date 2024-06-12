@@ -32,7 +32,6 @@ from jax_tqdm import scan_tqdm
 import optax
 import distrax
 import flashbax as fbx
-import numpy as np
 import xarray as xr
 from flax.core import FrozenDict
 from jaxagents.agent_utils.dqn_utils import *
