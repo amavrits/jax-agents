@@ -1,8 +1,5 @@
 from setuptools import setup, find_packages
 
-with open('requirements.txt') as f:
-    required = f.read().splitlines()
-
 with open('README.md') as f:
     long_description = f.read()
 
@@ -36,7 +33,7 @@ setup(
         "dev": []
     },
     python_requires=">=3.9.0",
-    version='0.1',
+    version='0.2',
     license='MIT',
-    description='JAX implementation of Reinforcement Learning agents',
+    description='Implementation of Reinforcement Learning agents in JAX',
 )
