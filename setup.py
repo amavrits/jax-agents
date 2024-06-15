@@ -36,7 +36,7 @@ setup(
         "dev": []
     },
     python_requires=">=3.9.0",
-    version='0.28',
+    version='0.1',
     license='MIT',
     description='JAX implementation of Reinforcement Learning agents',
 )
