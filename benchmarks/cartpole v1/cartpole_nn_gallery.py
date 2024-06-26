@@ -66,3 +66,22 @@ class QRDDQN_NN_model(nn.Module):
 
         return q
 
+
+class PPO_NN_model(nn.Module):
+    action_dim: Sequence[int]
+    config: dict
+
+    @nn.compact
+    def __call__(self, x):
+        n_atoms = 51
+
+        q = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
+        q = nn.relu(q)
+        q = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(q)
+        q = nn.relu(q)
+        q = nn.Dense(32, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(q)
+        q = nn.relu(q)
+        q = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(q)
+
+        return q.reshape(-1, self.action_dim)
+

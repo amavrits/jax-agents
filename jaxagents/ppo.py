@@ -1,9 +1,5 @@
 """
-Implementation of Deep Q-Learning agents in JAX. The implemented agents include:
-    - Deep Q-Network (DQN)
-    - Double Deep Q-Network (DDQN)
-    - Categorical Deep Q-Network (Categorical DQN / C51)
-    - Quantile Regression Deep Q-Network (QRDQN)
+Implementation of PPO agent in JAX.
 
 Author: Antonis Mavritsakis
 @Github: amavrits
@@ -12,15 +8,6 @@ References
 ----------
 .. [1] Mnih, V., Kavukcuoglu, K., Silver, D., Graves, A., Antonoglou, I., Wierstra, D., & Riedmiller, M. (2013).
        Playing atari with deep reinforcement learning. arXiv preprint arXiv:1312.5602.
-
-.. [2] Van Hasselt, H., Guez, A., & Silver, D. (2016, March). Deep reinforcement learning with double q-learning.
-       In Proceedings of the AAAI conference on artificial intelligence (Vol. 30, No. 1).
-
-.. [3] Bellemare, M. G., Dabney, W., & Munos, R. (2017, July). A distributional perspective on reinforcement learning.
-       In International conference on machine learning (pp. 449-458). PMLR.
-
-.. [4] Dabney, W., Rowland, M., Bellemare, M., & Munos, R. (2018, April). Distributional reinforcement learning with
-       quantile regression. In Proceedings of the AAAI conference on artificial intelligence (Vol. 32, No. 1).
 
 """
 
@@ -34,7 +21,7 @@ import distrax
 import flashbax as fbx
 import xarray as xr
 from flax.core import FrozenDict
-from jaxagents.agent_utils.dqn_utils import *
+from jaxagents.agent_utils.ppo_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from abc import abstractmethod
@@ -46,12 +33,10 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-HyperParametersType = Union[HyperParameters, CategoricalHyperParameters, QuantileHyperParameters]
-AgentConfigType = Union[AgentConfig, CategoricalAgentConfig, QuantileAgentConfig]
 BufferStateType = fbx.trajectory_buffer.BufferState
 
 
-class DQNAgentBase(ABC):
+class PPOAgent(ABC):
     """
     The base class for Deep Q-Learning agents, which employ different variations of Deep Q-Networks.
 
@@ -69,7 +54,7 @@ class DQNAgentBase(ABC):
     training_metrics: ClassVar[Optional[Dict]] = None  # Metrics collected during training.
     buffer: ClassVar[Optional[BufferStateType]] = None  # Metrics collected during training.
 
-    def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfigType) -> None:
+    def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfig) -> None:
         """
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
         :param env_params: A dataclass named "EnvParams" containing the parametrization of the environment.
@@ -490,7 +475,7 @@ class DQNAgentBase(ABC):
 
     @jax.block_until_ready
     @partial(jax.jit, static_argnums=(0,))
-    def train(self, rng: PRNGKeyArray, hyperparams: HyperParametersType) -> Tuple[Runner, Dict]:
+    def train(self, rng: PRNGKeyArray, hyperparams: HyperParameters) -> Tuple[Runner, Dict]:
         """
         Trains the agent. A jax_tqdm progressbar has been added in the lax.scan loop.
         :param rng: Random key for initialization. This is the original key for training.
@@ -587,7 +572,7 @@ class DQNAgentBase(ABC):
               reward: Float[Array, "1"],
               next_state: Float[Array, "state_size"],
               terminated: Bool[Array, "1"],
-              hyperparams: HyperParametersType) -> Float[Array, "batch_size"]:
+              hyperparams: HyperParameters) -> Float[Array, "batch_size"]:
         """
         Place holder for agent-specific method for calculating the training loss of the policy network.
         :param params: Parameter of the policy network.
@@ -809,475 +794,6 @@ class DQNAgentBase(ABC):
         episode_metric = np.array([np.sum(metric[episodes == i]) for i in np.arange(episodes.max() + 1)])
 
         return self._summary_stats(episode_metric)
-
-
-class DQN_Agent(DQNAgentBase):
-    """
-    Implementation of the Deep Q-Network agent (DQN) according to [1].
-    """
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _q(self, params: Dict, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
-        """
-        Calculation of the state-action (Q) values for a state using the policy network for the DQN agent.
-        :param params: Parameter of the policy network.
-        :param state: State where the state-action values will be calculated.
-        :return: State-action values for the input state.
-        """
-
-        q_state = self.q_network.apply(params, state)
-        return q_state
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
-            -> Float[Array, "batch_size"]:
-        """
-        Calculation of the state-action (Q) value for a state and a selected action using the policy network  for the
-        DQN agent.
-        :param params: Parameter of the policy network.
-        :param state: State where the state-action values will be calculated.
-        :param action: Action for which the state-action value will be calculated
-        :return: State-action value for the input state and action.
-        """
-
-        action_batch_one_hot = jax.nn.one_hot(action.squeeze(), num_classes=self.n_actions)
-        q_state = self._q(params, state)
-        q_state_action = jnp.sum(q_state * action_batch_one_hot, axis=1)
-        return q_state_action
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _q_target(self,
-                  params: Dict,
-                  target_params: Dict,
-                  next_state: Float[Array, "state_size"],
-                  reward: Float[Array, "1"],
-                  terminated: Bool[Array, "1"],
-                  gamma: float) -> Float[Array, "batch_size"]:
-        """
-        Calculation of the target state-action (Q) value for the next state of an episode step for the DQN agent.
-        .. math::
-            {Q}_{target} = {R}_{t+1} + \gamma max_{\alpha}[Q({S}_{t+1}, \alpha; {\theta}_{t}^{-}]
-        :param params: Parameter of the policy network.
-        :param target_params: Parameter of the target  network.
-        :param next_state: Next state of the episode step where the target state-action values will be calculated.
-        :param reward: The reward collected during the episode step.
-        :param terminated: Termination of the episode during the performed step.
-        :param gamma: The discount parameter of the Bellman equation.
-        :return: Target action state values for the next state met after the episode step.
-        """
-
-        q_target_next_state = self._q(lax.stop_gradient(target_params), next_state)
-        q_target = reward.squeeze() + gamma * jnp.max(q_target_next_state, axis=1).squeeze() * jnp.logical_not(terminated.squeeze())
-        return q_target
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _loss(self,
-              params: Dict,
-              target_params: Dict,
-              current_state: Float[Array, "state_size"],
-              action: Int[Array, "1"],
-              reward: Float[Array, "1"],
-              next_state: Float[Array, "state_size"],
-              terminated: Bool[Array, "1"],
-              hyperparams: HyperParametersType) -> Float[Array, "batch_size"]:
-        """
-        Calculation of the training loss of the policy network for the DQN agent.
-        Based on equation 2 of [1].
-        :param params: Parameter of the policy network.
-        :param target_params: Parameter of the target  network.
-        :param current_state: State before performing the episode step for which the Bellman equation is calculated and
-                              where the agent is trained.
-        :param action: The action executed in the episode step.
-        :param reward: The reward collected during the episode step.
-        :param next_state: Next state of the episode step where the target state-action values will be calculated.
-        :param terminated: Termination of the episode during the performed step.
-        :param hyperparams: The training hyperparameters, as described in the "train" method.
-        :return: The loss between the estimate of the state value by the policy network and the calculation of the
-                 state value using the target network and Bellman's equation.
-        """
-
-        q_state_action = self._q_state_action(params, current_state, action)
-        q_target = self._q_target(params, target_params, next_state, reward, terminated, hyperparams.gamma)
-        loss = jnp.mean(jax.vmap(self.config.loss_fn)(q_state_action, q_target), axis=0)
-        return loss
-
-
-class DDQN_Agent(DQNAgentBase):
-    """
-    Implementation of the Double Deep Q-Network agent (DDQN) according to [2].
-    """
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _q(self, params: Dict, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
-        """
-        DDQN calculation of the state-action (Q) values for a state using the policy network.
-        :param params: Parameter of the policy network.
-        :param state: State where the state-action values will be calculated.
-        :return: State-action values for the input state.
-        """
-
-        q_state = self.q_network.apply(params, state)
-        return q_state
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
-            -> Float[Array, "batch_size"]:
-        """
-        Calculation of the state-action (Q) value for a state and a selected action using the policy network  for the
-        DDQN agent.
-        :param params: Parameter of the policy network.
-        :param state: State where the state-action values will be calculated.
-        :param action: Action for which the state-action value will be calculated
-        :return: State-action value for the input state and action.
-        """
-
-        action_batch_one_hot = jax.nn.one_hot(action.squeeze(), num_classes=self.n_actions)
-        q_state = self._q(params, state)
-        q_state_action = jnp.sum(q_state * action_batch_one_hot, axis=1)
-        return q_state_action
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _q_target(self,
-                  params: Dict,
-                  target_params: Dict,
-                  next_state: Float[Array, "state_size"],
-                  reward: Float[Array, "1"],
-                  terminated: Bool[Array, "1"],
-                  gamma: float) -> Float[Array, "batch_size"]:
-        """
-        Calculation of the target state-action (Q) value for the next state of an episode step for the DDQN agent.
-        .. math::
-            {Q}_{target} = {R}_{t+1} + \gamma Q({S}_{t+1}, {argmax}_{\alpha}[Q({S}_{t+1}, \alpha;{\theta}_{t});
-            {\theta}_{t}^{-}])
-        (Based on the unnumbered equation in page 6 of [2].)
-        :param params: Parameter of the policy network.
-        :param target_params: Parameter of the target  network.
-        :param next_state: Next state of the episode step where the target state-action values will be calculated.
-        :param reward: The reward collected during the episode step.
-        :param terminated: Termination of the episode during the performed step.
-        :param gamma: The discount parameter of the Bellman equation.
-        :return: Target action state values for the next state met after the episode step.
-        """
-
-        q_next_state = self._q(lax.stop_gradient(params), next_state)
-        action_q_training = jnp.argmax(q_next_state, axis=1).reshape(-1, 1)
-        q_target_next_state = jnp.take_along_axis(
-            self._q(lax.stop_gradient(target_params), next_state),
-            action_q_training,
-            axis=-1).squeeze()
-        q_target = reward.squeeze() + gamma * q_target_next_state * jnp.logical_not(terminated.squeeze())
-        return q_target
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _loss(self,
-              params: Dict,
-              target_params: Dict,
-              current_state: Float[Array, "state_size"],
-              action: Int[Array, "1"],
-              reward: Float[Array, "1"],
-              next_state: Float[Array, "state_size"],
-              terminated: Bool[Array, "1"],
-              hyperparams: HyperParametersType) -> Float[Array, "batch_size"]:
-        """
-        Calculation of the training loss of the policy network for the DDQN agent.
-        Based on equation 2 of [1] (which is the loss of the DQN paper).
-        :param params: Parameter of the policy network.
-        :param target_params: Parameter of the target  network.
-        :param current_state: State before performing the episode step for which the Bellman equation is calculated and
-                              where the agent is trained.
-        :param action: The action executed in the episode step.
-        :param reward: The reward collected during the episode step.
-        :param next_state: Next state of the episode step where the target state-action values will be calculated.
-        :param terminated: Termination of the episode during the performed step.
-        :param hyperparams: The training hyperparameters, as described in the "train" method.
-        :return: The loss between the estimate of the state value by the policy network and the calculation of the
-                 state value using the target network and Bellman's equation.
-        """
-
-        q_state_action = self._q_state_action(params, current_state, action)
-        q_target = self._q_target(params, target_params, next_state, reward, terminated, hyperparams.gamma)
-        loss = jnp.mean(jax.vmap(self.config.loss_fn)(q_state_action, q_target), axis=0)
-        return loss
-
-
-class CategoricalDQN_Agent(DQNAgentBase):
-    """
-    Implementation of the Categorical Deep Q-Network agent (Categorical DQN) according to [3].
-    """
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _p(self, params: dict, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
-        """
-        Calculation of the probability change per atom for a state using the policy network for the Categorical DQN
-        agent. This probability can be used to derive the state-action (Q) values.
-        :param params: Parameter of the policy network.
-        :param state: State where the state-action values will be calculated.
-        :return: Probability change at atoms.
-        """
-
-        logits = self.q_network.apply(params, state)
-        p = jax.nn.softmax(logits, axis=-1)
-
-        return p
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _q_from_p(self, p: Float[Array, "batch_size"]) -> Float[Array, "batch_size"]:
-        """
-        Calculates the state-action (Q) value given the probability change at atoms.
-        :param p: Probability change at atoms.
-        :return: The state-action (Q) values.
-        """
-
-        return jnp.dot(p, self.config.atoms)
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _q(self, params: dict, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
-        """
-        Calculation of the state-action (Q) values for a state using the policy network for the Categorical DQN agent.
-        (Implemented as in the second line of Algorithm 1 of [3])
-        :param params: Parameter of the policy network.
-        :param state: State where the state-action values will be calculated.
-        :return: State-action values for the input state.
-        """
-
-        p_state = self._p(params, state)
-        q_state = self._q_from_p(p_state)
-        return q_state
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
-            -> Float[Array, "batch_size"]:
-        """
-        Calculation of the state-action (Q) value for a state and a selected action using the policy network  for the
-        Categorical DQN agent.
-        :param params: Parameter of the policy network.
-        :param state: State where the state-action values will be calculated.
-        :param action: Action for which the state-action value will be calculated
-        :return: State-action value for the input state and action.
-        """
-
-        action_batch_one_hot = jax.nn.one_hot(action.squeeze(), num_classes=self.n_actions)
-        logit_p_state = self.q_network.apply(params, state)
-        logit_p_action_state = jnp.sum(logit_p_state * action_batch_one_hot[..., jnp.newaxis], axis=1)
-        return logit_p_action_state
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _q_target(self,
-                  params: Dict,
-                  target_params: Dict,
-                  next_state: Float[Array, "state_size"],
-                  reward: Float[Array, "1"],
-                  terminated: Bool[Array, "1"],
-                  gamma: float) -> Float[Array, "batch_size"]:
-        """
-        Calculation of the target state-action (Q) value for the next state of an episode step for the Categorical DQN
-        agent. Based on equation 7 of [3].)
-        :param params: Parameter of the policy network.
-        :param target_params: Parameter of the target  network.
-        :param next_state: Next state of the episode step where the target state-action values will be calculated.
-        :param reward: The reward collected during the episode step.
-        :param terminated: Termination of the episode during the performed step.
-        :param gamma: The discount parameter of the Bellman equation.
-        :return: Target action state values for the next state met after the episode step.
-        """
-
-        p_next_state = self._p(lax.stop_gradient(target_params), next_state)
-        q_next_state = self._q_from_p(p_next_state)
-        action_next_state = jnp.argmax(q_next_state, axis=-1).squeeze()
-        p_next_state_action = jnp.take_along_axis(p_next_state,
-                                                  action_next_state[:, jnp.newaxis, jnp.newaxis],
-                                                  axis=1).squeeze()
-
-        T_Z = reward.reshape(-1, 1) + gamma * jnp.logical_not(terminated.reshape(-1, 1)) * self.config.atoms
-        T_Z = jnp.clip(T_Z, self.config.atoms.min(), self.config.atoms.max())
-
-        b_j = (T_Z - self.config.atoms.min()) / self.config.delta_atoms
-        lower = jnp.floor(b_j).astype(jnp.int32)
-        upper = jnp.ceil(b_j).astype(jnp.int32)
-
-        transform_lower = jax.nn.one_hot(lower, num_classes=self.config.atoms.size).astype(jnp.int32)
-        transform_upper = jax.nn.one_hot(upper, num_classes=self.config.atoms.size).astype(jnp.int32)
-        p_opt_upper = jnp.where(jnp.equal(jnp.remainder(b_j, 2), 0),
-                                jnp.multiply(p_next_state_action, (upper - b_j)),
-                                p_next_state_action * 0.5
-                                )
-        p_opt_lower = jnp.where(jnp.equal(jnp.remainder(b_j, 2), 0),
-                                jnp.multiply(p_next_state_action, (b_j - lower)),
-                                p_next_state_action * 0.5
-                                )
-        m_lower = jnp.multiply(p_opt_upper[..., jnp.newaxis], transform_lower).sum(axis=1)
-        m_upper = jnp.multiply(p_opt_lower[..., jnp.newaxis], transform_upper).sum(axis=1)
-        target = m_lower + m_upper
-
-        return target
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _cross_entropy(self, target: jnp.array, logit_p: jnp.array) -> Float[Array, "batch_size"]:
-        """
-        Cross-entropy loss for estimation of the KL divergence, which is the training loss of the Categorical DQN agent.
-        :param target: Assessment of the target state-action (Q) values using the episode rewards and the target network
-                       estimates.
-        :param logit_p: Logit of the probability estimates of the policy network.
-        :return: Estimate of the cross-entropy loss.
-        """
-        return distrax.Categorical(probs=target).cross_entropy(distrax.Categorical(logits=logit_p))
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _loss(self,
-              params: Dict,
-              target_params: Dict,
-              current_state: Float[Array, "state_size"],
-              action: Int[Array, "1"],
-              reward: Float[Array, "1"],
-              next_state: Float[Array, "state_size"],
-              terminated: Bool[Array, "1"],
-              hyperparams: HyperParametersType) -> Float[Array, "batch_size"]:
-        """
-        Calculation of the training loss of the policy network for the Categorical DQN agent. It is the KL divergence
-        (in this case equivalent to the cross-entropy loss) between the target and the policy networks estimates.
-        :param params: Parameter of the policy network.
-        :param target_params: Parameter of the target  network.
-        :param current_state: State before performing the episode step for which the Bellman equation is calculated and
-                              where the agent is trained.
-        :param action: The action executed in the episode step.
-        :param reward: The reward collected during the episode step.
-        :param next_state: Next state of the episode step where the target state-action values will be calculated.
-        :param terminated: Termination of the episode during the performed step.
-        :param hyperparams: The training hyperparameters, as described in the "train" method.
-        :return: The loss between the estimate of the state value by the policy network and the calculation of the
-                 state value using the target network and Bellman's equation.
-        """
-
-        logit_p_state_action = self._q_state_action(params, current_state, action)
-        target = self._q_target(params, target_params, next_state, reward, terminated, hyperparams.gamma)
-        loss = jnp.mean(jax.vmap(self._cross_entropy)(target, logit_p_state_action), axis=0)
-        return loss
-
-
-class QRDDQN_Agent(DQNAgentBase):
-    """
-    Implementation of the Quantile Regression Deep Q-Network agent (QRDQN) according to [4].
-    """
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _q(self, params: Dict, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
-        """
-        Calculation of the state-action (Q) values for a state using the policy network for the QRDDQN agent.
-        (Implemented as in the fourth line of Algorithm 1 of [4])
-        :param params: Parameter of the policy network.
-        :param state: State where the state-action values will be calculated.
-        :return: State-action values for the input state.
-        """
-
-        q_state = self.q_network.apply(params, state).mean(axis=-1)
-        return q_state
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
-            -> Float[Array, "batch_size"]:
-        """
-        Calculation of the state-action (Q) value for a state and a selected action using the policy network  for the
-        QRDQN agent.
-        :param params: Parameter of the policy network.
-        :param state: State where the state-action values will be calculated.
-        :param action: Action for which the state-action value will be calculated
-        :return: State-action value for the input state and action.
-        """
-
-        action_batch_one_hot = jax.nn.one_hot(action.squeeze(), num_classes=self.n_actions)
-        q_state = self.q_network.apply(params, state)
-        q_state_action = jnp.sum(q_state * action_batch_one_hot[..., jnp.newaxis], axis=1)
-        return q_state_action
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _q_target(self,
-                  params: Dict,
-                  target_params: Dict,
-                  next_state: Float[Array, "state_size"],
-                  reward: Float[Array, "1"],
-                  terminated: Bool[Array, "1"],
-                  gamma: float) -> Float[Array, "batch_size"]:
-        """
-        Calculation of the target state-action (Q) value for the next state of an episode step for the QRDQN agent.
-        Based on equation 13 of [4].)
-        :param params: Parameter of the policy network.
-        :param target_params: Parameter of the target  network.
-        :param next_state: Next state of the episode step where the target state-action values will be calculated.
-        :param reward: The reward collected during the episode step.
-        :param terminated: Termination of the episode during the performed step.
-        :param gamma: The discount parameter of the Bellman equation.
-        :return: Target action state values for the next state met after the episode step.
-        """
-
-        q_next_state = self._q(lax.stop_gradient(target_params), next_state)
-        action_next_state = jnp.argmax(q_next_state, axis=-1).squeeze()
-
-        quants_next_state = self.q_network.apply(lax.stop_gradient(target_params), next_state)
-        quants_next_state_action = jnp.take_along_axis(quants_next_state, action_next_state[:, jnp.newaxis, jnp.newaxis], axis=1).squeeze()
-        target = reward.reshape(-1, 1) + gamma * quants_next_state_action * jnp.logical_not(terminated.reshape(-1, 1))
-
-        return target
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _huber_loss(self, q: jnp.array, target: jnp.array, huber_K) -> Float[Array, "batch_size"]:
-        """
-        Calculation of the Huber loss function, according to equation 9 of [4]. The loss function is controlled by the
-        hyperparameter "huber_K", which is passed via QuantileHyperParameters during training. As a result, several
-        values of this hyperparameter can be run via jax.vmap towards fine-tuning.
-        :param q: Estimate of state-action (Q) values by the policy network.
-        :param target: Assessment of the target state-action (Q) values using the episode rewards and the target network
-                       estimates.
-        :param huber_K: Hyperparameter of the Huber loss function.
-        :return: Estimate of the Huber loss.
-        """
-
-        td_error = target[jnp.newaxis, :] - q[:, jnp.newaxis]
-        huber_loss = jnp.where(
-            jnp.less_equal(jnp.abs(td_error), huber_K),
-            0.5 * td_error ** 2,
-            huber_K * (jnp.abs(td_error) - 0.5 * huber_K)
-        )
-
-        tau_hat = (jnp.arange(self.config.n_qunatiles, dtype=jnp.float32) + 0.5) / self.config.n_qunatiles
-
-        quantile_huber_loss = jnp.abs(tau_hat[:, jnp.newaxis] - jnp.less(td_error, 0).astype(jnp.int32)) * huber_loss
-        quantile_huber_loss = jnp.where(
-            jnp.logical_and(jnp.greater(q, -4), jnp.less(q, +4)),
-            quantile_huber_loss,
-            0
-        )
-        return jnp.sum(jnp.mean(quantile_huber_loss, 1), 0)
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _loss(self,
-              params: Dict,
-              target_params: Dict,
-              current_state: Float[Array, "state_size"],
-              action: Int[Array, "1"],
-              reward: Float[Array, "1"],
-              next_state: Float[Array, "state_size"],
-              terminated: Bool[Array, "1"],
-              hyperparams: HyperParametersType) -> Float[Array, "batch_size"]:
-        """
-        Calculation of the training loss of the policy network for the QRDQN agent.
-        Based on equation 10 of [4].
-        :param params: Parameter of the policy network.
-        :param target_params: Parameter of the target  network.
-        :param current_state: State before performing the episode step for which the Bellman equation is calculated and
-                              where the agent is trained.
-        :param action: The action executed in the episode step.
-        :param reward: The reward collected during the episode step.
-        :param next_state: Next state of the episode step where the target state-action values will be calculated.
-        :param terminated: Termination of the episode during the performed step.
-        :param hyperparams: The training hyperparameters, as described in the "train" method.
-        :return: The loss between the estimate of the state value by the policy network and the calculation of the
-                 state value using the target network and Bellman's equation.
-        """
-
-        q_state_action = self._q_state_action(params, current_state, action)
-        q_target = self._q_target(params, target_params, next_state, reward, terminated, hyperparams.gamma)
-        loss = jnp.mean(jax.vmap(self._huber_loss)(q_target, q_state_action, hyperparams.huber_K), axis=0)
-        return loss
 
 
 if __name__ == "__main__":
