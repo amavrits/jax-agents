@@ -216,7 +216,7 @@ class PPOAgent(ABC):
         return transition
 
     @partial(jax.jit, static_argnums=(0,))
-    def _select_action(self, rng: PRNGKeyArray, state: Float[Array, "state_size"], training: TrainStatePPO,
+    def _select_action(self, rng: PRNGKeyArray, state: Float[Array, "state_size"], params: Dict,
                        i_step: int) -> Tuple[PRNGKeyArray, Int[Array, "1"]]:
         """
         The agent selects an action to be executed using an epsilon-greedy policy. The value of epsilon is defined by
@@ -226,7 +226,7 @@ class PPOAgent(ABC):
         are avoided and the environment does not need to penalize the agent. Probably, this can smoothen training.
         :param rng: Random key for initialization.
         :param state: The current state of the episode step in array format.
-        :param training: Current training state of the agent.
+        :param params: Parameters of the Actor-Critic network.
         :param i_step: Current step of training.
         :return: A random key after splitting the input, the action selected by the agent using the epsilon-greedy
                  policy.
@@ -234,7 +234,7 @@ class PPOAgent(ABC):
 
         rng, rng_action_sample = jax.random.split(rng)
 
-        pi, value = self._pi_value(lax.stop_gradient(training.params), state)
+        pi, value = self._pi_value(lax.stop_gradient(params), state)
         action = pi.sample(seed=rng_action_sample)
         log_prob = pi.log_prob(action)
 
@@ -256,7 +256,9 @@ class PPOAgent(ABC):
         advantages, targets = self._advantage(traj_batch, last_value, runner.hyperparams)
 
         update_runner = (runner, advantages, targets, traj_batch)
-        update_runner, metrics = jax.lax.scan(self._update_epoch, update_runner, None, self.config.update_epochs)
+        update_runner, _ = jax.lax.scan(self._update_epoch, update_runner, None, self.config.update_epochs)
+
+        metrics = self._generate_metrics(runner=runner, reward=traj_batch.reward, terminated=traj_batch.terminated)
 
         return runner, metrics
 
@@ -287,28 +289,27 @@ class PPOAgent(ABC):
         return loss
 
     @partial(jax.jit, static_argnums=(0,))
-    def _update_epoch(self, update_runner, i_update_step):
+    def _update_epoch(self, update_runner, i_update_epoch):
 
         runner, advantages, targets, traj_batch = update_runner
 
         grad_fn = jax.jit(jax.grad(self._loss, has_aux=False, allow_int=True, argnums=0))
         grads = grad_fn(
-            params=runner.training.params,
-            traj_batch=traj_batch,
-            advantages=advantages,
-            targets=targets,
-            hyperparams=runner.hyperparams
+            runner.training.params,
+            traj_batch,
+            advantages,
+            targets,
+            runner.hyperparams
         )
 
         training = runner.training.apply_gradients(grads=grads)
 
+        """Update runner as a dataclass"""
         runner = runner.replace(training=training)
 
         update_runner = (runner, advantages, targets, traj_batch)
 
-        metric = self._generate_metrics(runner=runner, reward=traj_batch.reward, terminated=traj_batch.terminated)
-
-        return update_runner, metric
+        return update_runner, {}
 
     @partial(jax.jit, static_argnums=(0,))
     def _gae(self, carry, transition):
@@ -349,7 +350,7 @@ class PPOAgent(ABC):
                  - a dictionary of metrics regarding episode evolution and user-defined metrics.
         """
 
-        rng, action, value, log_prob = self._select_action(runner.rng, runner.state, runner.training, i_step)
+        rng, action, value, log_prob = self._select_action(runner.rng, runner.state, runner.training.params, i_step)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, runner.env_state, action)
 
@@ -374,8 +375,8 @@ class PPOAgent(ABC):
         """
 
         metric = {
-            "done": terminated,
-            "reward": reward
+            "done": terminated.flatten(),
+            "reward": reward.flatten()
         }
 
         if self.config.store_agent:
@@ -485,18 +486,16 @@ class PPOAgent(ABC):
                  - a dictionary of metrics regarding episode evolution and user-defined metrics.
         """
 
-        q_values = self.q(runner.state)
+        rng, action, value, log_prob = self._select_action(runner.rng, runner.state, self.agent_params, i_step)
 
-        action = jnp.argmax(q_values)
-
-        rng, next_state, next_env_state, reward, terminated, info = self._env_step(runner.rng, runner.env_state, action)
+        rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, runner.env_state, action)
 
         """Update runner as a dataclass"""
-        runner = runner.replace(env_state=next_env_state, state=next_state, rng=rng)
+        runner = runner.replace(rng=rng, state=next_state, env_state=next_env_state)
 
-        metric = {"done": terminated, "reward": reward}
+        metrics = {"done": terminated, "reward": reward}
 
-        return runner, metric
+        return runner, metrics
 
     def eval(self, rng: PRNGKeyArray, n_evals: int = 1e5) -> Dict:
         """
@@ -544,57 +543,6 @@ class PPOAgent(ABC):
         """
 
         self.agent_params = self.training_runner.training.params
-        self.buffer = self.training_runner.buffer_state
-
-    def export_buffer(self) -> xr.DataArray:
-        """
-        Exports the history of training steps as xarray. The history is collected from the buffer.
-        :return: Training hsitory from buffer re-organized in xarray. If the buffer is not full, it returns only the
-                 non-empty positions.
-        """
-
-        buffer_size = self.buffer.current_index if not self.buffer.is_full else self.buffer.experience.terminated.size
-
-        state = np.asarray(self.buffer.experience.state.squeeze())[:buffer_size]
-        action = np.asarray(self.buffer.experience.action.squeeze())[:buffer_size]
-        next_state = np.asarray(self.buffer.experience.next_state.squeeze())[:buffer_size]
-        reward = np.asarray(self.buffer.experience.reward.squeeze())[:buffer_size]
-        terminated = np.asarray(self.buffer.experience.terminated.squeeze())[:buffer_size]
-        episodes = np.cumsum(terminated)
-        episodes = np.append(0, episodes[:-1])  # So that episode number changes when True is met in "terminated".
-        history = np.c_[episodes, state, action, next_state, reward, terminated]
-
-        """
-        var_names = [
-            variable name for episodes
-            variable name for states
-            variable name for actions
-            variable name for next states
-            variable name for rewards
-            variable name for termination
-            ]
-        """
-        var_names =\
-            ["episode"] +\
-            ["s_"+str(i+1) for i in range(state.shape[1])] +\
-            ["action"] +\
-            ["ns_"+str(i+1) for i in range(state.shape[1])] +\
-            ["reward"] +\
-            ["terminated"]
-
-        if self.buffer.is_full:
-            description = "Training step history taken from the last %d steps of the self.buffer." % buffer_size
-        else:
-            description = "Training step history taken from the first %d steps of the self.buffer." % buffer_size
-
-        x = xr.DataArray(
-            data=history,
-            dims=["step", "var"],
-            coords={"step": np.arange(buffer_size), "var": var_names},
-            attrs={"description": description}
-        )
-
-        return x
 
     @staticmethod
     def _summary_stats(episode_metric: np.ndarray["size_metrics", float]) -> MetricStats:

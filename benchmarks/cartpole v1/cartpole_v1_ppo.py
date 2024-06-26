@@ -37,10 +37,9 @@ if __name__ == '__main__':
     config = ppo.AgentConfig(
         ac_network=PPO_NN_model,
         transition_template=transition_temp,
-        n_steps=1_000,
-        update_epochs=10,
-        buffer_size=10_000,
-        batch_size=32,
+        n_steps=100_000,
+        update_epochs=1,
+        batch_size=64,
         store_agent=False,
         act_randomly=lambda random_key, state, n_actions: jax.random.choice(random_key, jnp.arange(n_actions)),
         get_performance=lambda i_step, step_runner: 0,
@@ -59,8 +58,8 @@ if __name__ == '__main__':
     hyperparams = ppo.HyperParameters(gamma=0.99,
                                       gae_lambda=0.95,
                                       clip_eps=0.05,
-                                      vf_coeff=1,
-                                      ent_coeff=1,
+                                      vf_coeff=0.5,
+                                      ent_coeff=0.01,
                                       optimizer_params=optimizer_params)
 
 
@@ -68,25 +67,18 @@ if __name__ == '__main__':
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
 
-
-    # with jax.disable_jit(True): runner, training_metrics = agent.train(rng_train, hyperparams)
-
     """Train agent"""
     t0 = time.time()
-    runner, training_metrics = agent.train(rng_train, hyperparams)
+    runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     print(f"time: {time.time() - t0:.2f} s")
-
 
     """ Post-process results"""
     agent.collect_training(runner)
-    training_rewards = agent.summarize(training_metrics["done"], training_metrics["reward"])
-    buffer_export = agent.export_buffer()
-
+    training_rewards = agent.summarize(training_metrics["done"].flatten(), training_metrics["reward"].flatten())
 
     """Evaluate agent performance"""
     eval_metrics = agent.eval(rng_eval, n_evals=500_000)
-    eval_rewards = agent.summarize(eval_metrics["done"], eval_metrics["reward"])
-
+    eval_rewards = agent.summarize(eval_metrics["done"].flatten(), eval_metrics["reward"].flatten())
 
     """ Plot results"""
     running_window = 100

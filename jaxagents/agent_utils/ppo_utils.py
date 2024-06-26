@@ -118,9 +118,6 @@ class AgentConfig(NamedTuple):
     """Number of training steps (not episodes)"""
     n_steps: int
 
-    """Size of the training buffer"""
-    buffer_size: int
-
     """Size of batch collected from buffer for updating the policy network"""
     batch_size: int
 
