@@ -18,7 +18,6 @@ from jax import lax
 from jax_tqdm import scan_tqdm
 import optax
 import distrax
-import flashbax as fbx
 import xarray as xr
 from flax.core import FrozenDict
 from jaxagents.agent_utils.ppo_utils import *
@@ -33,12 +32,10 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-BufferStateType = fbx.trajectory_buffer.BufferState
-
 
 class PPOAgent(ABC):
     """
-    The base class for Deep Q-Learning agents, which employ different variations of Deep Q-Networks.
+    Proximal Policy Optimization agent
 
     Training relies on jitting several methods by treating the 'self' arg as static. According to suggested practice,
     this can prove dangerous (https://jax.readthedocs.io/en/latest/faq.html#how-to-use-jit-with-methods -
@@ -52,7 +49,6 @@ class PPOAgent(ABC):
     agent_params: ClassVar[Optional[Union[Dict, FrozenDict]]] = None
     training_runner: ClassVar[Optional[Runner]] = None  # Runner object after training.
     training_metrics: ClassVar[Optional[Dict]] = None  # Metrics collected during training.
-    buffer: ClassVar[Optional[BufferStateType]] = None  # Metrics collected during training.
 
     def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfig) -> None:
         """
@@ -65,7 +61,6 @@ class PPOAgent(ABC):
 
         self.config = config
         self._init_env(env, env_params)
-        self._init_eps_fn(self.config.epsilon_fn_style, self.config.epsilon_params)
 
     def __str__(self) -> str:
         """
@@ -80,22 +75,6 @@ class PPOAgent(ABC):
 
     """ GENERAL METHODS"""
 
-    def _init_eps_fn(self, epsilon_type: str, epsilon_params: tuple) -> None:
-        """
-        Initialization of the epsilon function, allowing different forms of epsilon decays over training.
-        :param epsilon_type: The type of epsilon function.
-        :param epsilon_params: The parametrization of the epsilon function.
-        :return:
-        """
-
-        if epsilon_type == "CONSTANT":
-            self.get_epsilon = jax.jit(lambda i_step: epsilon_params[0])
-        elif epsilon_type == "DECAY":
-            eps_start, eps_end, eps_decay = epsilon_params
-            self.get_epsilon = jax.jit(lambda i_step: eps_end + (eps_start - eps_end) * jnp.exp(-i_step / eps_decay))
-        else:
-            raise Exception("Unknown epsilon function.")
-
     def _init_env(self, env: Type[Environment], env_params: EnvParams) -> None:
         """
         Environment initialization.
@@ -108,30 +87,6 @@ class PPOAgent(ABC):
         self.env = LogWrapper(env)
         self.env_params = env_params
         self.n_actions = self.env.action_space(self.env_params).n
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _init_buffer(self) -> BufferStateType:
-        """
-        Buffer initialization.
-        :return: The initialized buffer for the agent.
-        """
-
-        if self.config.buffer_type == "FLAT":
-            self.buffer_fn = fbx.make_flat_buffer(
-                max_length=self.config.buffer_size,
-                min_length=self.config.batch_size,
-                sample_batch_size=self.config.batch_size,
-                add_sequences=True,
-                add_batch_size=None,
-            )
-        elif self.config.buffer_type == "PER":
-            raise Exception("PER buffers have not been added yet.")
-        else:
-            raise Exception("Unknown buffer type")
-
-        buffer_state = self.buffer_fn.init(self.config.transition_template)
-
-        return buffer_state
 
     def _init_optimizer(self, optimizer_params: OptimizerParams) -> optax.chain:
         """
@@ -175,17 +130,17 @@ class PPOAgent(ABC):
         return tx
 
     @partial(jax.jit, static_argnums=(0,))
-    def _init_q_network(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, Union[Dict, FrozenDict]]:
+    def _init_ac_network(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, Union[Dict, FrozenDict]]:
         """
         Initialization of the policy network (Q-model as a Neural Network).
         :param rng: Random key for initialization.
         :return: A random key after splitting the input and the initial parameters of the policy network.
         """
         rng, dummy_reset_rng, network_init_rng = jax.random.split(rng, 3)
-        self.q_network = self.config.q_network(self.n_actions, self.config)
+        self.ac_network = self.config.ac_network(self.n_actions, self.config)
         dummy_state, _ = self.env.reset(dummy_reset_rng, self.env_params)
         init_x = jnp.zeros((1, dummy_state.size))
-        network_params = self.q_network.init(network_init_rng, init_x)
+        network_params = self.ac_network.init(network_init_rng, init_x)
         return rng, network_params
 
     @partial(jax.jit, static_argnums=(0,))
@@ -226,6 +181,8 @@ class PPOAgent(ABC):
     def _make_transition(self,
                          state: Float[Array, "state_size"],
                          action: Int[Array, "1"],
+                         value: Float[Array, "1"],
+                         log_prob: Float[Array, "1"],
                          reward: Float[Array, "1"],
                          next_state: Float[Array, "state_size"],
                          terminated: Bool[Array, "1"],
@@ -234,6 +191,8 @@ class PPOAgent(ABC):
         Creates a transition object based on the input and output of an episode step.
         :param state: The current state of the episode step in array format.
         :param action: The action selected by the agent.
+        :param value: The critic value of the selected action.
+        :param log_prob: The actor log-probability of the selected action.
         :param reward: The collected reward after executing the action.
         :param next_state: The next state of the episode step in array format.
         :param terminated: Episode termination.
@@ -244,28 +203,20 @@ class PPOAgent(ABC):
 
         transition = Transition(state.squeeze(),
                                 action,
-                                jnp.expand_dims(reward, axis=0),
+                                value,
+                                log_prob,
+                                # jnp.expand_dims(reward, axis=0),
+                                reward,
                                 next_state,
-                                jnp.expand_dims(terminated, axis=0),
+                                # jnp.expand_dims(terminated, axis=0),
+                                terminated,
                                 info)
         transition = jax.tree_util.tree_map(lambda x: jnp.expand_dims(x, axis=0), transition)
 
         return transition
 
     @partial(jax.jit, static_argnums=(0,))
-    def _store_transition(self, buffer_state: BufferStateType, transition: Transition)\
-            -> BufferStateType:
-        """
-        Stores a step transition into the agent's buffer.
-        :param buffer_state: The agent's current buffer.
-        :param transition: The episode step transition.
-        :return: The updated buffer after storing transition.
-        """
-
-        return self.buffer_fn.add(buffer_state, transition)
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _select_action(self, rng: PRNGKeyArray, state: Float[Array, "state_size"], training: TrainStateDQN,
+    def _select_action(self, rng: PRNGKeyArray, state: Float[Array, "state_size"], training: TrainStatePPO,
                        i_step: int) -> Tuple[PRNGKeyArray, Int[Array, "1"]]:
         """
         The agent selects an action to be executed using an epsilon-greedy policy. The value of epsilon is defined by
@@ -281,74 +232,106 @@ class PPOAgent(ABC):
                  policy.
         """
 
-        rng, *_rng = jax.random.split(rng, 3)
-        random_action_rng, random_number_rng = _rng
+        rng, rng_action_sample = jax.random.split(rng)
 
-        q_state = self._q(lax.stop_gradient(training.params), state)
-        policy_action = jnp.argmax(q_state, 1)
+        pi, value = self._pi_value(lax.stop_gradient(training.params), state)
+        action = pi.sample(seed=rng_action_sample)
+        log_prob = pi.log_prob(action)
 
-        random_action = self.config.act_randomly(random_action_rng, state, self.n_actions)
-
-        random_number = jax.random.uniform(random_number_rng, minval=0, maxval=1, shape=(1,))
-        eps = self.get_epsilon(i_step)
-        exploitation = jnp.greater(random_number, eps)
-
-        action = jnp.where(exploitation, policy_action, random_action)
-
-        return rng, action
+        return rng, action, value, log_prob
 
     @partial(jax.jit, static_argnums=(0,))
-    def _update_target_network(self, runner: Runner) -> Runner:
+    def _update_step(self, runner: Runner, i_update_step: int) -> Tuple[Runner, Transition]:
         """
-        Updates the parameters of the target network using the parameters of the policy network and the agent's
-        hyperparameters. The update can be either periodic or incremental. In the former case, the policy parameters are
-        copied to target parameters with fixed frequency of steps (not episodes), indicated by "target_update_param".
-        In the latter, the target parameters are updated in every step with the policy parameters, but the extent of
-        update in controlled by the hyperparameter "target_update_param".
+
         :param runner: The step runner object, containing information about the current status of the agent's training,
                        the state of the environment and training hyperparameters.
-        :return: A step runner object for which the parameters of the target network have been updated.
+        :param i_update_step:
+        :return: Current training step. Required for printing the progressbar via jax_tqdm.
         """
 
-        if self.config.target_update_method == "PERIODIC":
+        runner, traj_batch = lax.scan(self._step, runner, None, self.config.batch_size)
 
-            training = runner.training.replace(target_params=optax.periodic_update(
-                runner.training.params,
-                runner.training.target_params,
-                runner.training.step,
-                runner.hyperparams.target_update_param
-            ))
+        _, last_value = self._pi_value(runner.training.params, runner.state)
+        advantages, targets = self._advantage(traj_batch, last_value, runner.hyperparams)
 
-        elif self.config.target_update_method == "INCREMENTAL":
+        update_runner = (runner, advantages, targets, traj_batch)
+        update_runner, metrics = jax.lax.scan(self._update_epoch, update_runner, None, self.config.update_epochs)
 
-            training = runner.training.replace(target_params=optax.incremental_update(
-                runner.training.params,
-                runner.training.target_params,
-                runner.hyperparams.target_update_param
-            ))
+        return runner, metrics
 
-        else:
+    @partial(jax.jit, static_argnums=(0,))
+    def _loss(self, params, traj_batch, advantages, targets, hyperparams):
 
-            training = runner.training
+        clip_eps, vf_coeff, ent_coeff = hyperparams.clip_eps, hyperparams.vf_coeff, hyperparams.ent_coeff
 
-        """Update runner as a dataclass"""
+        pi, value = self.ac_network.apply(params, traj_batch.state)
+        log_prob = pi.log_prob(traj_batch.action)
+
+        # TODO: apply loss function
+        value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-clip_eps, clip_eps)
+        value_losses = jnp.square(value - targets)
+        value_losses_clipped = jnp.square(value_pred_clipped - targets)
+        value_loss = (0.5 * jnp.maximum(value_losses, value_losses_clipped).mean())
+
+        ratio = jnp.exp(log_prob - traj_batch.log_prob)
+        gae = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        loss_actor1 = ratio * gae
+        loss_actor2 = (jnp.clip(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * gae)
+        loss_actor = - jnp.minimum(loss_actor1, loss_actor2)
+        loss_actor = loss_actor.mean()
+        entropy = pi.entropy().mean()
+
+        loss = loss_actor + vf_coeff * value_loss - ent_coeff * entropy
+
+        return loss
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _update_epoch(self, update_runner, i_update_step):
+
+        runner, advantages, targets, traj_batch = update_runner
+
+        grad_fn = jax.jit(jax.grad(self._loss, has_aux=False, allow_int=True, argnums=0))
+        grads = grad_fn(
+            params=runner.training.params,
+            traj_batch=traj_batch,
+            advantages=advantages,
+            targets=targets,
+            hyperparams=runner.hyperparams
+        )
+
+        training = runner.training.apply_gradients(grads=grads)
+
         runner = runner.replace(training=training)
 
-        return runner
+        update_runner = (runner, advantages, targets, traj_batch)
 
-    @partial(jax.jit, static_argnums=(0))
-    def _fake_update_network(self, runner: Runner) -> Runner:
-        """
-        Function for fake updating the policy network parameters. Used to enable updating via jax.lax.cond
-        :param runner: The step runner object, containing information about the current status of the agent's training,
-                       the state of the environment and training hyperparameters.
-        :return: The same step runner object as in the input.
-        """
+        metric = self._generate_metrics(runner=runner, reward=traj_batch.reward, terminated=traj_batch.terminated)
 
-        return runner
+        return update_runner, metric
 
     @partial(jax.jit, static_argnums=(0,))
-    def _step(self, runner: Runner, i_step: int) -> Tuple[Runner, Dict]:
+    def _gae(self, carry, transition):
+        gae, next_value, gamma, gae_lambda = carry
+        terminated, value, reward = (
+            transition.terminated,
+            transition.value,
+            transition.reward,
+        )
+        delta = reward + gamma * next_value * (1 - terminated) - value
+        gae = (delta + gamma * gae_lambda * (1 - terminated) * gae)
+        return (gae.squeeze(), value.squeeze(), gamma, gae_lambda), gae
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _advantage(self, traj_batch, last_value, hyperparams):
+
+        carry = (jnp.zeros_like(last_value), last_value, hyperparams.gamma, hyperparams.gae_lambda)
+        _, advantages = lax.scan(self._gae, carry, traj_batch, reverse=True)
+
+        return advantages, advantages + traj_batch.value
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _step(self, runner: Runner, i_step: int) -> Tuple[Runner, Transition]:
         """
         Performs an episode step. This includes:
         - The agent selecting an action.
@@ -360,32 +343,21 @@ class PPOAgent(ABC):
         - Generating metrics regarding the step.
         :param runner: The step runner object, containing information about the current status of the agent's training,
                        the state of the environment and training hyperparameters.
-        :param i_step: Current training step. Required for printing the progressbar via jax_tqdm.
+        :param i_step: Current step in trajectory sampling.
         :return: A tuple containing:
                  - the step runner object, updated after performing an episode step.
                  - a dictionary of metrics regarding episode evolution and user-defined metrics.
         """
 
-        rng, action = self._select_action(runner.rng, runner.state, runner.training, i_step)
+        rng, action, value, log_prob = self._select_action(runner.rng, runner.state, runner.training, i_step)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, runner.env_state, action)
 
-        transition = self._make_transition(runner.state, action, reward, next_state, terminated, info)
-        buffer_state = self._store_transition(runner.buffer_state, transition)
+        transition = self._make_transition(runner.state, action, value, log_prob, reward, next_state, terminated, info)
 
-        """Update runner as a dataclass"""
-        runner = runner.replace(rng=rng, state=next_state, env_state=next_env_state, buffer_state=buffer_state)
+        runner = runner.replace(rng=rng, state=next_state, env_state=next_env_state)
 
-        runner = jax.lax.cond(self.buffer_fn.can_sample(buffer_state),
-                              self._update_q_network,
-                              self._fake_update_network,
-                              runner)
-
-        runner = self._update_target_network(runner)
-
-        metric = self._generate_metrics(runner, reward, terminated)
-
-        return runner, metric
+        return runner, transition
 
     @partial(jax.jit, static_argnums=(0,))
     def _generate_metrics(self, runner: Runner, reward: Float[Array, "1"], terminated: Bool[Array, "1"]) -> Dict:
@@ -416,63 +388,6 @@ class PPOAgent(ABC):
 
         return metric
 
-    @partial(jax.jit, static_argnums=(0,))
-    def _sample_batch(self, rng: PRNGKeyArray, buffer_state: BufferStateType)\
-            -> Tuple[PRNGKeyArray, fbx.trajectory_buffer.BufferSample]:
-        """
-        Samples a batch from the agent's buffer. The size of the batch is a static argument passed in the
-        configuration of the agent during initialization. Unfortunately, the batch size could not be treated as a
-        dynamic hyperparameter, which would have been convenient for tuning.
-        :param rng: Random key for initialization.
-        :param buffer_state: The agent's current buffer.
-        :return: A random key after splitting the input, sampled batch.
-        """
-
-        rng, batch_sample_rng = jax.random.split(rng)
-        batch = self.buffer_fn.sample(buffer_state, batch_sample_rng)
-        batch = batch.experience
-        return rng, batch
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _update_q_network(self, runner: Runner) -> Runner:
-        """
-        Updates the parameters of the policy network. This includes:
-        - Sampling a batch from the agent's buffer.
-        - Calculating the gradient of the loss function.
-        - Updating the policy parameters and returning the updated step runner.
-        The loss function is kept abstract in this class and is implemented per agent accordingly.
-        :param runner: The step runner object, containing information about the current status of the agent's training,
-                       the state of the environment and training hyperparameters.
-        :return: The step runner with updated policy network parameters.
-        """
-
-        rng, batch = self._sample_batch(runner.rng, runner.buffer_state)
-
-        current_state, action, reward, next_state, terminated = (
-            batch.first.state.squeeze(),
-            batch.first.action.squeeze(),
-            batch.first.reward.squeeze(),
-            batch.second.state.squeeze(),
-            batch.first.terminated.squeeze(),
-        )
-
-        grad_fn = jax.jit(jax.grad(self._loss, has_aux=False, allow_int=True, argnums=0))
-        grads = grad_fn(runner.training.params,
-                        runner.training.target_params,
-                        current_state,
-                        action,
-                        reward,
-                        next_state,
-                        terminated,
-                        runner.hyperparams
-                        )
-
-        training = runner.training.apply_gradients(grads=grads)
-
-        runner = runner.replace(rng=rng, training=training)
-
-        return runner
-
     @jax.block_until_ready
     @partial(jax.jit, static_argnums=(0,))
     def train(self, rng: PRNGKeyArray, hyperparams: HyperParameters) -> Tuple[Runner, Dict]:
@@ -485,25 +400,23 @@ class PPOAgent(ABC):
         :return: The final state of the step runner after training and the training metrics accumulated over all
                  training steps.
         """
-        rng, network_params = self._init_q_network(rng)
+        rng, network_params = self._init_ac_network(rng)
 
         tx = self._init_optimizer(hyperparams.optimizer_params)
 
-        training = TrainStateDQN.create(apply_fn=self.q_network.apply,
+        training = TrainStatePPO.create(apply_fn=self.ac_network.apply,
                                         params=network_params,
                                         target_params=network_params,
                                         tx=tx)
-
-        buffer_state = self._init_buffer()
 
         rng, state, env_state = self._reset(rng)
 
         rng, runner_rng = jax.random.split(rng)
 
-        runner = Runner(training, env_state, state, runner_rng, buffer_state, hyperparams)
+        runner = Runner(training, env_state, state, runner_rng, hyperparams)
 
         runner, metrics = lax.scan(
-            scan_tqdm(self.config.n_steps)(self._step),
+            scan_tqdm(self.config.n_steps)(self._update_step),
             runner,
             jnp.arange(self.config.n_steps),
             self.config.n_steps
@@ -511,9 +424,8 @@ class PPOAgent(ABC):
 
         return runner, metrics
 
-    @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
-    def _q(self, params: Dict, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
+    def _pi_value(self, params: Dict, state: Float[Array, "state_size"]) -> Float[Array, "batch_size"]:
         """
         Placeholder for agent-specific method for calculating the state-action (Q) values for a state using the policy
         network.
@@ -522,74 +434,8 @@ class PPOAgent(ABC):
         :return: State-action values for the input state.
         """
 
-        pass
-
-    @abstractmethod
-    @partial(jax.jit, static_argnums=(0,))
-    def _q_state_action(self, params: Dict, state: Float[Array, "state_size"], action: Int[Array, "1"])\
-            -> Float[Array, "batch_size"]:
-        """
-        Place holder for agent-specific method for calculating the state-action (Q) value for a state and a selected
-        action using the policy network.
-        :param params: Parameter of the policy network.
-        :param state: State where the state-action values will be calculated.
-        :param action: Action for which the state-action value will be calculated
-        :return: State-action value for the input state and action.
-        """
-
-        pass
-
-    @abstractmethod
-    @partial(jax.jit, static_argnums=(0,))
-    def _q_target(self,
-                  params: Dict,
-                  target_params: Dict,
-                  next_state: Float[Array, "state_size"],
-                  reward: Float[Array, "1"],
-                  terminated: Bool[Array, "1"],
-                  gamma: float) -> Float[Array, "batch_size"]:
-        """
-        Place holder for agent-specific method for calculating the target state-action (Q) value for the next state of
-        an episode step.
-        :param params: Parameter of the policy network.
-        :param target_params: Parameter of the target  network.
-        :param next_state: Next state of the episode step where the target state-action values will be calculated.
-        :param reward: The reward collected during the episode step.
-        :param terminated: Termination of the episode during the performed step.
-        :param gamma: The discount parameter of the Bellman equation.
-        :return: Target action state values for the next state met after the episode step.
-        """
-
-        pass
-
-    @abstractmethod
-    @partial(jax.jit, static_argnums=(0,))
-    def _loss(self,
-              params: Dict,
-              target_params: Dict,
-              current_state: Float[Array, "state_size"],
-              action: Int[Array, "1"],
-              reward: Float[Array, "1"],
-              next_state: Float[Array, "state_size"],
-              terminated: Bool[Array, "1"],
-              hyperparams: HyperParameters) -> Float[Array, "batch_size"]:
-        """
-        Place holder for agent-specific method for calculating the training loss of the policy network.
-        :param params: Parameter of the policy network.
-        :param target_params: Parameter of the target  network.
-        :param current_state: State before performing the episode step for which the Bellman equation is calculated and
-                              where the agent is trained.
-        :param action: The action executed in the episode step.
-        :param reward: The reward collected during the episode step.
-        :param next_state: Next state of the episode step where the target state-action values will be calculated.
-        :param terminated: Termination of the episode during the performed step.
-        :param hyperparams: The training hyperparameters, as described in the "train" method.
-        :return: The loss between the estimate of the state value by the policy network and the calculation of the
-                 state value using the target network and Bellman's equation.
-        """
-
-        pass
-
+        pi, value = self.ac_network.apply(params, state)
+        return pi, value
 
     """ METHODS FOR APPLYING AGENT"""
 

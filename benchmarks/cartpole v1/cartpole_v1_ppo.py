@@ -19,6 +19,8 @@ if __name__ == '__main__':
     transition_temp = ppo.Transition(
         state=jnp.zeros((1, 4), dtype=jnp.float32),
         action=jnp.zeros(1, dtype=jnp.int32),
+        log_prob=jnp.zeros(1, dtype=jnp.float32),
+        value=jnp.zeros(1, dtype=jnp.float32),
         reward=jnp.zeros(1, dtype=jnp.float32),
         next_state=jnp.zeros((1, 4), dtype=jnp.float32),
         terminated=jnp.zeros(1, dtype=jnp.bool_),
@@ -33,20 +35,17 @@ if __name__ == '__main__':
 
     """Define configuration for agent training"""
     config = ppo.AgentConfig(
-        q_network=PPO_NN_model,
+        ac_network=PPO_NN_model,
         transition_template=transition_temp,
-        n_steps=500_000,
-        buffer_type="FLAT",
+        n_steps=1_000,
+        update_epochs=10,
         buffer_size=10_000,
-        batch_size=128,
-        target_update_method="PERIODIC",
+        batch_size=32,
         store_agent=False,
         act_randomly=lambda random_key, state, n_actions: jax.random.choice(random_key, jnp.arange(n_actions)),
         get_performance=lambda i_step, step_runner: 0,
         optimizer=optax.rmsprop,
-        loss_fn=optax.l2_loss,
-        epsilon_fn_style="DECAY",
-        epsilon_params=(0.9, 0.05, 50_000)
+        loss_fn=optax.l2_loss
     )
 
 
@@ -57,13 +56,20 @@ if __name__ == '__main__':
 
     """Define optimizer parameters and training hyperparameters"""
     optimizer_params = ppo.OptimizerParams(learning_rate=5e-3, eps=1e-3, grad_clip=1)
-    hyperparams = ppo.HyperParameters(0.99, 4, optimizer_params)
+    hyperparams = ppo.HyperParameters(gamma=0.99,
+                                      gae_lambda=0.95,
+                                      clip_eps=0.05,
+                                      vf_coeff=1,
+                                      ent_coeff=1,
+                                      optimizer_params=optimizer_params)
 
 
     """Draw random key"""
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
 
+
+    # with jax.disable_jit(True): runner, training_metrics = agent.train(rng_train, hyperparams)
 
     """Train agent"""
     t0 = time.time()

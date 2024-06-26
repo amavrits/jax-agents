@@ -5,7 +5,6 @@ from flax.training.train_state import TrainState
 from flax.core import FrozenDict
 from flax import struct
 from optax._src import base
-import flashbax as fbx
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
 from typing import Tuple, Dict, NamedTuple, Callable, Any, Type, Union, Optional
@@ -26,6 +25,12 @@ class Transition(NamedTuple):
 
     """Action selecetd by agent"""
     action: Int[Array, "1"]
+
+    """Value of the selected action"""
+    value: Float[Array, "1"]
+
+    """Log-probability of selected policy action"""
+    log_prob: Float[Array, "1"]
 
     """Collected reward"""
     reward: Float[Array, "1"]
@@ -57,9 +62,17 @@ class HyperParameters(NamedTuple):
     """Gamma (discount parameter) of Bellman equation"""
     gamma: float
 
-    """Hyperparameter for updating the target network. Depending on updating style, it is either the period of updating
-    or the rate of the incremental update."""
-    target_update_param: float
+    """Generalized Advantage Estimation lambda"""
+    gae_lambda: float
+
+    """Value clip"""
+    clip_eps: float
+
+    """ ??? """
+    vf_coeff: float
+
+    """ ??? """
+    ent_coeff: float
 
     """Optimizer parameters"""
     optimizer_params: OptimizerParams
@@ -79,9 +92,6 @@ class Runner:
 
     """Random key, required for reproducibility of results and control of randomness"""
     rng: PRNGKeyArray
-
-    """Training buffer"""
-    buffer_state: fbx.trajectory_buffer.BufferState
 
     """Training hyperparameters"""
     hyperparams: HyperParameters
@@ -104,6 +114,7 @@ class EvalRunner:
 
 class AgentConfig(NamedTuple):
     """Configuration of the DQN and DDQN agents, passed at initialization of instance."""
+
     """Number of training steps (not episodes)"""
     n_steps: int
 
@@ -113,8 +124,11 @@ class AgentConfig(NamedTuple):
     """Size of batch collected from buffer for updating the policy network"""
     batch_size: int
 
+    """Number of epochs per policy update"""
+    update_epochs: int
+
     """The arcitecture of the policy (and target) network"""
-    q_network: Type[flax.linen.Module]
+    ac_network: Type[flax.linen.Module]
 
     """Template of transition, so that the buffer can be configured"""
     transition_template: Transition
@@ -134,18 +148,6 @@ class AgentConfig(NamedTuple):
     actions and penalizing in the environment."""
     act_randomly: Callable[[PRNGKeyArray, Float[Array, "state_size"], int], int] =\
         lambda rng, state, n_actions: jax.random.choice(rng, jnp.arange(n_actions))
-
-    """Type of the training buffer"""
-    buffer_type: str = "FLAT"
-
-    """Style of updating the target network parameters"""
-    target_update_method: str = "PERIODIC"
-
-    """Style of function for reducing the epsilon value of the epsilon-greedy policy."""
-    epsilon_fn_style: str = "DECAY"
-
-    """Parameters of function for reducing the epsilon value of the epsilon-greedy policy."""
-    epsilon_params: Tuple = (0.9, 0.05, 50_000)
 
     """Whether the parameters and the performance of the agent should be stored during training."""
     store_agent: bool = False
