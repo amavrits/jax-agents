@@ -4,7 +4,7 @@ import jax
 import optax
 import gymnax
 import numpy as np
-from jaxagents import vanillapg as vpg
+from jaxagents import vpg as vpg
 from cartpole_nn_gallery import *
 import matplotlib
 matplotlib.use("TkAgg")
@@ -35,11 +35,13 @@ if __name__ == '__main__':
 
     """Define configuration for agent training"""
     config = vpg.AgentConfig(
-        ac_network=VanillaPG_NN_model,
+        actor_network=VanillaPG_Actor_NN_model,
+        critic_network=VanillaPG_Critic_NN_model,
         transition_template=transition_temp,
+        rollout_length=40,
         n_steps=100_000,
         update_epochs=1,
-        batch_size=64,
+        batch_size=8,
         store_agent=False,
         act_randomly=lambda random_key, state, n_actions: jax.random.choice(random_key, jnp.arange(n_actions)),
         get_performance=lambda i_step, step_runner: 0,
@@ -49,18 +51,21 @@ if __name__ == '__main__':
 
 
     """Set up agent"""
-    agent = vpg.VanillaPGAgent(env, env_params, config)
+    agent = vpg.VPGAgent(env, env_params, config)
     print(agent.__str__())
 
 
     """Define optimizer parameters and training hyperparameters"""
     optimizer_params = vpg.OptimizerParams(learning_rate=5e-3, eps=1e-3, grad_clip=1)
-    hyperparams = vpg.HyperParameters(gamma=0.99,
-                                      gae_lambda=0.95,
-                                      clip_eps=0.05,
-                                      vf_coeff=0.5,
-                                      ent_coeff=0.01,
-                                      optimizer_params=optimizer_params)
+    hyperparams = vpg.HyperParameters(
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_eps=0.05,
+        vf_coeff=0.5,
+        ent_coeff=0.01,
+        actor_optimizer_params=optimizer_params,
+        critic_optimizer_params=optimizer_params
+    )
 
 
     """Draw random key"""
@@ -69,7 +74,8 @@ if __name__ == '__main__':
 
     """Train agent"""
     t0 = time.time()
-    runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
+    # runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
+    with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     print(f"time: {time.time() - t0:.2f} s")
 
     """ Post-process results"""

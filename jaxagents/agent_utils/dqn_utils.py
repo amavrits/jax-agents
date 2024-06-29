@@ -78,7 +78,7 @@ class QuantileHyperParameters(HyperParameters):
 @struct.dataclass
 class Runner:
     """Object for running, passes training status, environment state and hyperparameters between training steps."""
-    """Training status (policy and traget network parameters), training step and optimizer"""
+    """Training status (policy and target network parameters), training step and optimizer"""
     training: TrainState
 
     """State of the environment"""
@@ -123,7 +123,7 @@ class AgentConfig(NamedTuple):
     """Size of batch collected from buffer for updating the policy network"""
     batch_size: int
 
-    """The arcitecture of the policy (and target) network"""
+    """The architecture of the policy (and target) network"""
     q_network: Type[flax.linen.Module]
 
     """Template of transition, so that the buffer can be configured"""

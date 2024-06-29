@@ -93,7 +93,7 @@ class PPO_NN_model(nn.Module):
         return pi, jnp.squeeze(critic, axis=-1)
 
 
-class VanillaPG_NN_model(nn.Module):
+class VanillaPG_Actor_NN_model(nn.Module):
     action_dim: Sequence[int]
     config: dict
 
@@ -109,10 +109,22 @@ class VanillaPG_NN_model(nn.Module):
         actor_mean = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(actor_mean)
         pi = distrax.Categorical(logits=actor_mean)
 
+        return pi
+
+
+class VanillaPG_Critic_NN_model(nn.Module):
+    action_dim: Sequence[int]
+    config: dict
+
+    @nn.compact
+    def __call__(self, x):
+
+        activation = nn.tanh
+
         critic = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
         critic = activation(critic)
         critic = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(critic)
         critic = activation(critic)
         critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(critic)
 
-        return pi, jnp.squeeze(critic, axis=-1)
+        return jnp.squeeze(critic, axis=-1)

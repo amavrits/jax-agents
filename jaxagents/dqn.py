@@ -488,7 +488,6 @@ class DQNAgentBase(ABC):
 
         return runner
 
-    @jax.block_until_ready
     @partial(jax.jit, static_argnums=(0,))
     def train(self, rng: PRNGKeyArray, hyperparams: HyperParametersType) -> Tuple[Runner, Dict]:
         """

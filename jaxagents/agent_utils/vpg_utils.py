@@ -4,6 +4,7 @@ import jax.numpy as jnp
 from flax.training.train_state import TrainState
 from flax.core import FrozenDict
 from flax import struct
+import optax
 from optax._src import base
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
@@ -12,10 +13,26 @@ from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 from dataclasses import dataclass
 
 
-class TrainStatePPO(TrainState):
-    """ Training state according to flax implementation"""
-    """Parameters of the target network"""
-    target_params: FrozenDict
+# class TrainStateVPG(NamedTuple):
+#     """ Training state"""
+#
+#     """Actor network function"""
+#     actor_apply_fn: Callable
+#
+#     """Critic network function"""
+#     critic_apply_fn: Callable
+#
+#     """Parameters of the actor network"""
+#     actor_params: FrozenDict
+#
+#     """Parameters of the critic network"""
+#     critic_params: FrozenDict
+#
+#     """Optimizer for the actor network"""
+#     actor_tx: optax.chain
+#
+#     """Optimizer for the critic network"""
+#     critic_tx: optax.chain
 
 
 class Transition(NamedTuple):
@@ -74,15 +91,21 @@ class HyperParameters(NamedTuple):
     """ ??? """
     ent_coeff: float
 
-    """Optimizer parameters"""
-    optimizer_params: OptimizerParams
+    """Optimizer parameters for the actor network"""
+    actor_optimizer_params: OptimizerParams
+
+    """Optimizer parameters for the critic network"""
+    critic_optimizer_params: OptimizerParams
 
 
 @struct.dataclass
 class Runner:
     """Object for running, passes training status, environment state and hyperparameters between training steps."""
-    """Training status (policy and traget network parameters), training step and optimizer"""
-    training: TrainState
+    """Training status (params, training step and optimizer) of the actor"""
+    actor_training: TrainState
+
+    """Training status (params, training step and optimizer) of the critic"""
+    critic_training: TrainState
 
     """State of the environment"""
     env_state: LogEnvState
@@ -121,11 +144,17 @@ class AgentConfig(NamedTuple):
     """Size of batch collected from buffer for updating the policy network"""
     batch_size: int
 
+    """Number of steps to be collected when sampling trajectories (must be large enough to sample entire batch)"""
+    rollout_length: int
+
     """Number of epochs per policy update"""
     update_epochs: int
 
-    """The arcitecture of the policy (and target) network"""
-    ac_network: Type[flax.linen.Module]
+    """The architecture of the actor network"""
+    actor_network: Type[flax.linen.Module]
+
+    """The architecture of the critic network"""
+    critic_network: Type[flax.linen.Module]
 
     """Template of transition, so that the buffer can be configured"""
     transition_template: Transition

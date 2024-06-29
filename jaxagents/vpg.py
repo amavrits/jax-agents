@@ -1,5 +1,5 @@
 """
-Implementation of PPO agent in JAX.
+Implementation of the Vanilla Policy Gradient agent in JAX.
 
 Author: Antonis Mavritsakis
 @Github: amavrits
@@ -20,9 +20,11 @@ import optax
 import distrax
 import xarray as xr
 from flax.core import FrozenDict
-from jaxagents.agent_utils.ppo_utils import *
+import flashbax as fbx
+from jaxagents.agent_utils.vpg_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
+from flax.training.train_state import TrainState
 from abc import abstractmethod
 from functools import partial
 from abc import ABC
@@ -33,9 +35,9 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
-class PPOAgent(ABC):
+class VPGAgent(ABC):
     """
-    Proximal Policy Optimization agent
+    Vanilla Policy Gradient agent
 
     Training relies on jitting several methods by treating the 'self' arg as static. According to suggested practice,
     this can prove dangerous (https://jax.readthedocs.io/en/latest/faq.html#how-to-use-jit-with-methods -
@@ -130,18 +132,27 @@ class PPOAgent(ABC):
         return tx
 
     @partial(jax.jit, static_argnums=(0,))
-    def _init_ac_network(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, Union[Dict, FrozenDict]]:
+    def _init_ac_networks(self, rng: PRNGKeyArray)\
+            -> Tuple[PRNGKeyArray, Union[Dict, FrozenDict], Union[Dict, FrozenDict]]:
         """
         Initialization of the policy network (Q-model as a Neural Network).
         :param rng: Random key for initialization.
         :return: A random key after splitting the input and the initial parameters of the policy network.
         """
-        rng, dummy_reset_rng, network_init_rng = jax.random.split(rng, 3)
-        self.ac_network = self.config.ac_network(self.n_actions, self.config)
+
+        self.actor_network = self.config.actor_network(self.n_actions, self.config)
+        self.critic_network = self.config.critic_network(self.n_actions, self.config)
+
+        rng, *_rng = jax.random.split(rng, 4)
+        dummy_reset_rng, actor_init_rng, critic_init_rng = _rng
+
         dummy_state, _ = self.env.reset(dummy_reset_rng, self.env_params)
         init_x = jnp.zeros((1, dummy_state.size))
-        network_params = self.ac_network.init(network_init_rng, init_x)
-        return rng, network_params
+
+        actor_params = self.actor_network.init(actor_init_rng, init_x)
+        critic_params = self.actor_network.init(critic_init_rng, init_x)
+
+        return rng, actor_params, critic_params
 
     @partial(jax.jit, static_argnums=(0,))
     def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, Float[Array, "state_size"], Type[LogEnvState]]:
@@ -216,8 +227,7 @@ class PPOAgent(ABC):
         return transition
 
     @partial(jax.jit, static_argnums=(0,))
-    def _select_action(self, rng: PRNGKeyArray, state: Float[Array, "state_size"], params: Dict,
-                       i_step: int) -> Tuple[PRNGKeyArray, Int[Array, "1"]]:
+    def _select_action(self, rng: PRNGKeyArray, pi) -> Tuple[PRNGKeyArray, Int[Array, "1"]]:
         """
         The agent selects an action to be executed using an epsilon-greedy policy. The value of epsilon is defined by
         the "get_epsilon" method, which is based on user input, so that different epsilon-decay function can be used.
@@ -225,20 +235,17 @@ class PPOAgent(ABC):
         passed into config during the agent's initialization. The user can modify this function so that illegal actions
         are avoided and the environment does not need to penalize the agent. Probably, this can smoothen training.
         :param rng: Random key for initialization.
-        :param state: The current state of the episode step in array format.
-        :param params: Parameters of the Actor-Critic network.
-        :param i_step: Current step of training.
-        :return: A random key after splitting the input, the action selected by the agent using the epsilon-greedy
-                 policy.
+        :param pi:
+        :return:
         """
 
         rng, rng_action_sample = jax.random.split(rng)
-
-        pi, value = self._pi_value(lax.stop_gradient(params), state)
         action = pi.sample(seed=rng_action_sample)
-        log_prob = pi.log_prob(action)
+        return rng, action
 
-        return rng, action, value, log_prob
+    @partial(jax.jit, static_argnums=(0,))
+    def _rewards_to_go(self, traj_batch):
+        pass
 
     @partial(jax.jit, static_argnums=(0,))
     def _update_step(self, runner: Runner, i_update_step: int) -> Tuple[Runner, Transition]:
@@ -250,9 +257,10 @@ class PPOAgent(ABC):
         :return: Current training step. Required for printing the progressbar via jax_tqdm.
         """
 
-        runner, traj_batch = lax.scan(self._step, runner, None, self.config.batch_size)
+        runner, traj_batch = lax.scan(self._step, runner, None, self.config.rollout_length)
 
-        _, last_value = self._pi_value(runner.training.params, runner.state)
+        rtgs = self._rewards_to_go(traj_batch)
+
         advantages, targets = self._advantage(traj_batch, last_value, runner.hyperparams)
 
         update_runner = (runner, advantages, targets, traj_batch)
@@ -341,7 +349,6 @@ class PPOAgent(ABC):
           buffer.
         - Updating the policy network.
         - Updating the target network.
-        - Generating metrics regarding the step.
         :param runner: The step runner object, containing information about the current status of the agent's training,
                        the state of the environment and training hyperparameters.
         :param i_step: Current step in trajectory sampling.
@@ -350,7 +357,11 @@ class PPOAgent(ABC):
                  - a dictionary of metrics regarding episode evolution and user-defined metrics.
         """
 
-        rng, action, value, log_prob = self._select_action(runner.rng, runner.state, runner.training.params, i_step)
+        pi, value = self._pi_value(lax.stop_gradient(runner.training.params), runner.state)
+
+        rng, action = self._select_action(runner.rng, pi)
+
+        log_prob = pi.log_prob(action)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, runner.env_state, action)
 
@@ -389,7 +400,17 @@ class PPOAgent(ABC):
 
         return metric
 
-    @jax.block_until_ready
+    @partial(jax.jit, static_argnums=(0,))
+    def _create_training(self, apply_fn: Callable, params: FrozenDict, tx: optax.chain) -> TrainState:
+        """
+
+        :param params:
+        :param tx:
+        :return:
+        """
+
+        return TrainState.create(apply_fn=apply_fn, tx=tx, params=params)
+
     @partial(jax.jit, static_argnums=(0,))
     def train(self, rng: PRNGKeyArray, hyperparams: HyperParameters) -> Tuple[Runner, Dict]:
         """
@@ -401,20 +422,19 @@ class PPOAgent(ABC):
         :return: The final state of the step runner after training and the training metrics accumulated over all
                  training steps.
         """
-        rng, network_params = self._init_ac_network(rng)
+        rng, actor_params, critic_params = self._init_ac_networks(rng)
 
-        tx = self._init_optimizer(hyperparams.optimizer_params)
+        actor_tx = self._init_optimizer(hyperparams.actor_optimizer_params)
+        critic_tx = self._init_optimizer(hyperparams.critic_optimizer_params)
 
-        training = TrainStatePPO.create(apply_fn=self.ac_network.apply,
-                                        params=network_params,
-                                        target_params=network_params,
-                                        tx=tx)
+        actor_training = self._create_training(self.actor_network.apply, actor_params, actor_tx)
+        critic_training = self._create_training(self.critic_network.apply, critic_params, critic_tx)
 
         rng, state, env_state = self._reset(rng)
 
         rng, runner_rng = jax.random.split(rng)
 
-        runner = Runner(training, env_state, state, runner_rng, hyperparams)
+        runner = Runner(actor_training, critic_training, env_state, state, runner_rng, hyperparams)
 
         runner, metrics = lax.scan(
             scan_tqdm(self.config.n_steps)(self._update_step),
