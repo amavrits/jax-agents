@@ -2,6 +2,7 @@ import flax.linen as nn
 from flax.linen.initializers import constant, orthogonal
 from typing import Sequence
 import jax.numpy as jnp
+import distrax
 
 
 class DQN_NN_model(nn.Module):
@@ -66,3 +67,64 @@ class QRDDQN_NN_model(nn.Module):
 
         return q
 
+
+class PPO_NN_model(nn.Module):
+    action_dim: Sequence[int]
+    config: dict
+
+    @nn.compact
+    def __call__(self, x):
+
+        activation = nn.tanh
+
+        actor_mean = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
+        actor_mean = activation(actor_mean)
+        actor_mean = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(actor_mean)
+        actor_mean = activation(actor_mean)
+        actor_mean = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(actor_mean)
+        pi = distrax.Categorical(logits=actor_mean)
+
+        critic = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
+        critic = activation(critic)
+        critic = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(critic)
+        critic = activation(critic)
+        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(critic)
+
+        return pi, jnp.squeeze(critic, axis=-1)
+
+
+class VanillaPG_Actor_NN_model(nn.Module):
+    action_dim: Sequence[int]
+    config: dict
+
+    @nn.compact
+    def __call__(self, x):
+
+        activation = nn.tanh
+
+        actor_mean = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
+        actor_mean = activation(actor_mean)
+        actor_mean = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(actor_mean)
+        actor_mean = activation(actor_mean)
+        actor_mean = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(actor_mean)
+        pi = distrax.Categorical(logits=actor_mean)
+
+        return pi
+
+
+class VanillaPG_Critic_NN_model(nn.Module):
+    action_dim: Sequence[int]
+    config: dict
+
+    @nn.compact
+    def __call__(self, x):
+
+        activation = nn.tanh
+
+        critic = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
+        critic = activation(critic)
+        critic = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(critic)
+        critic = activation(critic)
+        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(critic)
+
+        return jnp.squeeze(critic, axis=-1)

@@ -4,8 +4,8 @@ import jax.numpy as jnp
 from flax.training.train_state import TrainState
 from flax.core import FrozenDict
 from flax import struct
+import optax
 from optax._src import base
-import flashbax as fbx
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
 from typing import Tuple, Dict, NamedTuple, Callable, Any, Type, Union, Optional
@@ -13,10 +13,26 @@ from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 from dataclasses import dataclass
 
 
-class TrainStateDQN(TrainState):
-    """ Training state according to flax implementation"""
-    """Parameters of the target network"""
-    target_params: FrozenDict
+# class TrainStateVPG(NamedTuple):
+#     """ Training state"""
+#
+#     """Actor network function"""
+#     actor_apply_fn: Callable
+#
+#     """Critic network function"""
+#     critic_apply_fn: Callable
+#
+#     """Parameters of the actor network"""
+#     actor_params: FrozenDict
+#
+#     """Parameters of the critic network"""
+#     critic_params: FrozenDict
+#
+#     """Optimizer for the actor network"""
+#     actor_tx: optax.chain
+#
+#     """Optimizer for the critic network"""
+#     critic_tx: optax.chain
 
 
 class Transition(NamedTuple):
@@ -26,6 +42,12 @@ class Transition(NamedTuple):
 
     """Action selecetd by agent"""
     action: Int[Array, "1"]
+
+    """Value of the selected action"""
+    value: Float[Array, "1"]
+
+    """Log-probability of selected policy action"""
+    log_prob: Float[Array, "1"]
 
     """Collected reward"""
     reward: Float[Array, "1"]
@@ -57,29 +79,33 @@ class HyperParameters(NamedTuple):
     """Gamma (discount parameter) of Bellman equation"""
     gamma: float
 
-    """Hyperparameter for updating the target network. Depending on updating style, it is either the period of updating
-    or the rate of the incremental update."""
-    target_update_param: float
+    """Generalized Advantage Estimation lambda"""
+    gae_lambda: float
 
-    """Optimizer parameters"""
-    optimizer_params: OptimizerParams
+    """Value clip"""
+    clip_eps: float
 
+    """ ??? """
+    vf_coeff: float
 
-class CategoricalHyperParameters(HyperParameters):
-    """Training hyperparameters for the Categorical DQN agent"""
-    pass
+    """ ??? """
+    ent_coeff: float
 
+    """Optimizer parameters for the actor network"""
+    actor_optimizer_params: OptimizerParams
 
-class QuantileHyperParameters(HyperParameters):
-    """Training hyperparameters for the QRDQN"""
-    huber_K: float = 1.0
+    """Optimizer parameters for the critic network"""
+    critic_optimizer_params: OptimizerParams
 
 
 @struct.dataclass
 class Runner:
     """Object for running, passes training status, environment state and hyperparameters between training steps."""
-    """Training status (policy and target network parameters), training step and optimizer"""
-    training: TrainState
+    """Training status (params, training step and optimizer) of the actor"""
+    actor_training: TrainState
+
+    """Training status (params, training step and optimizer) of the critic"""
+    critic_training: TrainState
 
     """State of the environment"""
     env_state: LogEnvState
@@ -90,11 +116,8 @@ class Runner:
     """Random key, required for reproducibility of results and control of randomness"""
     rng: PRNGKeyArray
 
-    """Training buffer"""
-    buffer_state: fbx.trajectory_buffer.BufferState
-
     """Training hyperparameters"""
-    hyperparams: Union[HyperParameters, CategoricalHyperParameters, QuantileHyperParameters]
+    hyperparams: HyperParameters
 
 
 @struct.dataclass
@@ -114,17 +137,24 @@ class EvalRunner:
 
 class AgentConfig(NamedTuple):
     """Configuration of the DQN and DDQN agents, passed at initialization of instance."""
+
     """Number of training steps (not episodes)"""
     n_steps: int
-
-    """Size of the training buffer"""
-    buffer_size: int
 
     """Size of batch collected from buffer for updating the policy network"""
     batch_size: int
 
-    """The architecture of the policy (and target) network"""
-    q_network: Type[flax.linen.Module]
+    """Number of steps to be collected when sampling trajectories (must be large enough to sample entire batch)"""
+    rollout_length: int
+
+    """Number of epochs per policy update"""
+    update_epochs: int
+
+    """The architecture of the actor network"""
+    actor_network: Type[flax.linen.Module]
+
+    """The architecture of the critic network"""
+    critic_network: Type[flax.linen.Module]
 
     """Template of transition, so that the buffer can be configured"""
     transition_template: Transition
@@ -145,36 +175,8 @@ class AgentConfig(NamedTuple):
     act_randomly: Callable[[PRNGKeyArray, Float[Array, "state_size"], int], int] =\
         lambda rng, state, n_actions: jax.random.choice(rng, jnp.arange(n_actions))
 
-    """Type of the training buffer"""
-    buffer_type: str = "FLAT"
-
-    """Style of updating the target network parameters"""
-    target_update_method: str = "PERIODIC"
-
-    """Style of function for reducing the epsilon value of the epsilon-greedy policy."""
-    epsilon_fn_style: str = "DECAY"
-
-    """Parameters of function for reducing the epsilon value of the epsilon-greedy policy."""
-    epsilon_params: Tuple = (0.9, 0.05, 50_000)
-
     """Whether the parameters and the performance of the agent should be stored during training."""
     store_agent: bool = False
-
-
-class CategoricalAgentConfig(AgentConfig):
-    """Configuration of the Categorical DQN agent, passed at initialization of instance."""
-    """Atoms in an array. Passing this argument instead of the minimum and maximum values can increase the flexibility
-    of applying the agent."""
-    atoms: Float[Array, "n_atoms"]
-
-    """Difference between atoms"""
-    delta_atoms: Float[Array, "n_atoms"]
-
-
-class QuantileAgentConfig(AgentConfig):
-    """Configuration of the QRDQN agent, passed at initialization of instance."""
-    """Number of quantiles"""
-    n_qunatiles: int = 21
 
 
 @dataclass

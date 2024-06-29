@@ -57,7 +57,7 @@ class DQNAgentBase(ABC):
 
     Training relies on jitting several methods by treating the 'self' arg as static. According to suggested practice,
     this can prove dangerous (https://jax.readthedocs.io/en/latest/faq.html#how-to-use-jit-with-methods -
-    How to use jit with methods?); in case attrs of 'self' change during training, the changes will not be registered in
+    How to use jit with methods?); if attrs of 'self' change during training, the changes will not be registered in
     jit. In this case, neither agent training nor evaluation change any 'self' attrs, so using Strategy 2 of the
     suggested practice is valid. Otherwise, strategy 3 should have been used.
     """
@@ -488,7 +488,6 @@ class DQNAgentBase(ABC):
 
         return runner
 
-    @jax.block_until_ready
     @partial(jax.jit, static_argnums=(0,))
     def train(self, rng: PRNGKeyArray, hyperparams: HyperParametersType) -> Tuple[Runner, Dict]:
         """
