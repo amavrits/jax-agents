@@ -34,6 +34,8 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
+BufferStateType = fbx.trajectory_buffer.BufferState
+
 
 class VPGAgent(ABC):
     """
@@ -90,6 +92,42 @@ class VPGAgent(ABC):
         self.env_params = env_params
         self.n_actions = self.env.action_space(self.env_params).n
 
+    @partial(jax.jit, static_argnums=(0,))
+    def _init_buffer(self) -> BufferStateType:
+        """
+        Buffer initialization.
+        :return: The initialized buffer for the agent.
+        """
+
+        # if self.config.buffer_type == "FLAT":
+
+        # self.buffer_fn = fbx.make_flat_buffer(
+        #     max_length=self.config.buffer_size,
+        #     min_length=self.config.batch_size,
+        #     sample_batch_size=self.config.batch_size,
+        #     add_sequences=True,
+        #     add_batch_size=None,
+        # )
+        # buffer_state = self.buffer_fn.init(self.config.transition_template)
+
+        self.buffer_fn = fbx.make_trajectory_buffer(
+            add_batch_size=self.config.batch_size,
+            sample_batch_size=self.config.batch_size,
+            sample_sequence_length=self.config.rollout_length,
+            period=0,
+            min_length_time_axis=self.config.batch_size
+        )
+        self.buffer_fn.add()
+        buffer_state = self.buffer_fn.init(self.config.transition_template)
+
+        # elif self.config.buffer_type == "PER":
+        #     raise Exception("PER buffers have not been added yet.")
+        # else:
+        #     raise Exception("Unknown buffer type")
+
+
+        return buffer_state
+
     def _init_optimizer(self, optimizer_params: OptimizerParams) -> optax.chain:
         """
         Optimizer initialization. This method uses the optax optimizer function given in the agent configuration to
@@ -131,7 +169,7 @@ class VPGAgent(ABC):
 
         return tx
 
-    @partial(jax.jit, static_argnums=(0,))
+    # @partial(jax.jit, static_argnums=(0,))
     def _init_network(self, rng: PRNGKeyArray, network:Type[flax.linen.Module])\
             -> Tuple[PRNGKeyArray, Union[Dict, FrozenDict]]:
         """
@@ -255,30 +293,91 @@ class VPGAgent(ABC):
         :return: Current training step. Required for printing the progressbar via jax_tqdm.
         """
 
-        # step_runner = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))\
-            # (update_runner.env_state, update_runner.state, update_runner.actor_training, update_runner.critic_training, update_runner.rng)
+        step_runner = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))\
+            (update_runner.env_state, update_runner.state, update_runner.actor_training, update_runner.critic_training, update_runner.rng)
 
-        update_runner, traj_batch = lax.scan(self._step, update_runner, None, self.config.rollout_length)
-        traj_batch = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), traj_batch)
+        step_runner, traj_batch = jax.vmap(lambda x: lax.scan(self._step, x, None, self.config.rollout_length))(step_runner)
 
-        last_value = update_runner.critic_training.apply_fn(update_runner.critic_training.params, update_runner.state)
-        last_value = jnp.asarray([last_value])
-        last_value = jnp.repeat(last_value, self.config.rollout_length, axis=0)
+        env_state, state, _, _, rng = step_runner
 
-        r_t = traj_batch.reward
-        v_t = jnp.concatenate([traj_batch.value, last_value[..., jnp.newaxis]], axis=-1)[:, 1:]
-        d_t = 1.0 - traj_batch.terminated.astype(jnp.float32)
-        d_t = (d_t * update_runner.hyperparams.gamma).astype(jnp.float32)
-        monte_carlo_returns = batch_discounted_returns(r_t, d_t, v_t, True, False)
+        traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
 
-        advantages, targets = self._advantage(traj_batch, last_value, update_runner.hyperparams)
+        last_value = update_runner.critic_training.apply_fn(update_runner.critic_training.params, state)
+        last_value = jnp.asarray(last_value)
 
-        update_runner = (update_runner, advantages, targets, traj_batch)
-        update_runner, _ = jax.lax.scan(self._update_epoch, update_runner, None, self.config.update_epochs)
+        rewards_t = traj_batch.reward.squeeze()
+        values_t = jnp.concatenate([traj_batch.value.squeeze(), last_value[..., jnp.newaxis]], axis=-1)[:, 1:]
+        discounted_rewards_t = 1.0 - traj_batch.terminated.astype(jnp.float32).squeeze()
+        discounted_rewards_t = (discounted_rewards_t * update_runner.hyperparams.gamma).astype(jnp.float32)
+        returns = self._returns(rewards_t, values_t, discounted_rewards_t, update_runner.hyperparams.gae_lambda)
 
-        metrics = self._generate_metrics(runner=update_runner, reward=traj_batch.reward, terminated=traj_batch.terminated)
+        actor_grad_fn = jax.grad(self._actor_loss, allow_int=True)
+        actor_grads = actor_grad_fn(
+            update_runner.actor_training,
+            traj_batch.state,
+            traj_batch.action,
+            returns,
+            traj_batch.value,
+            update_runner.hyperparams.ent_coeff
+        )
 
-        return update_runner, metrics
+        critic_grad_fn = jax.grad(self._critic_loss, allow_int=True)
+        critic_grads = critic_grad_fn(update_runner.critic_training, traj_batch.state, returns,
+                                      update_runner.hyperparams.vf_coeff)
+
+        actor_training = update_runner.actor_training.apply_gradients(grads=actor_grads.params)
+        critic_training = update_runner.critic_training.apply_gradients(grads=critic_grads.params)
+
+        update_runner = update_runner.replace(actor_training=actor_training, critic_training=critic_training,
+                                              env_state=env_state, state=state, rng=rng)
+
+        # metrics = self._generate_metrics(runner=update_runner, reward=traj_batch.reward, terminated=traj_batch.terminated)
+
+        return update_runner, {}
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _returns(self, rewards_t, values_t, discounted_rewards_t, lambda_):
+
+        rewards_t, discounted_rewards_t, values_t = jax.tree_util.tree_map(
+            lambda x: jnp.swapaxes(x, 0, 1), (rewards_t, discounted_rewards_t, values_t)
+        )
+
+        lambda_ = jnp.ones_like(discounted_rewards_t) * lambda_
+
+        def _body(acc, xs):
+            returns, discounts, values, lambda_ = xs
+            acc = returns + discounts * ((1 - lambda_) * values + lambda_ * acc)
+            return acc, acc
+
+        _, returns = jax.lax.scan(_body, values_t[-1], (rewards_t, discounted_rewards_t, values_t, lambda_), reverse=True)
+
+        returns = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), returns)
+
+        return returns
+
+
+    @partial(jax.jit, static_argnums=(0,))
+    # def _actor_loss(self, params, apply_fn, state, action, returns, value, ent_coef):
+    def _actor_loss(self, training, state, action, returns, value, ent_coef):
+
+        actor_policy = training.apply_fn(training.params, state)
+        # actor_policy = apply_fn(params, state)
+        log_prob = actor_policy.log_prob(action)
+        advantage = returns - value
+
+        loss_actor = -advantage * log_prob
+        entropy = actor_policy.entropy().mean()
+
+        total_loss_actor = loss_actor.mean() - ent_coef * entropy
+
+        return total_loss_actor
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _critic_loss(self, training, state, targets, vf_coef):
+        value = training.apply_fn(training.params, state)
+        value_loss = jnp.mean((value-targets) ** 2)
+        critic_total_loss = vf_coef * value_loss
+        return critic_total_loss
 
     @partial(jax.jit, static_argnums=(0,))
     def _loss(self, params, traj_batch, advantages, targets, hyperparams):
@@ -367,17 +466,19 @@ class VPGAgent(ABC):
                  - a dictionary of metrics regarding episode evolution and user-defined metrics.
         """
 
-        pi, value = self._pi_value(step_runner.actor_training, step_runner.critic_training, step_runner.state)
+        env_state, state, actor_training, critic_training, rng = step_runner
 
-        rng, action = jax.vmap(self._select_action)(step_runner.rng, pi)
+        pi, value = self._pi_value(actor_training, critic_training, state)
+
+        rng, action = self._select_action(rng, pi)
 
         log_prob = pi.log_prob(action)
 
-        rng, next_state, next_env_state, reward, terminated, info = jax.vmap(self._env_step)(rng, step_runner.env_state, action)
+        rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, action)
 
-        step_runner = step_runner.replace(rng=rng, state=next_state, env_state=next_env_state)
+        step_runner = (env_state, state, actor_training, critic_training, rng)
 
-        transition = self._make_transition(step_runner.state, action, value, log_prob, reward, next_state, terminated, info)
+        transition = self._make_transition(state, action, value, log_prob, reward, next_state, terminated, info)
 
         return step_runner, transition
 
@@ -410,7 +511,7 @@ class VPGAgent(ABC):
 
         return metric
 
-    @partial(jax.jit, static_argnums=(0,))
+    # @partial(jax.jit, static_argnums=(0,))
     def _create_training(self, rng: PRNGKeyArray, network: Type[flax.linen.Module], optimizer_params: OptimizerParams)\
             -> TrainState:
         """
@@ -439,6 +540,7 @@ class VPGAgent(ABC):
         reset_rngs = jax.random.split(reset_rng, self.config.batch_size)
         runner_rngs = jax.random.split(runner_rng, self.config.batch_size)
 
+        # _, state, env_state = self._reset(reset_rng)
         _, state, env_state = jax.vmap(self._reset)(reset_rngs)
 
         update_runner = UpdateRunner(actor_training, critic_training, env_state, state, runner_rngs, hyperparams)
@@ -457,8 +559,8 @@ class VPGAgent(ABC):
                  training steps.
         """
 
-        rng, *_rng = jax.random.split(rng, 3)
-        actor_init_rng, critic_init_rng = _rng
+        rng, *_rng = jax.random.split(rng, 4)
+        actor_init_rng, critic_init_rng, runner_rng = _rng
 
         actor_training = self._create_training(
             actor_init_rng, self.config.actor_network, hyperparams.actor_optimizer_params
@@ -467,8 +569,7 @@ class VPGAgent(ABC):
             critic_init_rng, self.config.critic_network,  hyperparams.critic_optimizer_params
         )
 
-        rng, env_init_rng = jax.random.split(rng)
-        update_runner = self._create_update_runner(env_init_rng, actor_training, critic_training, hyperparams)
+        update_runner = self._create_update_runner(runner_rng, actor_training, critic_training, hyperparams)
 
         runner, metrics = lax.scan(
             scan_tqdm(self.config.n_steps)(self._update_step),
@@ -528,7 +629,8 @@ class VPGAgent(ABC):
                  - a dictionary of metrics regarding episode evolution and user-defined metrics.
         """
 
-        rng, action, value, log_prob = self._select_action(runner.rng, runner.state, self.agent_params, i_step)
+        pi, value = self._pi_value(self.actor_training, self.critic_training, runner.state)
+        rng, action = self._select_action(runner.rng, pi)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, runner.env_state, action)
 
@@ -584,7 +686,8 @@ class VPGAgent(ABC):
         :return:
         """
 
-        self.agent_params = self.training_runner.training.params
+        self.actor_training = self.training_runner.actor_training
+        self.critic_training = self.training_runner.actor_training
 
     @staticmethod
     def _summary_stats(episode_metric: np.ndarray["size_metrics", float]) -> MetricStats:

@@ -6,6 +6,7 @@ from flax.core import FrozenDict
 from flax import struct
 import optax
 from optax._src import base
+import flashbax as fbx
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
 from typing import Tuple, Dict, NamedTuple, Callable, Any, Type, Union, Optional
