@@ -99,7 +99,7 @@ class HyperParameters(NamedTuple):
 
 
 @struct.dataclass
-class Runner:
+class UpdateRunner:
     """Object for running, passes training status, environment state and hyperparameters between training steps."""
     """Training status (params, training step and optimizer) of the actor"""
     actor_training: TrainState
@@ -168,7 +168,7 @@ class AgentConfig(NamedTuple):
     loss_fn: Optional[Callable[[Float[Array, "batch_size"], Float[Array, "batch_size"]], Float[Array, "1"]]] = None
 
     """Optional function for assessing the agent's performance during training."""
-    get_performance: Optional[Callable[[int, Runner], Any]] = None
+    get_performance: Optional[Callable[[int, UpdateRunner], Any]] = None
 
     """Optional function for defining the selection of random actions by the agent. This can be used to avoid illegal 
     actions and penalizing in the environment."""
