@@ -37,35 +37,32 @@ if __name__ == '__main__':
         actor_network=VanillaPG_Actor_NN_model,
         critic_network=VanillaPG_Critic_NN_model,
         transition_template=transition_temp,
-        rollout_length=500,
-        n_steps=10_000,
+        rollout_length=50,
+        n_steps=100,
         update_epochs=1,
-        batch_size=32,
+        batch_size=8,
         store_agent=False,
         act_randomly=lambda random_key, state, n_actions: jax.random.choice(random_key, jnp.arange(n_actions)),
         get_performance=lambda i_step, step_runner: 0,
-        optimizer=optax.rmsprop,
+        optimizer=optax.adam,
         loss_fn=optax.l2_loss
     )
-
 
     """Set up agent"""
     agent = vpg.VPGAgent(env, env_params, config)
     print(agent.__str__())
 
-
     """Define optimizer parameters and training hyperparameters"""
-    optimizer_params = vpg.OptimizerParams(learning_rate=5e-3, eps=1e-3, grad_clip=1)
+    optimizer_params = vpg.OptimizerParams(learning_rate=1e-2, eps=1e-3, grad_clip=1)
     hyperparams = vpg.HyperParameters(
         gamma=0.99,
-        gae_lambda=0.95,
+        gae_lambda=1,
         clip_eps=0.05,
         vf_coeff=0.5,
         ent_coeff=0.01,
         actor_optimizer_params=optimizer_params,
         critic_optimizer_params=optimizer_params
     )
-
 
     """Draw random key"""
     rng = jax.random.PRNGKey(42)

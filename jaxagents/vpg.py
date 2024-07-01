@@ -343,29 +343,27 @@ class VPGAgent(ABC):
             lambda x: jnp.swapaxes(x, 0, 1), (rewards_t, discounted_rewards_t, values_t)
         )
 
-        # import numpy as np
-        # A = np.asarray(traj_batch.terminated)
-
         lambda_ = jnp.ones_like(discounted_rewards_t) * lambda_
 
         def _body(acc, xs):
-            returns, discounts, values, lambda_ = xs
-            acc = returns + discounts * ((1 - lambda_) * values + lambda_ * acc)
+            rewards, discounts, values, lambda_ = xs
+            acc = rewards + discounts * ((1 - lambda_) * values + lambda_ * acc)
             return acc, acc
 
         _, returns = jax.lax.scan(_body, values_t[-1], (rewards_t, discounted_rewards_t, values_t, lambda_), reverse=True)
 
         returns = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), returns)
 
+        # import numpy as np
+        # A = np.asarray(returns)
+
         return returns
 
 
     @partial(jax.jit, static_argnums=(0,))
-    # def _actor_loss(self, params, apply_fn, state, action, returns, value, ent_coef):
     def _actor_loss(self, training, state, action, returns, value, ent_coef):
 
         actor_policy = training.apply_fn(training.params, state)
-        # actor_policy = apply_fn(params, state)
         log_prob = actor_policy.log_prob(action)
         advantage = returns - value
 
@@ -374,37 +372,14 @@ class VPGAgent(ABC):
 
         total_loss_actor = loss_actor.mean() - ent_coef * entropy
 
-        return - total_loss_actor  # TODO: negative gradient, because we want ascent but 'apply_gradients' applies descent
+        return total_loss_actor  # TODO: negative gradient, because we want ascent but 'apply_gradients' applies descent
 
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss(self, training, state, targets, vf_coef):
         value = training.apply_fn(training.params, state)
         value_loss = jnp.mean((value-targets) ** 2)
         critic_total_loss = vf_coef * value_loss
-        return - critic_total_loss  # TODO: negative gradient, because we want ascent but 'apply_gradients' applies descent
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _update_epoch(self, update_runner, i_update_epoch):
-
-        runner, advantages, targets, traj_batch = update_runner
-
-        grad_fn = jax.jit(jax.grad(self._loss, has_aux=False, allow_int=True, argnums=0))
-        grads = grad_fn(
-            runner.training.params,
-            traj_batch,
-            advantages,
-            targets,
-            runner.hyperparams
-        )
-
-        training = runner.training.apply_gradients(grads=grads)
-
-        """Update runner as a dataclass"""
-        runner = runner.replace(training=training)
-
-        update_runner = (runner, advantages, targets, traj_batch)
-
-        return update_runner, {}
+        return critic_total_loss  # TODO: negative gradient, because we want ascent but 'apply_gradients' applies descent
 
     @partial(jax.jit, static_argnums=(0,))
     def _gae(self, carry, transition):
