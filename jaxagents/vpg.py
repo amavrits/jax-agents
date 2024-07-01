@@ -305,11 +305,7 @@ class VPGAgent(ABC):
         last_value = update_runner.critic_training.apply_fn(update_runner.critic_training.params, state)
         last_value = jnp.asarray(last_value)
 
-        rewards_t = traj_batch.reward.squeeze()
-        values_t = jnp.concatenate([traj_batch.value.squeeze(), last_value[..., jnp.newaxis]], axis=-1)[:, 1:]
-        discounted_rewards_t = 1.0 - traj_batch.terminated.astype(jnp.float32).squeeze()
-        discounted_rewards_t = (discounted_rewards_t * update_runner.hyperparams.gamma).astype(jnp.float32)
-        returns = self._returns(rewards_t, values_t, discounted_rewards_t, update_runner.hyperparams.gae_lambda)
+        returns = self._returns(traj_batch, last_value, update_runner.hyperparams.gamma, update_runner.hyperparams.gae_lambda)
 
         actor_grad_fn = jax.grad(self._actor_loss, allow_int=True)
         actor_grads = actor_grad_fn(
@@ -336,11 +332,19 @@ class VPGAgent(ABC):
         return update_runner, {}
 
     @partial(jax.jit, static_argnums=(0,))
-    def _returns(self, rewards_t, values_t, discounted_rewards_t, lambda_):
+    def _returns(self, traj_batch, last_value, gamma, lambda_):
+
+        rewards_t = traj_batch.reward.squeeze()
+        values_t = jnp.concatenate([traj_batch.value.squeeze(), last_value[..., jnp.newaxis]], axis=-1)[:, 1:]
+        discounted_rewards_t = 1.0 - traj_batch.terminated.astype(jnp.float32).squeeze()
+        discounted_rewards_t = (discounted_rewards_t * gamma).astype(jnp.float32)
 
         rewards_t, discounted_rewards_t, values_t = jax.tree_util.tree_map(
             lambda x: jnp.swapaxes(x, 0, 1), (rewards_t, discounted_rewards_t, values_t)
         )
+
+        # import numpy as np
+        # A = np.asarray(traj_batch.terminated)
 
         lambda_ = jnp.ones_like(discounted_rewards_t) * lambda_
 
@@ -370,40 +374,14 @@ class VPGAgent(ABC):
 
         total_loss_actor = loss_actor.mean() - ent_coef * entropy
 
-        return total_loss_actor
+        return - total_loss_actor  # TODO: negative gradient, because we want ascent but 'apply_gradients' applies descent
 
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss(self, training, state, targets, vf_coef):
         value = training.apply_fn(training.params, state)
         value_loss = jnp.mean((value-targets) ** 2)
         critic_total_loss = vf_coef * value_loss
-        return critic_total_loss
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _loss(self, params, traj_batch, advantages, targets, hyperparams):
-
-        clip_eps, vf_coeff, ent_coeff = hyperparams.clip_eps, hyperparams.vf_coeff, hyperparams.ent_coeff
-
-        pi, value = self.ac_network.apply(params, traj_batch.state)
-        log_prob = pi.log_prob(traj_batch.action)
-
-        # TODO: apply loss function
-        value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-clip_eps, clip_eps)
-        value_losses = jnp.square(value - targets)
-        value_losses_clipped = jnp.square(value_pred_clipped - targets)
-        value_loss = (0.5 * jnp.maximum(value_losses, value_losses_clipped).mean())
-
-        ratio = jnp.exp(log_prob - traj_batch.log_prob)
-        gae = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        loss_actor1 = ratio * gae
-        loss_actor2 = (jnp.clip(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * gae)
-        loss_actor = - jnp.minimum(loss_actor1, loss_actor2)
-        loss_actor = loss_actor.mean()
-        entropy = pi.entropy().mean()
-
-        loss = loss_actor + vf_coeff * value_loss - ent_coeff * entropy
-
-        return loss
+        return - critic_total_loss  # TODO: negative gradient, because we want ascent but 'apply_gradients' applies descent
 
     @partial(jax.jit, static_argnums=(0,))
     def _update_epoch(self, update_runner, i_update_epoch):
@@ -476,7 +454,7 @@ class VPGAgent(ABC):
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, action)
 
-        step_runner = (env_state, state, actor_training, critic_training, rng)
+        step_runner = (next_env_state, next_state, actor_training, critic_training, rng)
 
         transition = self._make_transition(state, action, value, log_prob, reward, next_state, terminated, info)
 
