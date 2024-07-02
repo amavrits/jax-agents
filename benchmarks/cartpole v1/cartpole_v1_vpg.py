@@ -4,7 +4,7 @@ import jax
 import optax
 import gymnax
 import numpy as np
-from jaxagents import vpg as vpg
+from jaxagents import vpg_discrete as vpg
 from cartpole_nn_gallery import *
 import matplotlib
 matplotlib.use("TkAgg")
@@ -39,7 +39,6 @@ if __name__ == '__main__':
         transition_template=transition_temp,
         rollout_length=50,
         n_steps=100,
-        update_epochs=1,
         batch_size=8,
         store_agent=False,
         act_randomly=lambda random_key, state, n_actions: jax.random.choice(random_key, jnp.arange(n_actions)),
@@ -49,7 +48,7 @@ if __name__ == '__main__':
     )
 
     """Set up agent"""
-    agent = vpg.VPGAgent(env, env_params, config)
+    agent = vpg.VPGAgentBase(env, env_params, config)
     print(agent.__str__())
 
     """Define optimizer parameters and training hyperparameters"""

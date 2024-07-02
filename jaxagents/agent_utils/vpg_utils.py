@@ -2,38 +2,14 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from flax.training.train_state import TrainState
-from flax.core import FrozenDict
 from flax import struct
 import optax
 from optax._src import base
-import flashbax as fbx
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
 from typing import Tuple, Dict, NamedTuple, Callable, Any, Type, Union, Optional
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 from dataclasses import dataclass
-
-
-# class TrainStateVPG(NamedTuple):
-#     """ Training state"""
-#
-#     """Actor network function"""
-#     actor_apply_fn: Callable
-#
-#     """Critic network function"""
-#     critic_apply_fn: Callable
-#
-#     """Parameters of the actor network"""
-#     actor_params: FrozenDict
-#
-#     """Parameters of the critic network"""
-#     critic_params: FrozenDict
-#
-#     """Optimizer for the actor network"""
-#     actor_tx: optax.chain
-#
-#     """Optimizer for the critic network"""
-#     critic_tx: optax.chain
 
 
 class Transition(NamedTuple):
@@ -100,8 +76,8 @@ class HyperParameters(NamedTuple):
 
 
 @struct.dataclass
-class UpdateRunner:
-    """Object for running, passes training status, environment state and hyperparameters between training steps."""
+class Runner:
+    """Object for running, passes training status, environment state and hyperparameters between policy update steps."""
     """Training status (params, training step and optimizer) of the actor"""
     actor_training: TrainState
 
@@ -148,13 +124,10 @@ class AgentConfig(NamedTuple):
     """Number of steps to be collected when sampling trajectories (must be large enough to sample entire batch)"""
     rollout_length: int
 
-    """Number of epochs per policy update"""
-    update_epochs: int
-
-    """The architecture of the actor network"""
+    """Architecture of the actor network"""
     actor_network: Type[flax.linen.Module]
 
-    """The architecture of the critic network"""
+    """Architecture of the critic network"""
     critic_network: Type[flax.linen.Module]
 
     """Template of transition, so that the buffer can be configured"""
@@ -169,7 +142,7 @@ class AgentConfig(NamedTuple):
     loss_fn: Optional[Callable[[Float[Array, "batch_size"], Float[Array, "batch_size"]], Float[Array, "1"]]] = None
 
     """Optional function for assessing the agent's performance during training."""
-    get_performance: Optional[Callable[[int, UpdateRunner], Any]] = None
+    get_performance: Optional[Callable[[int, Runner], Any]] = None
 
     """Optional function for defining the selection of random actions by the agent. This can be used to avoid illegal 
     actions and penalizing in the environment."""
