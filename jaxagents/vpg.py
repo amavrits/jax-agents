@@ -180,7 +180,7 @@ class VPGAgentBase(ABC):
         """
 
         rng, step_rng = jax.random.split(rng)
-        next_state, next_env_state, reward, terminated, info =\
+        next_state, next_env_state, reward, terminated, info = \
             self.env.step(step_rng, env_state, action.squeeze(), self.env_params)
 
         return rng, next_state, next_env_state, reward, terminated, info
@@ -212,192 +212,10 @@ class VPGAgentBase(ABC):
                  the executed action, the collected reward, episode termination and optional additional information.
         """
 
-        transition = Transition(state.squeeze(),
-                                action,
-                                value,
-                                log_prob,
-                                # jnp.expand_dims(reward, axis=0),
-                                reward,
-                                next_state,
-                                # jnp.expand_dims(terminated, axis=0),
-                                terminated,
-                                info)
+        transition = Transition(state.squeeze(), action, value, log_prob, reward, next_state, terminated, info)
         transition = jax.tree_util.tree_map(lambda x: jnp.expand_dims(x, axis=0), transition)
 
         return transition
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _select_action(self, rng: PRNGKeyArray, pi) -> Tuple[PRNGKeyArray, Int[Array, "1"]]:
-        """
-        The agent selects an action to be executed using an epsilon-greedy policy. The value of epsilon is defined by
-        the "get_epsilon" method, which is based on user input, so that different epsilon-decay function can be used.
-        Also, the method selects a random action using the user defined function "act_randomly", which needs to be
-        passed into config during the agent's initialization. The user can modify this function so that illegal actions
-        are avoided and the environment does not need to penalize the agent. Probably, this can smoothen training.
-        :param rng: Random key for initialization.
-        :param pi:
-        :return:
-        """
-
-        rng, rng_action_sample = jax.random.split(rng)
-        action = pi.sample(seed=rng_action_sample)
-        return rng, action
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _rewards_to_go(self, traj_batch):
-        pass
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _update_step(self, update_runner: Runner, i_update_step: int) -> Tuple[Runner, Transition]:
-        """
-
-        :param runner: The step runner object, containing information about the current status of the agent's training,
-                       the state of the environment and training hyperparameters.
-        :param i_update_step:
-        :return: Current training step. Required for printing the progressbar via jax_tqdm.
-        """
-
-        step_runner = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))\
-            (update_runner.env_state, update_runner.state, update_runner.actor_training, update_runner.critic_training, update_runner.rng)
-
-        # step_runner = (update_runner.env_state, update_runner.state, update_runner.rng)
-        # training = (update_runner.actor_training, update_runner.critic_training)
-
-        step_runner, traj_batch = jax.vmap(lambda x: lax.scan(self._step, x, None, self.config.rollout_length))(step_runner)
-        # carry, traj_batch = jax.vmap(lambda x, y: lax.scan(self._step, (x, y), None, self.config.rollout_length), in_axes=(0, None))(step_runner, training)
-        # step_runner, training = carry
-
-        env_state, state, _, _, rng = step_runner
-        # env_state, state, rng = step_runner
-
-        traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
-
-        last_value = update_runner.critic_training.apply_fn(update_runner.critic_training.params, state)
-        last_value = jnp.asarray(last_value)
-
-        returns = self._returns(traj_batch, last_value, update_runner.hyperparams.gamma, update_runner.hyperparams.gae_lambda)
-
-        actor_grad_fn = jax.grad(self._actor_loss, allow_int=True)
-        actor_grads = actor_grad_fn(
-            update_runner.actor_training,
-            traj_batch.state,
-            traj_batch.action,
-            returns,
-            traj_batch.value,
-            update_runner.hyperparams.ent_coeff
-        )
-
-        critic_grad_fn = jax.grad(self._critic_loss, allow_int=True)
-        critic_grads = critic_grad_fn(update_runner.critic_training, traj_batch.state, returns,
-                                      update_runner.hyperparams.vf_coeff)
-
-        actor_training = update_runner.actor_training.apply_gradients(grads=actor_grads.params)
-        critic_training = update_runner.critic_training.apply_gradients(grads=critic_grads.params)
-
-        update_runner = update_runner.replace(actor_training=actor_training, critic_training=critic_training,
-                                              env_state=env_state, state=state, rng=rng)
-
-        # metrics = self._generate_metrics(runner=update_runner, reward=traj_batch.reward, terminated=traj_batch.terminated)
-
-        return update_runner, {}
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _returns(self, traj_batch, last_value, gamma, lambda_):
-
-        rewards_t = traj_batch.reward.squeeze()
-        values_t = jnp.concatenate([traj_batch.value.squeeze(), last_value[..., jnp.newaxis]], axis=-1)[:, 1:]
-        discounted_rewards_t = 1.0 - traj_batch.terminated.astype(jnp.float32).squeeze()
-        discounted_rewards_t = (discounted_rewards_t * gamma).astype(jnp.float32)
-
-        rewards_t, discounted_rewards_t, values_t = jax.tree_util.tree_map(
-            lambda x: jnp.swapaxes(x, 0, 1), (rewards_t, discounted_rewards_t, values_t)
-        )
-
-        lambda_ = jnp.ones_like(discounted_rewards_t) * lambda_
-
-        def _body(acc, xs):
-            rewards, discounts, values, lambda_ = xs
-            acc = rewards + discounts * ((1 - lambda_) * values + lambda_ * acc)
-            return acc, acc
-
-        _, returns = jax.lax.scan(_body, values_t[-1], (rewards_t, discounted_rewards_t, values_t, lambda_), reverse=True)
-
-        returns = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), returns)
-
-        return returns
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _actor_loss(self, training, state, action, returns, value, ent_coef):
-
-        actor_policy = training.apply_fn(training.params, state)
-        log_prob = actor_policy.log_prob(action)
-        advantage = returns - value
-
-        loss_actor = -advantage * log_prob
-        entropy = actor_policy.entropy().mean()
-
-        total_loss_actor = loss_actor.mean() - ent_coef * entropy
-
-        return total_loss_actor  # TODO: negative gradient, because we want ascent but 'apply_gradients' applies descent
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _critic_loss(self, training, state, targets, vf_coef):
-        value = training.apply_fn(training.params, state)
-        value_loss = jnp.mean((value-targets) ** 2)
-        critic_total_loss = vf_coef * value_loss
-        return critic_total_loss  # TODO: negative gradient, because we want ascent but 'apply_gradients' applies descent
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _gae(self, carry, transition):
-        gae, next_value, gamma, gae_lambda = carry
-        terminated, value, reward = (
-            transition.terminated,
-            transition.value,
-            transition.reward,
-        )
-        delta = reward + gamma * next_value * (1 - terminated) - value
-        gae = (delta + gamma * gae_lambda * (1 - terminated) * gae)
-        return (gae.squeeze(), value.squeeze(), gamma, gae_lambda), gae
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _advantage(self, traj_batch, last_value, hyperparams):
-
-        carry = (jnp.zeros_like(last_value), last_value, hyperparams.gamma, hyperparams.gae_lambda)
-        _, advantages = lax.scan(self._gae, carry, traj_batch, reverse=True)
-
-        return advantages, advantages + traj_batch.value
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _step(self, step_runner: Tuple[Runner, Tuple[TrainState, TrainState]], i_step: int)\
-            -> Tuple[Tuple[Runner, Tuple[TrainState, TrainState]], Transition]:
-        """
-
-        :param step_runner:
-        :param i_step:
-        :return:
-        """
-
-        # step_runner, training = carry
-        # env_state, state, rng = step_runner
-        # actor_training, critic_training = training
-
-        env_state, state, actor_training, critic_training, rng = step_runner
-
-        pi, value = self._pi_value(actor_training, critic_training, state)
-
-        rng, action = self._select_action(rng, pi)
-
-        log_prob = pi.log_prob(action)
-
-        rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, action)
-
-        step_runner = (next_env_state, next_state, actor_training, critic_training, rng)
-        # step_runner = (next_env_state, next_state, rng)
-
-        transition = self._make_transition(state, action, value, log_prob, reward, next_state, terminated, info)
-
-        return step_runner, transition
-        # return (step_runner, training), transition
 
     @partial(jax.jit, static_argnums=(0,))
     def _generate_metrics(self, runner: Runner, reward: Float[Array, "1"], terminated: Bool[Array, "1"]) -> Dict:
@@ -428,7 +246,6 @@ class VPGAgentBase(ABC):
 
         return metric
 
-    # @partial(jax.jit, static_argnums=(0,))
     def _create_training(self, rng: PRNGKeyArray, network: Type[flax.linen.Module], optimizer_params: OptimizerParams)\
             -> TrainState:
         """
@@ -465,6 +282,123 @@ class VPGAgentBase(ABC):
         return update_runner
 
     @partial(jax.jit, static_argnums=(0,))
+    def _pi_value(self, actor_training: TrainState, critic_training: TrainState, state: Float[Array, "state_size"])\
+            -> Tuple[PI_DIST_TYPE, Float[Array, "1"]]:
+        """
+        Placeholder for agent-specific method for calculating the state-action (Q) values for a state using the policy
+        network.
+        :param params: Parameter of the policy network.
+        :param state: State where the state-action values will be calculated.
+        :return: State-action values for the input state.
+        """
+
+        pi = actor_training.apply_fn(lax.stop_gradient(actor_training.params), state)
+        value = critic_training.apply_fn(lax.stop_gradient(critic_training.params), state)
+        return pi, value
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _select_action(self, rng: PRNGKeyArray, pi) -> Tuple[PRNGKeyArray, Int[Array, "1"]]:
+        """
+        The agent selects an action to be executed using an epsilon-greedy policy. The value of epsilon is defined by
+        the "get_epsilon" method, which is based on user input, so that different epsilon-decay function can be used.
+        Also, the method selects a random action using the user defined function "act_randomly", which needs to be
+        passed into config during the agent's initialization. The user can modify this function so that illegal actions
+        are avoided and the environment does not need to penalize the agent. Probably, this can smoothen training.
+        :param rng: Random key for initialization.
+        :param pi:
+        :return:
+        """
+
+        rng, rng_action_sample = jax.random.split(rng)
+        action = pi.sample(seed=rng_action_sample)
+        return rng, action
+
+    def _update_training(self, training, loss_fn, loss_input):
+        grad_fn = jax.grad(loss_fn, allow_int=True)
+        grads = grad_fn(*loss_input)
+        return training.apply_gradients(grads=grads.params)
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _step(self, step_runner: Tuple[Runner, Tuple[TrainState, TrainState]], i_step: int)\
+            -> Tuple[Tuple[Runner, Tuple[TrainState, TrainState]], Transition]:
+        """
+
+        :param step_runner:
+        :param i_step:
+        :return:
+        """
+
+        env_state, state, actor_training, critic_training, rng = step_runner
+
+        pi, value = self._pi_value(actor_training, critic_training, state)
+
+        rng, action = self._select_action(rng, pi)
+
+        log_prob = pi.log_prob(action)
+
+        rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, action)
+
+        step_runner = (next_env_state, next_state, actor_training, critic_training, rng)
+
+        transition = self._make_transition(state, action, value, log_prob, reward, next_state, terminated, info)
+
+        return step_runner, transition
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _update_step(self, update_runner: Runner, i_update_step: int) -> Tuple[Runner, Transition]:
+        """
+
+        :param runner: The step runner object, containing information about the current status of the agent's training,
+                       the state of the environment and training hyperparameters.
+        :param i_update_step:
+        :return: Current training step. Required for printing the progressbar via jax_tqdm.
+        """
+
+        step_runners = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0)) \
+        (update_runner.env_state, update_runner.state, update_runner.actor_training, update_runner.critic_training, update_runner.rng)
+
+        step_runners, traj_batch = jax.vmap(lambda x: lax.scan(self._step, x, None, self.config.rollout_length))(step_runners)
+
+        env_state, state, _, _, rng = step_runners
+        traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
+
+        last_value = update_runner.critic_training.apply_fn(update_runner.critic_training.params, state)
+        last_value = jnp.asarray(last_value)
+
+        returns = self._returns(traj_batch, last_value, update_runner.hyperparams.gamma, update_runner.hyperparams.gae_lambda)
+
+        actor_loss_input = (
+            update_runner.actor_training,
+            traj_batch.state,
+            traj_batch.action,
+            returns,
+            traj_batch.value,
+            update_runner.hyperparams.ent_coeff
+        )
+        actor_training = self._update_training(update_runner.actor_training, self._actor_loss, actor_loss_input)
+
+        critic_loss_input = (
+            update_runner.critic_training,
+            traj_batch.state,
+            returns,
+            update_runner.hyperparams.vf_coeff
+        )
+        critic_training = self._update_training(update_runner.critic_training, self._critic_loss, critic_loss_input)
+
+        """Update runner as a dataclass"""
+        update_runner = update_runner.replace(
+            env_state=env_state,
+            state=state,
+            actor_training=actor_training,
+            critic_training=critic_training,
+            rng=rng,
+        )
+
+        # metrics = self._generate_metrics(runner=update_runner, reward=traj_batch.reward, terminated=traj_batch.terminated)
+
+        return update_runner, {}
+
+    @partial(jax.jit, static_argnums=(0,))
     def train(self, rng: PRNGKeyArray, hyperparams: HyperParameters) -> Tuple[Runner, Dict]:
         """
         Trains the agent. A jax_tqdm progressbar has been added in the lax.scan loop.
@@ -495,20 +429,20 @@ class VPGAgentBase(ABC):
 
         return runner, metrics
 
+    @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
-    def _pi_value(self, actor_training: TrainState, critic_training: TrainState, state: Float[Array, "state_size"])\
-            -> Tuple[PI_DIST_TYPE, Float[Array, "1"]]:
-        """
-        Placeholder for agent-specific method for calculating the state-action (Q) values for a state using the policy
-        network.
-        :param params: Parameter of the policy network.
-        :param state: State where the state-action values will be calculated.
-        :return: State-action values for the input state.
-        """
+    def _returns(self, traj_batch, last_value, gamma, lambda_):
+        raise NotImplementedError
 
-        pi = actor_training.apply_fn(lax.stop_gradient(actor_training.params), state)
-        value = critic_training.apply_fn(lax.stop_gradient(critic_training.params), state)
-        return pi, value
+    @abstractmethod
+    @partial(jax.jit, static_argnums=(0,))
+    def _actor_loss(self, training, state, action, returns, value, ent_coef):
+        raise NotImplementedError
+
+    @abstractmethod
+    @partial(jax.jit, static_argnums=(0,))
+    def _critic_loss(self, training, state, targets, vf_coef):
+        raise NotImplementedError
 
 
     """ METHODS FOR APPLYING AGENT"""
@@ -547,9 +481,9 @@ class VPGAgentBase(ABC):
                  - a dictionary of metrics regarding episode evolution and user-defined metrics.
         """
 
-        rng, rng_action = jax.random.split(runner.rng)
+        rng, rng_policy = jax.random.split(runner.rng)
 
-        action = self.policy(rng_action, runner.state)
+        action = self.policy(rng_policy, runner.state)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, runner.env_state, action)
 
@@ -569,11 +503,9 @@ class VPGAgentBase(ABC):
         :return: Dictionary of evaluation metrics.
         """
 
-        rng, state, env_state = self._reset(rng)
+        runner_rng, state, env_state = self._reset(rng)
 
-        rng, runner_rng = jax.random.split(rng)
-
-        runner = EvalRunner(env_state, state, rng)
+        runner = EvalRunner(env_state, state, runner_rng)
 
         _, eval_metrics = lax.scan(
             scan_tqdm(n_evals)(self._eval_step),
@@ -655,7 +587,53 @@ class VPGAgentBase(ABC):
 
 
 class ReinforceAgent(VPGAgentBase):
-    pass
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _returns(self, traj_batch, last_value, gamma, lambda_):
+        rewards_t = traj_batch.reward.squeeze()
+        values_t = jnp.concatenate([traj_batch.value.squeeze(), last_value[..., jnp.newaxis]], axis=-1)[:, 1:]
+        discounted_rewards_t = 1.0 - traj_batch.terminated.astype(jnp.float32).squeeze()
+        discounted_rewards_t = (discounted_rewards_t * gamma).astype(jnp.float32)
+
+        rewards_t, discounted_rewards_t, values_t = jax.tree_util.tree_map(
+            lambda x: jnp.swapaxes(x, 0, 1), (rewards_t, discounted_rewards_t, values_t)
+        )
+
+        lambda_ = jnp.ones_like(discounted_rewards_t) * lambda_
+
+        def _body(acc, xs):
+            rewards, discounts, values, lambda_ = xs
+            acc = rewards + discounts * ((1 - lambda_) * values + lambda_ * acc)
+            return acc, acc
+
+        _, returns = jax.lax.scan(_body, values_t[-1], (rewards_t, discounted_rewards_t, values_t, lambda_),
+                                  reverse=True)
+
+        returns = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), returns)
+
+        return returns
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _actor_loss(self, training, state, action, returns, value, ent_coef):
+        actor_policy = training.apply_fn(training.params, state)
+        log_prob = actor_policy.log_prob(action)
+        advantage = returns - value
+
+        """ Negative gradient, because we want ascent but 'apply_gradients' applies descent """
+        loss_actor = -advantage * log_prob
+        entropy = actor_policy.entropy().mean()
+
+        total_loss_actor = loss_actor.mean() - ent_coef * entropy
+
+        return total_loss_actor
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _critic_loss(self, training, state, targets, vf_coef):
+        value = training.apply_fn(training.params, state)
+        value_loss = jnp.mean((value - targets) ** 2)
+        critic_total_loss = vf_coef * value_loss
+        return critic_total_loss
+
 
 if __name__ == "__main__":
     pass
