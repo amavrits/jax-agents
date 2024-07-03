@@ -38,13 +38,10 @@ if __name__ == '__main__':
         critic_network=VanillaPG_Critic_NN_model,
         transition_template=transition_temp,
         rollout_length=50,
-        n_steps=800,
+        n_steps=1_000,
         batch_size=16,
-        store_agent=False,
-        act_randomly=lambda random_key, state, n_actions: jax.random.choice(random_key, jnp.arange(n_actions)),
-        get_performance=lambda i_step, step_runner: 0,
         optimizer=optax.adam,
-        loss_fn=optax.l2_loss
+        eval_rng=jax.random.PRNGKey(18)
     )
 
     """Set up agent"""
@@ -63,10 +60,8 @@ if __name__ == '__main__':
         critic_optimizer_params=optimizer_params
     )
 
-
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
-    # with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
 
     """Train agent"""
     t0 = time.time()
@@ -74,47 +69,18 @@ if __name__ == '__main__':
     print(f"time: {time.time() - t0:.2f} s")
 
     """ Post-process results"""
-    agent.collect_training(runner)
+    training_rewards = np.asarray(training_metrics["episode_rewards"])
+    agent.collect_training(runner, training_metrics)
 
     """Evaluate agent performance"""
     eval_metrics = agent.eval(rng_eval, n_evals=500_000)
     eval_rewards = agent.summarize(eval_metrics["done"].flatten(), eval_metrics["reward"].flatten())
     print(eval_rewards.episode_metric.min(), eval_rewards.episode_metric.max())
 
-
-    # """Draw random key"""
-    # for i in range(10):
-    #
-    #     rng = jax.random.PRNGKey(i)
-    #     rng_train, rng_eval = jax.random.split(rng)
-    #
-    #     """Train agent"""
-    #     t0 = time.time()
-    #     runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
-    #     # with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
-    #     # print(f"time: {time.time() - t0:.2f} s")
-    #
-    #     """ Post-process results"""
-    #     agent.collect_training(runner)
-    #     # training_rewards = agent.summarize(training_metrics["done"].flatten(), training_metrics["reward"].flatten())
-    #
-    #     """Evaluate agent performance"""
-    #     eval_metrics = agent.eval(rng_eval, n_evals=500_000)
-    #     eval_rewards = agent.summarize(eval_metrics["done"].flatten(), eval_metrics["reward"].flatten())
-    #
-    #     print(eval_rewards.episode_metric.min(), eval_rewards.episode_metric.max())
-
-    # """ Plot results"""
-    # running_window = 100
-    # running_training_rewards = (np.cumsum(training_rewards.episode_metric)[running_window:] -
-    #                             np.cumsum(training_rewards.episode_metric)[:-running_window]) / running_window
-    # running_eval_rewards = (np.cumsum(eval_rewards.episode_metric)[running_window:] -
-    #                             np.cumsum(eval_rewards.episode_metric)[:-running_window]) / running_window
-    #
-    # fig = plt.figure()
-    # plt.plot(training_rewards.episode_metric, c='b', alpha=0.4)
-    # plt.plot(np.arange(running_window, training_rewards.episode_metric.size), running_training_rewards, c='b')
-    # plt.xlabel("Episode", fontsize=14)
-    # plt.ylabel("Reward [-]", fontsize=14)
-    # plt.close()
-    # fig.savefig(os.path.join(os.getcwd(), r'figs\vpg training.png'))
+    fig = plt.figure()
+    plt.fill_between(np.arange(1, agent.config.n_steps+1), training_rewards.min(axis=1),
+                     training_rewards.max(axis=1), color='b', alpha=0.4)
+    plt.xlabel("Episode", fontsize=14)
+    plt.ylabel("Training reward [-]", fontsize=14)
+    plt.close()
+    fig.savefig(os.path.join(os.getcwd(), r'figs\PG_REINFORCE training.png'))

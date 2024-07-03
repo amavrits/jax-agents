@@ -62,10 +62,10 @@ class HyperParameters(NamedTuple):
     """Value clip"""
     clip_eps: float
 
-    """ ??? """
+    """value function coefficient"""
     vf_coeff: float
 
-    """ ??? """
+    """Entropy coefficient for actor loss function"""
     ent_coeff: float
 
     """Optimizer parameters for the actor network"""
@@ -138,19 +138,8 @@ class AgentConfig(NamedTuple):
     """
     optimizer: Callable[[Dict], Optional[base.GradientTransformation]]
 
-    """Type of loss function, not required for the Categorical DQN and QRDQN agents."""
-    loss_fn: Optional[Callable[[Float[Array, "batch_size"], Float[Array, "batch_size"]], Float[Array, "1"]]] = None
-
-    """Optional function for assessing the agent's performance during training."""
-    get_performance: Optional[Callable[[int, Runner], Any]] = None
-
-    """Optional function for defining the selection of random actions by the agent. This can be used to avoid illegal 
-    actions and penalizing in the environment."""
-    act_randomly: Callable[[PRNGKeyArray, Float[Array, "state_size"], int], int] =\
-        lambda rng, state, n_actions: jax.random.choice(rng, jnp.arange(n_actions))
-
-    """Whether the parameters and the performance of the agent should be stored during training."""
-    store_agent: bool = False
+    """PRNG key for evaluation of agent performance during training (if 'None' evaluation isn't performed)"""
+    eval_rng: Optional[PRNGKeyArray] = None
 
 
 @dataclass

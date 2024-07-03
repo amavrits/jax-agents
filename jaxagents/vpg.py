@@ -34,12 +34,17 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
+STATE_TYPE = Float[Array, "state_size"]
+STEP_RUNNER_TYPE = Tuple[LogEnvState, STATE_TYPE, TrainState, TrainState, PRNGKeyArray]
 PI_DIST_TYPE = distrax.Categorical
+RETURNS_TYPE = Float[Array, "batch_size n_rollout"]
 
 
-class VPGAgentBase(ABC):
+class PGAgentBase(ABC):
     """
     Vanilla Policy Gradient agent
+
+    TODO
 
     Training relies on jitting several methods by treating the 'self' arg as static. According to suggested practice,
     this can prove dangerous (https://jax.readthedocs.io/en/latest/faq.html#how-to-use-jit-with-methods -
@@ -50,9 +55,9 @@ class VPGAgentBase(ABC):
 
     agent_trained: ClassVar[bool] = False  # Whether the agent has been trained.
     # Optimal policy network parameters after post-processing.
-    agent_params: ClassVar[Optional[Union[Dict, FrozenDict]]] = None
     training_runner: ClassVar[Optional[Runner]] = None  # Runner object after training.
     training_metrics: ClassVar[Optional[Dict]] = None  # Metrics collected during training.
+    eval_during_training: ClassVar[bool] = False  # Whether the agent's performance is evaluated during training
 
     def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfig) -> None:
         """
@@ -64,6 +69,7 @@ class VPGAgentBase(ABC):
         """
 
         self.config = config
+        self.eval_during_training = self.config.eval_rng is not None
         self._init_env(env, env_params)
 
     def __str__(self) -> str:
@@ -134,11 +140,12 @@ class VPGAgentBase(ABC):
         return tx
 
     # @partial(jax.jit, static_argnums=(0,))
-    def _init_network(self, rng: PRNGKeyArray, network:Type[flax.linen.Module])\
+    def _init_network(self, rng: PRNGKeyArray, network: Type[flax.linen.Module])\
             -> Tuple[PRNGKeyArray, Union[Dict, FrozenDict]]:
         """
-        Initialization of the policy network (Q-model as a Neural Network).
+        Initialization of the actor or critic network.
         :param rng: Random key for initialization.
+        :param network: The actor or critic network.
         :return: A random key after splitting the input and the initial parameters of the policy network.
         """
 
@@ -190,12 +197,12 @@ class VPGAgentBase(ABC):
 
     @partial(jax.jit, static_argnums=(0,))
     def _make_transition(self,
-                         state: Float[Array, "state_size"],
+                         state: STATE_TYPE,
                          action: Int[Array, "1"],
                          value: Float[Array, "1"],
                          log_prob: Float[Array, "1"],
                          reward: Float[Array, "1"],
-                         next_state: Float[Array, "state_size"],
+                         next_state: STATE_TYPE,
                          terminated: Bool[Array, "1"],
                          info: Dict) -> Transition:
         """
@@ -218,40 +225,53 @@ class VPGAgentBase(ABC):
         return transition
 
     @partial(jax.jit, static_argnums=(0,))
-    def _generate_metrics(self, runner: Runner, reward: Float[Array, "1"], terminated: Bool[Array, "1"]) -> Dict:
+    def _generate_metrics(self, runner: Runner) -> Dict:
         """
-        Generate metrics of performed step, which is accumulated over steps and passed as output via lax.scan. The
-        metrics include at least: episode termination and the collected reward in step. Upon the user's request, this
-        method can also return the performance of the agent, based on an input function given by the user in the
-        configuration of the agent during initialization, and a return of the policy network parameters.
-        :param runner: The step runner object, containing information about the current status of the agent's training,
-                       the state of the environment and training hyperparameters.
+        # TODO
+        :param runner: The update runner object, containing information about the current status of the actor's/critic's
+        training, the state of the environment and training hyperparameters.
         :param reward: The collected reward after executing the action.
         :param terminated: Episode termination.
-        :return: A dictionary of step metrics.
+        :return: A dictionary of the sum of rewards collected over 'batch_size' episodes, or empty dictionary.
         """
 
-        metric = {
-            "done": terminated.flatten(),
-            "reward": reward.flatten()
-        }
+        metric = {}
+        if self.eval_during_training:
 
-        if self.config.store_agent:
-            network_params = {"network_params": jax.tree_util.tree_leaves(runner.training.params)}
-            metric.update(network_params)
+            def _body(eval_runner):
+                env_state, state, actor_training, critic_training, terminated, sum_rewards, rng = eval_runner
+                pi, value = self._pi_value(actor_training, critic_training, state)
+                rng, action = self._select_action(rng, pi)
+                rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, action)
+                sum_rewards += reward
+                eval_runner = (next_env_state, next_state, actor_training, critic_training, terminated, sum_rewards, rng)
+                return eval_runner
 
-        if self.config.get_performance is not None:
-            performance_metric = {"performance": self.config.get_performance(runner.training.step, runner)}
-            metric.update(performance_metric)
+            def _cond(eval_runner):
+                _, _, _, _, terminated, _, _ = eval_runner
+                return jnp.logical_not(terminated)
+
+            rng_eval = jax.random.split(self.config.eval_rng, self.config.batch_size)
+            rng, state, env_state = jax.vmap(self._reset)(rng_eval)
+            eval_runner = (env_state, state, runner.actor_training, runner.critic_training, False, 0, rng)
+            eval_runners = jax.vmap(
+                lambda t, u, v, w, x, y, z: (t, u, v, w, x, y, z),
+                in_axes=(0, 0, None, None, None, None, 0)
+            )(*eval_runner)
+            eval_runner = jax.vmap(lambda x: lax.while_loop(_cond, _body, x))(eval_runners)
+            _, _, _, _, _, sum_rewards, _ = eval_runner
+            metric.update({"episode_rewards": sum_rewards})
 
         return metric
 
     def _create_training(self, rng: PRNGKeyArray, network: Type[flax.linen.Module], optimizer_params: OptimizerParams)\
             -> TrainState:
         """
+                # TODO
 
-        :param rng:
-        :param optimizer_params:
+        :param rng: Random key for initialization.
+        :param network: The actor or critic network.
+        :param optimizer_params: A NamedTuple containing the parametrization of the optimizer.
         :return:
         """
 
@@ -260,14 +280,14 @@ class VPGAgentBase(ABC):
         return TrainState.create(apply_fn=network.apply, tx=tx, params=params)
 
     @partial(jax.jit, static_argnums=(0,))
-    def _create_update_runner(self, rng: PRNGKeyArray, actor_training: FrozenDict, critic_training: FrozenDict,
-                              hyperparams:HyperParameters) -> Runner:
+    def _create_update_runner(self, rng: PRNGKeyArray, actor_training: TrainState, critic_training: TrainState,
+                              hyperparams: HyperParameters) -> Runner:
         """
-
-        :param rng:
-        :param actor_training:
-        :param critic_training:
-        :param hyperparams:
+        # TODO
+        :param rng: Random key for initialization.
+        :param actor_training: The actor TrainState object used in training.
+        :param critic_training: The critic TrainState object used in training.
+        :param hyperparams: An instance of HyperParameters for training.
         :return:
         """
 
@@ -282,14 +302,14 @@ class VPGAgentBase(ABC):
         return update_runner
 
     @partial(jax.jit, static_argnums=(0,))
-    def _pi_value(self, actor_training: TrainState, critic_training: TrainState, state: Float[Array, "state_size"])\
+    def _pi_value(self, actor_training: TrainState, critic_training: TrainState, state: STATE_TYPE)\
             -> Tuple[PI_DIST_TYPE, Float[Array, "1"]]:
         """
-        Placeholder for agent-specific method for calculating the state-action (Q) values for a state using the policy
-        network.
-        :param params: Parameter of the policy network.
-        :param state: State where the state-action values will be calculated.
-        :return: State-action values for the input state.
+        # TODO
+        :param actor_training: The actor TrainState object used in training.
+        :param critic_training: The critic TrainState object used in training.
+        :param state: The current state of the episode step in array format.
+        :return:
         """
 
         pi = actor_training.apply_fn(lax.stop_gradient(actor_training.params), state)
@@ -297,15 +317,11 @@ class VPGAgentBase(ABC):
         return pi, value
 
     @partial(jax.jit, static_argnums=(0,))
-    def _select_action(self, rng: PRNGKeyArray, pi) -> Tuple[PRNGKeyArray, Int[Array, "1"]]:
+    def _select_action(self, rng: PRNGKeyArray, pi: PI_DIST_TYPE) -> Tuple[PRNGKeyArray, Int[Array, "1"]]:
         """
-        The agent selects an action to be executed using an epsilon-greedy policy. The value of epsilon is defined by
-        the "get_epsilon" method, which is based on user input, so that different epsilon-decay function can be used.
-        Also, the method selects a random action using the user defined function "act_randomly", which needs to be
-        passed into config during the agent's initialization. The user can modify this function so that illegal actions
-        are avoided and the environment does not need to penalize the agent. Probably, this can smoothen training.
+                # TODO
         :param rng: Random key for initialization.
-        :param pi:
+        :param pi: The distax distribution procuded by the actor network.
         :return:
         """
 
@@ -313,21 +329,58 @@ class VPGAgentBase(ABC):
         action = pi.sample(seed=rng_action_sample)
         return rng, action
 
-    def _update_training(self, training, loss_fn, loss_input):
+    def _update_training(self, training: TrainState, loss_fn: Callable, loss_input: Tuple) -> TrainState:
+        """
+                        # TODO
+        :param training: The actor or critic TrainState object used in training.
+        :param loss_fn: The acrtor or critic loss function.
+        :param loss_input: The input for the actor or critic loss function.
+        :return:
+        """
         grad_fn = jax.grad(loss_fn, allow_int=True)
         grads = grad_fn(*loss_input)
         return training.apply_gradients(grads=grads.params)
 
     @partial(jax.jit, static_argnums=(0,))
-    def _step(self, step_runner: Tuple[Runner, Tuple[TrainState, TrainState]], i_step: int)\
-            -> Tuple[Tuple[Runner, Tuple[TrainState, TrainState]], Transition]:
+    def _returns(self, traj_batch: Transition, last_value: Float[Array, "1"], gamma: float, lambda_: float) \
+            -> RETURNS_TYPE:
         """
+                                # TODO
 
-        :param step_runner:
+        :param traj_batch: The batch of trajectories.
+        :param last_value: The value of the last state in each trajectory.
+        :param gamma: Discount factor
+        :param lambda_: The λ factor.
+        :return:
+        """
+        rewards_t = traj_batch.reward.squeeze()
+        values_t = jnp.concatenate([traj_batch.value.squeeze(), last_value[..., jnp.newaxis]], axis=-1)[:, 1:]
+        discounted_rewards_t = 1.0 - traj_batch.terminated.astype(jnp.float32).squeeze()
+        discounted_rewards_t = (discounted_rewards_t * gamma).astype(jnp.float32)
+
+        rewards_t, discounted_rewards_t, values_t = jax.tree_util.tree_map(
+            lambda x: jnp.swapaxes(x, 0, 1), (rewards_t, discounted_rewards_t, values_t)
+        )
+
+        lambda_ = jnp.ones_like(discounted_rewards_t) * lambda_
+
+        traj_runner = (rewards_t, discounted_rewards_t, values_t, lambda_)
+        _, returns = jax.lax.scan(self._trajectory_returns, values_t[-1], traj_runner, reverse=True)
+
+        returns = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), returns)
+
+        return returns
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _step(self, step_runner: STEP_RUNNER_TYPE, i_step: int) -> Tuple[STEP_RUNNER_TYPE, Transition]:
+        """
+                                # TODO
+
+        :param step_runner: 
         :param i_step:
         :return:
         """
-
+        
         env_state, state, actor_training, critic_training, rng = step_runner
 
         pi, value = self._pi_value(actor_training, critic_training, state)
@@ -345,17 +398,25 @@ class VPGAgentBase(ABC):
         return step_runner, transition
 
     @partial(jax.jit, static_argnums=(0,))
-    def _update_step(self, update_runner: Runner, i_update_step: int) -> Tuple[Runner, Transition]:
+    def _update_step(self, update_runner: Runner, i_update_step: int) -> Tuple[Runner, Dict]:
+        """
+        TODO
+        TODO: explain that environment is not re-rest in every update step
+
+        :param update_runner: The update runner object, containing information about the current status of the actor's/
+        critic's training, the state of the environment and training hyperparameters.
+        :param i_update_step: Unused, required for progressbar.
+        :return: Tuple with updated runner and dictionary of metrics.
         """
 
-        :param runner: The step runner object, containing information about the current status of the agent's training,
-                       the state of the environment and training hyperparameters.
-        :param i_update_step:
-        :return: Current training step. Required for printing the progressbar via jax_tqdm.
-        """
-
-        step_runners = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0)) \
-        (update_runner.env_state, update_runner.state, update_runner.actor_training, update_runner.critic_training, update_runner.rng)
+        step_runner = (
+            update_runner.env_state,
+            update_runner.state,
+            update_runner.actor_training,
+            update_runner.critic_training,
+            update_runner.rng
+        )
+        step_runners = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))(*step_runner)
 
         step_runners, traj_batch = jax.vmap(lambda x: lax.scan(self._step, x, None, self.config.rollout_length))(step_runners)
 
@@ -367,22 +428,10 @@ class VPGAgentBase(ABC):
 
         returns = self._returns(traj_batch, last_value, update_runner.hyperparams.gamma, update_runner.hyperparams.gae_lambda)
 
-        actor_loss_input = (
-            update_runner.actor_training,
-            traj_batch.state,
-            traj_batch.action,
-            returns,
-            traj_batch.value,
-            update_runner.hyperparams.ent_coeff
-        )
+        actor_loss_input = self._actor_loss_input(update_runner, traj_batch, returns)
         actor_training = self._update_training(update_runner.actor_training, self._actor_loss, actor_loss_input)
 
-        critic_loss_input = (
-            update_runner.critic_training,
-            traj_batch.state,
-            returns,
-            update_runner.hyperparams.vf_coeff
-        )
+        critic_loss_input = self._critic_loss_input(update_runner, traj_batch, returns)
         critic_training = self._update_training(update_runner.critic_training, self._critic_loss, critic_loss_input)
 
         """Update runner as a dataclass"""
@@ -394,9 +443,9 @@ class VPGAgentBase(ABC):
             rng=rng,
         )
 
-        # metrics = self._generate_metrics(runner=update_runner, reward=traj_batch.reward, terminated=traj_batch.terminated)
+        metrics = self._generate_metrics(runner=update_runner)
 
-        return update_runner, {}
+        return update_runner, metrics
 
     @partial(jax.jit, static_argnums=(0,))
     def train(self, rng: PRNGKeyArray, hyperparams: HyperParameters) -> Tuple[Runner, Dict]:
@@ -431,28 +480,78 @@ class VPGAgentBase(ABC):
 
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
-    def _returns(self, traj_batch, last_value, gamma, lambda_):
+    def _trajectory_returns(self, value: Float[Array, "1"], traj: Transition) -> Tuple[float, float]:
+        """
+        #TODO
+        :param value:
+        :param traj:
+        :return:
+        """
         raise NotImplementedError
 
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
-    def _actor_loss(self, training, state, action, returns, value, ent_coef):
+    def _actor_loss(self, training: TrainState, state: Float[Array, "state_size"], action: Float[Array, "1"], 
+                    returns: RETURNS_TYPE, value: Float[Array, "1"], ent_coef: float) -> float:
+        """
+                #TODO
+        :param training:
+        :param state:
+        :param action:
+        :param returns:
+        :param value:
+        :param ent_coef:
+        :return:
+        """
         raise NotImplementedError
 
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
-    def _critic_loss(self, training, state, targets, vf_coef):
+    def _critic_loss(self, training: TrainState, state: Float[Array, "state_size"], targets: Float[Array, "1"],
+                     vf_coef: float) -> float:
+        """
+                #TODO
+        :param training:
+        :param state:
+        :param targets:
+        :param vf_coef:
+        :return:
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    @partial(jax.jit, static_argnums=(0,))
+    def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition, returns: RETURNS_TYPE) -> tuple:
+        """
+                #TODO
+        :param update_runner:
+        :param traj_batch:
+        :param returns:
+        :return:
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    @partial(jax.jit, static_argnums=(0,))
+    def _critic_loss_input(self, update_runner, traj_batch, returns):
+        """
+                #TODO
+        :param update_runner:
+        :param traj_batch:
+        :param returns:
+        :return:
+        """
         raise NotImplementedError
 
 
     """ METHODS FOR APPLYING AGENT"""
 
     @partial(jax.jit, static_argnums=(0,))
-    def policy(self, rng: PRNGKeyArray, state: Float[Array, "state_size"]) -> int:
+    def policy(self, rng: PRNGKeyArray, state: STATE_TYPE) -> int:
         """
 
-        :param rng:
-        :param state:
+        :param rng: Random key for evaluation.
+        :param state: The current state of the episode step in array format.
         :return:
         """
 
@@ -498,7 +597,7 @@ class VPGAgentBase(ABC):
         """
         Evaluates the trained agent's performance in the training environment. So, the performance of the agent can be
         isolated from agent training. The evaluation can be parallelized via jax.vmap.
-        :param rng:  Random key for evaluation.
+        :param rng: Random key for evaluation.
         :param n_evals: Number of steps in agent evaluation.
         :return: Dictionary of evaluation metrics.
         """
@@ -586,35 +685,17 @@ class VPGAgentBase(ABC):
         return self._summary_stats(episode_metric)
 
 
-class ReinforceAgent(VPGAgentBase):
+class ReinforceAgent(PGAgentBase):
 
     @partial(jax.jit, static_argnums=(0,))
-    def _returns(self, traj_batch, last_value, gamma, lambda_):
-        rewards_t = traj_batch.reward.squeeze()
-        values_t = jnp.concatenate([traj_batch.value.squeeze(), last_value[..., jnp.newaxis]], axis=-1)[:, 1:]
-        discounted_rewards_t = 1.0 - traj_batch.terminated.astype(jnp.float32).squeeze()
-        discounted_rewards_t = (discounted_rewards_t * gamma).astype(jnp.float32)
-
-        rewards_t, discounted_rewards_t, values_t = jax.tree_util.tree_map(
-            lambda x: jnp.swapaxes(x, 0, 1), (rewards_t, discounted_rewards_t, values_t)
-        )
-
-        lambda_ = jnp.ones_like(discounted_rewards_t) * lambda_
-
-        def _body(acc, xs):
-            rewards, discounts, values, lambda_ = xs
-            acc = rewards + discounts * ((1 - lambda_) * values + lambda_ * acc)
-            return acc, acc
-
-        _, returns = jax.lax.scan(_body, values_t[-1], (rewards_t, discounted_rewards_t, values_t, lambda_),
-                                  reverse=True)
-
-        returns = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), returns)
-
-        return returns
+    def _trajectory_returns(self, value: Float[Array, "1"], traj: Transition) -> Tuple[float, float]:
+        rewards, discounts, values, lambda_ = traj
+        value = rewards + discounts * ((1 - lambda_) * values + lambda_ * value)
+        return value, value
 
     @partial(jax.jit, static_argnums=(0,))
-    def _actor_loss(self, training, state, action, returns, value, ent_coef):
+    def _actor_loss(self, training: TrainState, state: Float[Array, "state_size"], action: Float[Array, "1"], 
+                    returns: RETURNS_TYPE, value: Float[Array, "1"], ent_coef: float) -> float:
         actor_policy = training.apply_fn(training.params, state)
         log_prob = actor_policy.log_prob(action)
         advantage = returns - value
@@ -628,12 +709,32 @@ class ReinforceAgent(VPGAgentBase):
         return total_loss_actor
 
     @partial(jax.jit, static_argnums=(0,))
-    def _critic_loss(self, training, state, targets, vf_coef):
+    def _critic_loss(self, training: TrainState, state: Float[Array, "state_size"], targets: Float[Array, "1"],
+                     vf_coef: float) -> float:
         value = training.apply_fn(training.params, state)
         value_loss = jnp.mean((value - targets) ** 2)
         critic_total_loss = vf_coef * value_loss
         return critic_total_loss
 
+    @partial(jax.jit, static_argnums=(0,))
+    def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition, returns: RETURNS_TYPE) -> tuple:
+        return (
+            update_runner.actor_training,
+            traj_batch.state,
+            traj_batch.action,
+            returns,
+            traj_batch.value,
+            update_runner.hyperparams.ent_coeff
+        )
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition, returns: RETURNS_TYPE):
+        return (
+            update_runner.critic_training,
+            traj_batch.state,
+            returns,
+            update_runner.hyperparams.vf_coeff
+        )
 
 if __name__ == "__main__":
     pass
