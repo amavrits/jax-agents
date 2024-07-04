@@ -102,21 +102,6 @@ class Runner:
     hyperparams: HyperParameters
 
 
-@struct.dataclass
-class EvalRunner:
-    """
-    Runner for agent evaluation.
-    """
-    """State of the environment"""
-    env_state: LogEnvState
-
-    """State of the environment in array"""
-    state: Float[Array, "state_size"]
-
-    """Random key, required for reproducibility of results and control of randomness"""
-    rng: PRNGKeyArray
-
-
 class AgentConfig(NamedTuple):
     """Configuration of the DQN and DDQN agents, passed at initialization of instance."""
 

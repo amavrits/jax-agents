@@ -1,13 +1,8 @@
 """
-Implementation of the Vanilla Policy Gradient agent in JAX.
+Implementation of Vanilla Policy Gradient agents in JAX.
 
 Author: Antonis Mavritsakis
 @Github: amavrits
-
-References
-----------
-.. [1] Mnih, V., Kavukcuoglu, K., Silver, D., Graves, A., Antonoglou, I., Wierstra, D., & Riedmiller, M. (2013).
-       Playing atari with deep reinforcement learning. arXiv preprint arXiv:1312.5602.
 
 """
 
@@ -45,6 +40,7 @@ class PGAgentBase(ABC):
     Base for (Vanilla) Policy Gradient agents.
     Can be used for both discrete or continuous action environments, and its use depends on the provided actor network.
     Follows the instructions of: https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html
+    Uses an actorand critic approach, which helps with lax.scan operations (since trajectories can be truncated).
 
     Training relies on jitting several methods by treating the 'self' arg as static. According to suggested practice,
     this can prove dangerous (https://jax.readthedocs.io/en/latest/faq.html#how-to-use-jit-with-methods -
@@ -206,7 +202,7 @@ class PGAgentBase(ABC):
         Creates a transition object based on the input and output of an episode step.
         :param state: The current state of the episode step in array format.
         :param action: The action selected by the agent.
-        :param value: The critic value of the selected action.
+        :param value: The critic value of the state.
         :param log_prob: The actor log-probability of the selected action.
         :param reward: The collected reward after executing the action.
         :param next_state: The next state of the episode step in array format.
@@ -234,29 +230,12 @@ class PGAgentBase(ABC):
 
         metric = {}
         if self.eval_during_training:
-
-            def _body(eval_runner):
-                env_state, state, actor_training, critic_training, terminated, sum_rewards, rng = eval_runner
-                pi, value = self._pi_value(actor_training, critic_training, state)
-                rng, action = self._select_action(rng, pi)
-                rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, action)
-                sum_rewards += reward
-                eval_runner = (next_env_state, next_state, actor_training, critic_training, terminated, sum_rewards, rng)
-                return eval_runner
-
-            def _cond(eval_runner):
-                _, _, _, _, terminated, _, _ = eval_runner
-                return jnp.logical_not(terminated)
-
-            rng_eval = jax.random.split(self.config.eval_rng, self.config.batch_size)
-            rng, state, env_state = jax.vmap(self._reset)(rng_eval)
-            eval_runner = (env_state, state, runner.actor_training, runner.critic_training, False, 0, rng)
-            eval_runners = jax.vmap(
-                lambda t, u, v, w, x, y, z: (t, u, v, w, x, y, z),
-                in_axes=(0, 0, None, None, None, None, 0)
-            )(*eval_runner)
-            eval_runner = jax.vmap(lambda x: lax.while_loop(_cond, _body, x))(eval_runners)
-            _, _, _, _, _, sum_rewards, _ = eval_runner
+            sum_rewards = self._eval_agent(
+                self.config.eval_rng,
+                runner.actor_training,
+                runner.critic_training,
+                self.config.batch_size
+            )
             metric.update({"episode_rewards": sum_rewards})
 
         return metric
@@ -279,7 +258,7 @@ class PGAgentBase(ABC):
     def _create_update_runner(self, rng: PRNGKeyArray, actor_training: TrainState, critic_training: TrainState,
                               hyperparams: HyperParameters) -> Runner:
         """
-        Intializes the update runner as a Runner object. The runner contains batch_size intializations of the
+        Initializes the update runner as a Runner object. The runner contains batch_size initializations of the
         environment, which are used for sampling trajectories. The update runner has one TrainState for the actor and
         one for the critic network, so that trajectory batches are used to train the same parameters.
         :param rng: Random key for initialization.
@@ -304,7 +283,6 @@ class PGAgentBase(ABC):
             -> Tuple[PI_DIST_TYPE, Float[Array, "1"]]:
         """
         Assess the stochastic policy via the actor network and the value via the critic network for state.
-        # TODO
         :param actor_training: The actor TrainState object used in training.
         :param critic_training: The critic TrainState object used in training.
         :param state: The current state of the episode step in array format.
@@ -342,33 +320,37 @@ class PGAgentBase(ABC):
         return training.apply_gradients(grads=grads.params)
 
     @partial(jax.jit, static_argnums=(0,))
-    def _returns(self, traj_batch: Transition, last_value: Float[Array, "1"], gamma: float, lambda_: float) \
-            -> RETURNS_TYPE:
+    def _returns(self, traj_batch: Transition, last_next_state_value: Float[Array, "batch_size"], gamma: float,
+                 lambda_: float) -> RETURNS_TYPE:
         """
         Calculates the returns of every step in the trajectory batch. To do so, it identifies episodes in the
         trajectories. Note that because lax.scan is used in sampling trajectories, they do not necessarily finish with
         episode termination (episodes may be truncated). Also, since the environment is not re-initialized per sampling
         step, trajectories do not start at the initial state.
         :param traj_batch: The batch of trajectories.
-        :param last_value: The value of the last state in each trajectory.
+        :param last_next_state_value: The value of the last next state in each trajectory.
         :param gamma: Discount factor
         :param lambda_: The λ factor.
         :return: The returns over the episodes of the trajectory batch.
         """
-        
+
         rewards_t = traj_batch.reward.squeeze()
-        values_t = jnp.concatenate([traj_batch.value.squeeze(), last_value[..., jnp.newaxis]], axis=-1)[:, 1:]
+        # Remove first entry so that the next state values per step are in sync with the state rewards.
+        next_state_values_t = jnp.concatenate(
+            [traj_batch.value.squeeze(), last_next_state_value[..., jnp.newaxis]],
+            axis=-1)[:, 1:]
         discounts_t = 1.0 - traj_batch.terminated.astype(jnp.float32).squeeze()
         discounts_t = (discounts_t * gamma).astype(jnp.float32)
 
-        rewards_t, discounts_t, values_t = jax.tree_util.tree_map(
-            lambda x: jnp.swapaxes(x, 0, 1), (rewards_t, discounts_t, values_t)
+        rewards_t, discounts_t, next_state_values_t = jax.tree_util.tree_map(
+            lambda x: jnp.swapaxes(x, 0, 1), (rewards_t, discounts_t, next_state_values_t)
         )
 
         lambda_ = jnp.ones_like(discounts_t) * lambda_
 
-        traj_runner = (rewards_t, discounts_t, values_t, lambda_)
-        _, returns = jax.lax.scan(self._trajectory_returns, values_t[-1], traj_runner, reverse=True)
+        traj_runner = (rewards_t, discounts_t, next_state_values_t, lambda_)
+        end_value = jnp.take(next_state_values_t, -1, axis=0)  # Start from end of trajectory and work in reverse.
+        _, returns = jax.lax.scan(self._trajectory_returns, end_value, traj_runner, reverse=True)
 
         returns = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), returns)
 
@@ -387,7 +369,7 @@ class PGAgentBase(ABC):
         :param i_step: Unused, required for lax.scan.
         :return: The updated step_runner tuple and the rollout step transition.
         """
-        
+
         env_state, state, actor_training, critic_training, rng = step_runner
 
         pi, value = self._pi_value(actor_training, critic_training, state)
@@ -451,10 +433,18 @@ class PGAgentBase(ABC):
         env_state, state, _, _, rng = step_runners
 
         traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
-        last_value = update_runner.critic_training.apply_fn(jax.lax.stop_gradient(update_runner.critic_training.params), state)
-        last_value = jnp.asarray(last_value)
+        last_next_state_value = update_runner.critic_training.apply_fn(
+            jax.lax.stop_gradient(update_runner.critic_training.params),
+            state
+        )
+        last_next_state_value = jnp.asarray(last_next_state_value)
 
-        returns = self._returns(traj_batch, last_value, update_runner.hyperparams.gamma, update_runner.hyperparams.gae_lambda)
+        returns = self._returns(
+            traj_batch,
+            last_next_state_value,
+            update_runner.hyperparams.gamma,
+            update_runner.hyperparams.gae_lambda
+        )
 
         actor_loss_input = self._actor_loss_input(update_runner, traj_batch, returns)
         actor_training = self._update_training(update_runner.actor_training, self._actor_loss, actor_loss_input)
@@ -623,25 +613,78 @@ class PGAgentBase(ABC):
 
         return runner, metrics
 
-    def eval(self, rng: PRNGKeyArray, n_evals: int = 1e5) -> Dict:
+    def _eval_agent(self, rng: PRNGKeyArray, actor_training: TrainState, critic_training: TrainState,
+                    n_episodes: int = 1) -> Float[Array, "batch_size"]:
         """
-        Evaluates the trained agent's performance in the training environment. So, the performance of the agent can be
-        isolated from agent training. The evaluation can be parallelized via jax.vmap.
+        Evaluates the agents for n_episodes complete episodes using 'lax.while_loop'.
+        :param rng: A random key used for evaluating the agent.
+        :param actor_training: The actor TrainState object (either mid- or post-training).
+        :param critic_training: The critic TrainState object (either mid- or post-training).
+        :param n_episodes: The update_runner object used during training.
+        :return: The sum of rewards collected over n_episodes episodes.
+        """
+
+        rng_eval = jax.random.split(rng, n_episodes)
+        rng, state, env_state = jax.vmap(self._reset)(rng_eval)
+
+        eval_runner = (env_state, state, actor_training, critic_training, False, 0, rng)
+        eval_runners = jax.vmap(
+            lambda t, u, v, w, x, y, z: (t, u, v, w, x, y, z),
+            in_axes=(0, 0, None, None, None, None, 0)
+        )(*eval_runner)
+
+        eval_runner = jax.vmap(lambda x: lax.while_loop(self._eval_cond, self._eval_body, x))(eval_runners)
+
+        _, _, _, _, _, sum_rewards, _ = eval_runner
+
+        return sum_rewards
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _eval_body(self, eval_runner: tuple) -> tuple:
+        """
+        A step in the episode to be used with 'lax.while_loop' for evaluation of the agent in a complete episode.
+        :param eval_runner: A tuple containing information about the environment state, the actor and critic training
+        states, whether the episode is terminated (for checking the condition in 'lax.while_loop'), the sum of rewards
+        over the episode and a random key.
+        :return: The updated eval_runner tuple.
+        """
+
+        env_state, state, actor_training, critic_training, terminated, sum_rewards, rng = eval_runner
+
+        pi, value = self._pi_value(actor_training, critic_training, state)
+
+        rng, action = self._select_action(rng, pi)
+
+        rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, action)
+
+        sum_rewards += reward
+
+        eval_runner = (next_env_state, next_state, actor_training, critic_training, terminated, sum_rewards, rng)
+
+        return eval_runner
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _eval_cond(self, eval_runner: tuple) -> Bool[Array, "1"]:
+        """
+        Checks whether the episode is termianted, meansing that the 'lax.while_loop' can stop.
+        :param eval_runner: A tuple containing information about the environment state, the actor and critic training
+        states, whether the episode is terminated (for checking the condition in 'lax.while_loop'), the sum of rewards
+        over the episode and a random key.
+        :return: Whether the episode is terminated, which means that the while loop must stop.
+        """
+
+        _, _, _, _, terminated, _, _ = eval_runner
+        return jnp.logical_not(terminated)
+
+    def eval(self, rng: PRNGKeyArray, n_evals: int = 32) -> Float[Array, "n_evals"]:
+        """
+        Evaluates the trained agent's performance post-training using the trained agent's actor and critic.
         :param rng: Random key for evaluation.
         :param n_evals: Number of steps in agent evaluation.
         :return: Dictionary of evaluation metrics.
         """
 
-        runner_rng, state, env_state = self._reset(rng)
-
-        runner = EvalRunner(env_state, state, runner_rng)
-
-        _, eval_metrics = lax.scan(
-            scan_tqdm(n_evals)(self._eval_step),
-            runner,
-            jnp.arange(n_evals),
-            n_evals
-        )
+        eval_metrics = self._eval_agent(rng, self.actor_training, self.critic_training, n_evals)
 
         return eval_metrics
 
@@ -688,31 +731,17 @@ class PGAgentBase(ABC):
             has_nans=np.any(np.isnan(episode_metric)),
         )
 
-    def summarize(self, dones: Union[np.ndarray["size_metrics", bool], Bool[Array, "dim5"]],
-                        metric: Union[np.ndarray["size_metrics", float], Float[Array, "dim5"]])\
-            -> MetricStats:
+    def summarize(self, metric: Union[np.ndarray["size_metrics", float], Float[Array, "dim5"]]) -> MetricStats:
         """
-        Adjusts metric per episode and summarizes (to be used for training or evaluation).
-        :param dones: Whether an episode has terminated in each step.
-        :param metric: Metric per step.
+        Summarizes collection of per-episode metrics.
+        :param metric: Metric per episode.
         :return: Summary of metric per episode.
         """
-
-        if not isinstance(dones, np.ndarray):
-            dones = np.asarray(dones).astype(np.bool_)
 
         if not isinstance(metric, np.ndarray):
             metric = np.asarray(metric).astype(np.float32)
 
-        last_done = np.where(dones)[0].max()
-        episodes = np.cumsum(dones[:last_done])
-        episodes = np.append(0, episodes)
-
-        metric = metric[:last_done + 1]
-
-        episode_metric = np.array([np.sum(metric[episodes == i]) for i in np.arange(episodes.max() + 1)])
-
-        return self._summary_stats(episode_metric)
+        return self._summary_stats(metric)
 
 
 class ReinforceAgent(PGAgentBase):
@@ -729,12 +758,13 @@ class ReinforceAgent(PGAgentBase):
         implemented as a weighted average between the discounted sum of rewards and the value according to the critic.
         Weighting is performed via the GAE λ factor between the
         :param value: The values of the steps in the trajectory according to the critic (including the one of the last
-        state).
+        state). In the begining of the method, 'value' is the value of the state in the next step in the trajectory
+        (not the reverse iteration), and after calculation it is the value of the examined state in the examined step.
         :param traj: The trajectory batch.
         :return: An array of returns.
         """
-        rewards, discounts, values, lambda_ = traj
-        value = rewards + discounts * ((1 - lambda_) * values + lambda_ * value)
+        rewards, discounts, next_state_values, lambda_ = traj
+        value = rewards + discounts * ((1 - lambda_) * next_state_values + lambda_ * value)
         return value, value
 
     @partial(jax.jit, static_argnums=(0,))

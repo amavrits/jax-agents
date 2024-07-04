@@ -70,17 +70,17 @@ if __name__ == '__main__':
     print(f"time: {time.time() - t0:.2f} s")
 
     """ Post-process results"""
-    training_rewards = np.asarray(training_metrics["episode_rewards"])
+    training_rewards = agent.summarize(training_metrics["episode_rewards"])
     agent.collect_training(runner, training_metrics)
 
     """Evaluate agent performance"""
-    eval_metrics = agent.eval(rng_eval, n_evals=500_000)
-    eval_rewards = agent.summarize(eval_metrics["done"].flatten(), eval_metrics["reward"].flatten())
+    eval_metrics = agent.eval(rng_eval, n_evals=16)
+    eval_rewards = agent.summarize(eval_metrics)
     print(eval_rewards.episode_metric.min(), eval_rewards.episode_metric.max())
 
     fig = plt.figure()
-    plt.fill_between(np.arange(1, agent.config.n_steps+1), training_rewards.min(axis=1),
-                     training_rewards.max(axis=1), color='b', alpha=0.4)
+    plt.fill_between(np.arange(1, agent.config.n_steps+1), training_rewards.episode_metric.min(axis=1),
+                     training_rewards.episode_metric.max(axis=1), color='b', alpha=0.4)
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Training reward [-]", fontsize=14)
     plt.close()
