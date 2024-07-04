@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-with open('README.md') as f:
+with open('README_PYPI.md') as f:
     long_description = f.read()
 
 setup(
@@ -25,7 +25,6 @@ setup(
         "orbax-checkpoint==0.5.14",
         "numpy==1.26.4",
         "scipy==1.13.1",
-        "pandas==2.2.2",
         "matplotlib==3.9.0",
         "pytest==8.2.1",
         ],
@@ -33,7 +32,7 @@ setup(
         "dev": []
     },
     python_requires=">=3.9.0",
-    version='0.2',
+    version='0.1.2',
     license='MIT',
     description='Implementation of Reinforcement Learning agents in JAX',
 )

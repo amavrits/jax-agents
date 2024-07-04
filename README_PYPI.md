@@ -1,13 +1,6 @@
 # Jaxagents
 
-Jaxagents is a Python implementation of Reinforcement Learning agents built upon JAX. The PyPI page of the project can be found [here](https://pypi.org/project/jaxagents/).
-
-## Installation
-You can install the latest version of jaxagents from PyPI via:
-
-```sh
-pip install jaxagents
-```
+Jaxagents is a Python implementation of Reinforcement Learning agents built upon JAX.
 
 ## Content
 
