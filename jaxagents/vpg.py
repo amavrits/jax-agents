@@ -585,34 +585,6 @@ class PGAgentBase(ABC):
 
     """ METHODS FOR PERFORMANCE EVALUATION """
 
-    @partial(jax.jit, static_argnums=(0,))
-    def _eval_step(self, runner: EvalRunner, i_step: int) -> Tuple[Runner, Dict]:
-        """
-        Performs an episode step for evaluation. This includes:
-        - The agent selecting an action based on the trained policy network.
-        - Performing an environment step using this action and the current state of the environment.
-        - Generating metrics regarding the step.
-        :param runner: The step runner object, containing information about the current status of the agent's training,
-                       the state of the environment and training hyperparameters.
-        :param i_step: Current training step. Required for printing the progressbar via jax_tqdm.
-        :return: A tuple containing:
-                 - the step runner object, updated after performing an episode step.
-                 - a dictionary of metrics regarding episode evolution and user-defined metrics.
-        """
-
-        rng, rng_policy = jax.random.split(runner.rng)
-
-        action = self.policy(rng_policy, runner.state)
-
-        rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, runner.env_state, action)
-
-        """Update runner as a dataclass"""
-        runner = runner.replace(rng=rng, state=next_state, env_state=next_env_state)
-
-        metrics = {"done": terminated, "reward": reward}
-
-        return runner, metrics
-
     def _eval_agent(self, rng: PRNGKeyArray, actor_training: TrainState, critic_training: TrainState,
                     n_episodes: int = 1) -> Float[Array, "batch_size"]:
         """

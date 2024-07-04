@@ -41,7 +41,7 @@ if __name__ == '__main__':
         n_steps=1_000,
         batch_size=16,
         optimizer=optax.adam,
-        eval_rng=jax.random.PRNGKey(18)
+        # eval_rng=jax.random.PRNGKey(18)
     )
 
     """Set up agent"""
