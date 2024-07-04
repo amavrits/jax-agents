@@ -42,9 +42,9 @@ RETURNS_TYPE = Float[Array, "batch_size n_rollout"]
 
 class PGAgentBase(ABC):
     """
-    Vanilla Policy Gradient agent
-
-    TODO
+    Base for (Vanilla) Policy Gradient agents.
+    Can be used for both discrete or continuous action environments, and its use depends on the provided actor network.
+    Follows the instructions of: https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html
 
     Training relies on jitting several methods by treating the 'self' arg as static. According to suggested practice,
     this can prove dangerous (https://jax.readthedocs.io/en/latest/faq.html#how-to-use-jit-with-methods -
@@ -54,7 +54,6 @@ class PGAgentBase(ABC):
     """
 
     agent_trained: ClassVar[bool] = False  # Whether the agent has been trained.
-    # Optimal policy network parameters after post-processing.
     training_runner: ClassVar[Optional[Runner]] = None  # Runner object after training.
     training_metrics: ClassVar[Optional[Dict]] = None  # Metrics collected during training.
     eval_during_training: ClassVar[bool] = False  # Whether the agent's performance is evaluated during training
@@ -63,9 +62,7 @@ class PGAgentBase(ABC):
         """
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
         :param env_params: A dataclass named "EnvParams" containing the parametrization of the environment.
-        :param config: The configuration of the agent as one of the following objects: AgentConfig,
-                       CategoricalAgentConfig, QuantileAgentConfig. For more information
-                       on these objects check dqn_utils. The selected object must match the agent.
+        :param config: The configuration of the agent as and AgentConfig object (from vpf_utils).
         """
 
         self.config = config
@@ -227,11 +224,11 @@ class PGAgentBase(ABC):
     @partial(jax.jit, static_argnums=(0,))
     def _generate_metrics(self, runner: Runner) -> Dict:
         """
-        # TODO
+        Generates metrics for on-policy learning. The agent performance during training is evaluated by running
+        batch_size episodes (until termination). The selected metric is the sum of rewards collected dring the episode.
+        If the user selects not to generate metrics (leading to faster training), an empty dictinary is returned.
         :param runner: The update runner object, containing information about the current status of the actor's/critic's
         training, the state of the environment and training hyperparameters.
-        :param reward: The collected reward after executing the action.
-        :param terminated: Episode termination.
         :return: A dictionary of the sum of rewards collected over 'batch_size' episodes, or empty dictionary.
         """
 
@@ -267,12 +264,11 @@ class PGAgentBase(ABC):
     def _create_training(self, rng: PRNGKeyArray, network: Type[flax.linen.Module], optimizer_params: OptimizerParams)\
             -> TrainState:
         """
-                # TODO
-
+         Creates a TrainState object for the actor of the critic.
         :param rng: Random key for initialization.
         :param network: The actor or critic network.
         :param optimizer_params: A NamedTuple containing the parametrization of the optimizer.
-        :return:
+        :return: A TrainState object to be used in training the actor and cirtic networks.
         """
 
         network, params = self._init_network(rng, network)
@@ -283,12 +279,14 @@ class PGAgentBase(ABC):
     def _create_update_runner(self, rng: PRNGKeyArray, actor_training: TrainState, critic_training: TrainState,
                               hyperparams: HyperParameters) -> Runner:
         """
-        # TODO
+        Intializes the update runner as a Runner object. The runner contains batch_size intializations of the
+        environment, which are used for sampling trajectories. The update runner has one TrainState for the actor and
+        one for the critic network, so that trajectory batches are used to train the same parameters.
         :param rng: Random key for initialization.
         :param actor_training: The actor TrainState object used in training.
         :param critic_training: The critic TrainState object used in training.
         :param hyperparams: An instance of HyperParameters for training.
-        :return:
+        :return: An update runner object to be used in trajectory sampling and training.
         """
 
         rng, reset_rng, runner_rng = jax.random.split(rng, 3)
@@ -305,11 +303,12 @@ class PGAgentBase(ABC):
     def _pi_value(self, actor_training: TrainState, critic_training: TrainState, state: STATE_TYPE)\
             -> Tuple[PI_DIST_TYPE, Float[Array, "1"]]:
         """
+        Assess the stochastic policy via the actor network and the value via the critic network for state.
         # TODO
         :param actor_training: The actor TrainState object used in training.
         :param critic_training: The critic TrainState object used in training.
         :param state: The current state of the episode step in array format.
-        :return:
+        :return: A tuple of the stochastic policy and the value of the state.
         """
 
         pi = actor_training.apply_fn(lax.stop_gradient(actor_training.params), state)
@@ -319,10 +318,10 @@ class PGAgentBase(ABC):
     @partial(jax.jit, static_argnums=(0,))
     def _select_action(self, rng: PRNGKeyArray, pi: PI_DIST_TYPE) -> Tuple[PRNGKeyArray, Int[Array, "1"]]:
         """
-                # TODO
+        Select action by sampling from the stochastic policy for a state.
         :param rng: Random key for initialization.
-        :param pi: The distax distribution procuded by the actor network.
-        :return:
+        :param pi: The distax distribution procuded by the actor network indicating the stochastic policy for a state.
+        :return: A random key after action selection and the selected action from the stochastic policy.
         """
 
         rng, rng_action_sample = jax.random.split(rng)
@@ -331,11 +330,12 @@ class PGAgentBase(ABC):
 
     def _update_training(self, training: TrainState, loss_fn: Callable, loss_input: Tuple) -> TrainState:
         """
-                        # TODO
+        Updates the TrainState object for the actor or critic network by calculating the gradients of the respective
+        loss function and performing a single Gradient Descent step.
         :param training: The actor or critic TrainState object used in training.
         :param loss_fn: The acrtor or critic loss function.
         :param loss_input: The input for the actor or critic loss function.
-        :return:
+        :return: The updated TrainState object.
         """
         grad_fn = jax.grad(loss_fn, allow_int=True)
         grads = grad_fn(*loss_input)
@@ -345,13 +345,15 @@ class PGAgentBase(ABC):
     def _returns(self, traj_batch: Transition, last_value: Float[Array, "1"], gamma: float, lambda_: float) \
             -> RETURNS_TYPE:
         """
-                                # TODO
-
+        Calculates the returns of every step in the trajectory batch. To do so, it identifies episodes in the
+        trajectories. Note that because lax.scan is used in sampling trajectories, they do not necessarily finish with
+        episode termination (episodes may be truncated). Also, since the environment is not re-initialized per sampling
+        step, trajectories do not start at the initial state.
         :param traj_batch: The batch of trajectories.
         :param last_value: The value of the last state in each trajectory.
         :param gamma: Discount factor
         :param lambda_: The λ factor.
-        :return:
+        :return: The returns over the episodes of the trajectory batch.
         """
         rewards_t = traj_batch.reward.squeeze()
         values_t = jnp.concatenate([traj_batch.value.squeeze(), last_value[..., jnp.newaxis]], axis=-1)[:, 1:]
@@ -372,13 +374,17 @@ class PGAgentBase(ABC):
         return returns
 
     @partial(jax.jit, static_argnums=(0,))
-    def _step(self, step_runner: STEP_RUNNER_TYPE, i_step: int) -> Tuple[STEP_RUNNER_TYPE, Transition]:
+    def _rollout(self, step_runner: STEP_RUNNER_TYPE, i_step: int) -> Tuple[STEP_RUNNER_TYPE, Transition]:
         """
-                                # TODO
-
-        :param step_runner: 
-        :param i_step:
-        :return:
+        Evaluation of trajectory rollout. In each step the agent:
+        - evaluates policy and value
+        - selects action
+        - performs environment step
+        - creates step transition
+        :param step_runner: A tuple containing inforamtion on the environment state, the actor and critic training
+        (parameters and networks) and a random key.
+        :param i_step: Unused, required for lax.scan.
+        :return: The updated step_runner tuple and the rollout step transition.
         """
         
         env_state, state, actor_training, critic_training, rng = step_runner
@@ -398,17 +404,15 @@ class PGAgentBase(ABC):
         return step_runner, transition
 
     @partial(jax.jit, static_argnums=(0,))
-    def _update_step(self, update_runner: Runner, i_update_step: int) -> Tuple[Runner, Dict]:
+    def _make_step_runners(self, update_runner: Runner) -> tuple:
         """
-        TODO
-        TODO: explain that environment is not re-rest in every update step
-
+        Creates a step_runners tuple to be used in rollout by combining the batched environments in the update_runner
+        object and broadcasting the TrainState object for the critic and the network in the update_runner object to the
+        same dimension.
         :param update_runner: The update runner object, containing information about the current status of the actor's/
         critic's training, the state of the environment and training hyperparameters.
-        :param i_update_step: Unused, required for progressbar.
-        :return: Tuple with updated runner and dictionary of metrics.
+        :return: Tuple with step runners to be used in rollout.
         """
-
         step_runner = (
             update_runner.env_state,
             update_runner.state,
@@ -417,12 +421,35 @@ class PGAgentBase(ABC):
             update_runner.rng
         )
         step_runners = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))(*step_runner)
+        return step_runners
 
-        step_runners, traj_batch = jax.vmap(lambda x: lax.scan(self._step, x, None, self.config.rollout_length))(step_runners)
+    @partial(jax.jit, static_argnums=(0,))
+    def _update_step(self, update_runner: Runner, i_update_step: int) -> Tuple[Runner, Dict]:
+        """
+        An update step of the actor and critic networks. This entails:
+        - performing rollout for sampling a batch of trajectories.
+        - assessing the value of the last state per trajectory using the critic.
+        - evaluating the discounted returns per trajectory.
+        - updating the actor and critic network parameters via the respective loss functions.
+        - generating in-training performance metrics.
+        In this approach, the update_runner already has a batch of environments initialized. The environments are not
+        initialized in the begining of every update step, thich means that trajectories to not necessarily start from
+        an intial state (which lead to better results when benchmarking with Cartpole-v1). Moreover, the use of lax.scan
+        for rollout means that the trajectories do not necessarily stop with episode termination (episodes can be
+        truncated in trajectory sampling).
+        :param update_runner: The update runner object, containing information about the current status of the actor's/
+        critic's training, the state of the environment and training hyperparameters.
+        :param i_update_step: Unused, required for progressbar.
+        :return: Tuple with updated runner and dictionary of metrics.
+        """
+
+        step_runners = self._make_step_runners(update_runner)
+        scan_rollout_fn = lambda x: lax.scan(self._rollout, x, None, self.config.rollout_length)
+        step_runners, traj_batch = jax.vmap(scan_rollout_fn)(step_runners)
 
         env_state, state, _, _, rng = step_runners
-        traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
 
+        traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
         last_value = update_runner.critic_training.apply_fn(update_runner.critic_training.params, state)
         last_value = jnp.asarray(last_value)
 
@@ -480,42 +507,44 @@ class PGAgentBase(ABC):
 
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
-    def _trajectory_returns(self, value: Float[Array, "1"], traj: Transition) -> Tuple[float, float]:
+    def _trajectory_returns(self, value: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
         """
-        #TODO
-        :param value:
-        :param traj:
-        :return:
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    @partial(jax.jit, static_argnums=(0,))
-    def _actor_loss(self, training: TrainState, state: Float[Array, "state_size"], action: Float[Array, "1"], 
-                    returns: RETURNS_TYPE, value: Float[Array, "1"], ent_coef: float) -> float:
-        """
-                #TODO
-        :param training:
-        :param state:
-        :param action:
-        :param returns:
-        :param value:
-        :param ent_coef:
-        :return:
+        Calculates the returns per episode step over a batch of trajectories.
+        :param value: The values of the steps in the trajectory according to the critic (including the one of the last
+         state).
+        :param traj: The trajectory batch.
+        :return: An array of returns.
         """
         raise NotImplementedError
 
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
-    def _critic_loss(self, training: TrainState, state: Float[Array, "state_size"], targets: Float[Array, "1"],
-                     vf_coef: float) -> float:
+    def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
+                    action: Float[Array, "n_rollout batch_size"], returns: RETURNS_TYPE,
+                    value: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters) -> float:
         """
-                #TODO
-        :param training:
-        :param state:
-        :param targets:
-        :param vf_coef:
-        :return:
+        Calculates the actor loss.
+        :param training: The actor TrainState object.
+        :param state: The states in the trajectory batch.
+        :param action: The actions in the trajectory batch.
+        :param returns: The returns over the trajectory batch.
+        :param value: The values over the trajectory batch according to the critic.
+        :param hyperparams: The HyperParameters object used for training.
+        :return: The actor loss.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    @partial(jax.jit, static_argnums=(0,))
+    def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
+                     targets: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters) -> float:
+        """
+        Calculates the critic loss.
+        :param training: The critic TrainState object.
+        :param state: The states in the trajectory batch.
+        :param targets: The returns over the trajectory batch, which act as the targets for training the critic.
+        :param hyperparams: The HyperParameters object used for training.
+        :return: The critic loss.
         """
         raise NotImplementedError
 
@@ -523,23 +552,23 @@ class PGAgentBase(ABC):
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition, returns: RETURNS_TYPE) -> tuple:
         """
-                #TODO
-        :param update_runner:
-        :param traj_batch:
-        :param returns:
-        :return:
+        Prepares the input required by the actor loss function.
+        :param update_runner: The update runner object used in training.
+        :param traj_batch: The batch of trajectories.
+        :param returns: The returns over the trajectory batch.
+        :return: A tuple of input to the actor loss function.
         """
         raise NotImplementedError
 
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
-    def _critic_loss_input(self, update_runner, traj_batch, returns):
+    def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition, returns: RETURNS_TYPE) -> tuple:
         """
-                #TODO
-        :param update_runner:
-        :param traj_batch:
-        :param returns:
-        :return:
+        Prepares the input required by the critic loss function.
+        :param update_runner: The update runner object used in training.
+        :param traj_batch: The batch of trajectories.
+        :param returns: The returns over the trajectory batch.
+        :return: A tuple of input to the critic loss function.
         """
         raise NotImplementedError
 
@@ -688,14 +717,36 @@ class PGAgentBase(ABC):
 class ReinforceAgent(PGAgentBase):
 
     @partial(jax.jit, static_argnums=(0,))
-    def _trajectory_returns(self, value: Float[Array, "1"], traj: Transition) -> Tuple[float, float]:
+    def _trajectory_returns(self, value: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
+        """
+        Calculates the returns per episode step over a batch of trajectories. For the REINFORCE agent, this is
+        implemented as a weighted average between the discounted sum of rewards and the value according to the critic.
+        Weihting is performed via the GAE λ factor between the
+        :param value: The values of the steps in the trajectory according to the critic (including the one of the last
+        state).
+        :param traj: The trajectory batch.
+        :return: An array of returns.
+        """
         rewards, discounts, values, lambda_ = traj
         value = rewards + discounts * ((1 - lambda_) * values + lambda_ * value)
         return value, value
 
     @partial(jax.jit, static_argnums=(0,))
-    def _actor_loss(self, training: TrainState, state: Float[Array, "state_size"], action: Float[Array, "1"], 
-                    returns: RETURNS_TYPE, value: Float[Array, "1"], ent_coef: float) -> float:
+    def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
+                    action: Float[Array, "n_rollout batch_size"], returns: RETURNS_TYPE,
+                    value: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters) -> float:
+        """
+        Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
+        discounted returns and the value as estimated by the critic.
+        :param training: The actor TrainState object.
+        :param state: The states in the trajectory batch.
+        :param action: The actions in the trajectory batch.
+        :param returns: The returns over the trajectory batch.
+        :param value: The values over the trajectory batch according to the critic.
+        :param hyperparams: The HyperParameters object used for training.
+        :return: The actor loss.
+        """
+
         actor_policy = training.apply_fn(training.params, state)
         log_prob = actor_policy.log_prob(action)
         advantage = returns - value
@@ -704,37 +755,73 @@ class ReinforceAgent(PGAgentBase):
         loss_actor = -advantage * log_prob
         entropy = actor_policy.entropy().mean()
 
-        total_loss_actor = loss_actor.mean() - ent_coef * entropy
+        total_loss_actor = loss_actor.mean() - hyperparams.ent_coeff * entropy
 
         return total_loss_actor
 
     @partial(jax.jit, static_argnums=(0,))
-    def _critic_loss(self, training: TrainState, state: Float[Array, "state_size"], targets: Float[Array, "1"],
-                     vf_coef: float) -> float:
+    def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
+                     targets: Float[Array, "batch_size n_rollout"],
+                     hyperparams: HyperParameters) -> float:
+        """
+        Calculates the critic loss.
+        :param training: The critic TrainState object.
+        :param state: The states in the trajectory batch.
+        :param targets: The returns over the trajectory batch, which act as the targets for training the critic.
+        :param hyperparams: The HyperParameters object used for training.
+        :return: The critic loss.
+        """
+
         value = training.apply_fn(training.params, state)
         value_loss = jnp.mean((value - targets) ** 2)
-        critic_total_loss = vf_coef * value_loss
+        critic_total_loss = hyperparams.vf_coeff * value_loss
         return critic_total_loss
 
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition, returns: RETURNS_TYPE) -> tuple:
+        """
+        Prepares the input required by the actor loss function. For the REINFORCE agent, this entails the:
+        - actor training TrainState object.
+        - the actions collected over the trajectory batch.
+        - the returns over the trajectory batch.
+        - the values over the trajectory batch as evaluated by the critic.
+        - the training hyperparameters.
+        :param update_runner: The update runner object used in training.
+        :param traj_batch: The batch of trajectories.
+        :param returns: The returns over the trajectory batch.
+        :return: A tuple of input to the actor loss function.
+        """
+
         return (
             update_runner.actor_training,
             traj_batch.state,
             traj_batch.action,
             returns,
             traj_batch.value,
-            update_runner.hyperparams.ent_coeff
+            update_runner.hyperparams
         )
 
     @partial(jax.jit, static_argnums=(0,))
-    def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition, returns: RETURNS_TYPE):
+    def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition, returns: RETURNS_TYPE) -> tuple:
+        """
+        Prepares the input required by the critic loss function. For the REINFORCE agent, this entails the:
+        - critic training TrainState object.
+        - the states collected over the trajectory batch.
+        - the returns over the trajectory batch.
+        - the training hyperparameters.
+        :param update_runner: The update runner object used in training.
+        :param traj_batch: The batch of trajectories.
+        :param returns: The returns over the trajectory batch.
+        :return: A tuple of input to the critic loss function.
+        """
+
         return (
             update_runner.critic_training,
             traj_batch.state,
             returns,
-            update_runner.hyperparams.vf_coeff
+            update_runner.hyperparams
         )
+
 
 if __name__ == "__main__":
     pass

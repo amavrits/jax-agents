@@ -77,7 +77,11 @@ class HyperParameters(NamedTuple):
 
 @struct.dataclass
 class Runner:
-    """Object for running, passes training status, environment state and hyperparameters between policy update steps."""
+    """
+    Object for running, passes training status, environment state and hyperparameters between policy update steps.
+    The runner is directed to have batch_size environment (states) and PRNG's but only a single TrainState per the actor
+    and critic.
+    """
     """Training status (params, training step and optimizer) of the actor"""
     actor_training: TrainState
 
