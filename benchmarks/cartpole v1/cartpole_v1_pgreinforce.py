@@ -53,9 +53,10 @@ if __name__ == '__main__':
     hyperparams = vpg.HyperParameters(
         gamma=0.99,
         gae_lambda=1,
-        clip_eps=0.05,
-        vf_coeff=0.5,
         ent_coeff=0.01,
+        # Irrelevant for this agent but helps with using the same optimizer params for critic and network. If you set
+        # vf_coeff=1 and adjust the critic optimizer params to be double, leads to the same results.
+        vf_coeff=0.5,
         actor_optimizer_params=optimizer_params,
         critic_optimizer_params=optimizer_params
     )

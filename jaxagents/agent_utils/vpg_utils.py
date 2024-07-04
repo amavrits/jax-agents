@@ -56,17 +56,18 @@ class HyperParameters(NamedTuple):
     """Gamma (discount parameter) of Bellman equation"""
     gamma: float
 
-    """Generalized Advantage Estimation lambda"""
+    """λ for weighting the discounted returns and the value as estimated by the critic in evaluating returns."""
     gae_lambda: float
-
-    """Value clip"""
-    clip_eps: float
-
-    """value function coefficient"""
-    vf_coeff: float
 
     """Entropy coefficient for actor loss function"""
     ent_coeff: float
+
+    """
+    Value function coefficient.
+    Not relevant for the VPG-REINFORCE agent but help in using the same optimizer parameters for both actor and critic
+    training.
+    """
+    vf_coeff: float
 
     """Optimizer parameters for the actor network"""
     actor_optimizer_params: OptimizerParams

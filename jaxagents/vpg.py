@@ -355,18 +355,19 @@ class PGAgentBase(ABC):
         :param lambda_: The λ factor.
         :return: The returns over the episodes of the trajectory batch.
         """
+        
         rewards_t = traj_batch.reward.squeeze()
         values_t = jnp.concatenate([traj_batch.value.squeeze(), last_value[..., jnp.newaxis]], axis=-1)[:, 1:]
-        discounted_rewards_t = 1.0 - traj_batch.terminated.astype(jnp.float32).squeeze()
-        discounted_rewards_t = (discounted_rewards_t * gamma).astype(jnp.float32)
+        discounts_t = 1.0 - traj_batch.terminated.astype(jnp.float32).squeeze()
+        discounts_t = (discounts_t * gamma).astype(jnp.float32)
 
-        rewards_t, discounted_rewards_t, values_t = jax.tree_util.tree_map(
-            lambda x: jnp.swapaxes(x, 0, 1), (rewards_t, discounted_rewards_t, values_t)
+        rewards_t, discounts_t, values_t = jax.tree_util.tree_map(
+            lambda x: jnp.swapaxes(x, 0, 1), (rewards_t, discounts_t, values_t)
         )
 
-        lambda_ = jnp.ones_like(discounted_rewards_t) * lambda_
+        lambda_ = jnp.ones_like(discounts_t) * lambda_
 
-        traj_runner = (rewards_t, discounted_rewards_t, values_t, lambda_)
+        traj_runner = (rewards_t, discounts_t, values_t, lambda_)
         _, returns = jax.lax.scan(self._trajectory_returns, values_t[-1], traj_runner, reverse=True)
 
         returns = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), returns)
@@ -450,7 +451,7 @@ class PGAgentBase(ABC):
         env_state, state, _, _, rng = step_runners
 
         traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
-        last_value = update_runner.critic_training.apply_fn(update_runner.critic_training.params, state)
+        last_value = update_runner.critic_training.apply_fn(jax.lax.stop_gradient(update_runner.critic_training.params), state)
         last_value = jnp.asarray(last_value)
 
         returns = self._returns(traj_batch, last_value, update_runner.hyperparams.gamma, update_runner.hyperparams.gae_lambda)
@@ -716,12 +717,17 @@ class PGAgentBase(ABC):
 
 class ReinforceAgent(PGAgentBase):
 
+    """
+    REINFORCE agent (Vanilla Policy Gradient) using a critic network as a baseline.
+    See "Baselines in Policy Gradients" in : https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html
+    """
+
     @partial(jax.jit, static_argnums=(0,))
     def _trajectory_returns(self, value: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
         """
         Calculates the returns per episode step over a batch of trajectories. For the REINFORCE agent, this is
         implemented as a weighted average between the discounted sum of rewards and the value according to the critic.
-        Weihting is performed via the GAE λ factor between the
+        Weighting is performed via the GAE λ factor between the
         :param value: The values of the steps in the trajectory according to the critic (including the one of the last
         state).
         :param traj: The trajectory batch.
