@@ -35,7 +35,7 @@ jaxtyping==0.2.29
 keyring==25.2.1
 kiwisolver==1.4.5
 markdown-it-py==3.0.0
-matplotlib==3.9.0
+matplotlib==3.9.1
 mdurl==0.1.2
 ml-dtypes==0.4.0
 more-itertools==10.2.0
@@ -47,6 +47,7 @@ opt-einsum==3.3.0
 optax==0.2.2
 orbax-checkpoint==0.5.14
 packaging==24.0
+pandas==2.2.2
 pillow==10.3.0
 pkginfo==1.11.0
 pluggy==1.5.0

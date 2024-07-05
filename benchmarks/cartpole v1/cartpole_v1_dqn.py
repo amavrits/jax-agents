@@ -95,4 +95,4 @@ if __name__ == '__main__':
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Reward [-]", fontsize=14)
     plt.close()
-    fig.savefig(os.path.join(os.getcwd(), r'figs\DDQN training.png'))
+    fig.savefig(os.path.join(os.getcwd(), r'figures\DDQN training.png'))

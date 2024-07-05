@@ -43,7 +43,7 @@ if __name__ == '__main__':
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
-        # eval_rng=jax.random.PRNGKey(18)
+        eval_rng=jax.random.PRNGKey(18)
     )
 
     """Set up agent"""
@@ -55,7 +55,7 @@ if __name__ == '__main__':
     hyperparams = ppo.HyperParameters(
         gamma=0.99,
         eps_clip=0.2,
-        kl_threshold=0.015,
+        kl_threshold=1e-5,
         gae_lambda=1.0,
         ent_coeff=0.0,
         vf_coeff=1.0,
@@ -86,4 +86,4 @@ if __name__ == '__main__':
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Training reward [-]", fontsize=14)
     plt.close()
-    fig.savefig(os.path.join(os.getcwd(), r'figs\PPO Clip training.png'))
+    fig.savefig(os.path.join(os.getcwd(), r'figures\PPO Clip training.png'))
