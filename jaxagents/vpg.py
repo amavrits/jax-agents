@@ -40,7 +40,8 @@ class PGAgentBase(ABC):
     Base for (Vanilla) Policy Gradient agents.
     Can be used for both discrete or continuous action environments, and its use depends on the provided actor network.
     Follows the instructions of: https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html
-    Uses an actorand critic approach, which helps with lax.scan operations (since trajectories can be truncated).
+    Uses an actor and critic approach, which helps with lax.scan operations (since trajectories can be truncated). The
+    critic is used to calculate the value, which is used as baseline for advantage estimation.
 
     Training relies on jitting several methods by treating the 'self' arg as static. According to suggested practice,
     this can prove dangerous (https://jax.readthedocs.io/en/latest/faq.html#how-to-use-jit-with-methods -
@@ -719,7 +720,7 @@ class PGAgentBase(ABC):
 class ReinforceAgent(PGAgentBase):
 
     """
-    REINFORCE agent (Vanilla Policy Gradient) using a critic network as a baseline.
+    REINFORCE agent (Vanilla Policy Gradient) using a critic value as a baseline for calculating the advantage function.
     See "Baselines in Policy Gradients" in : https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html
     """
 
