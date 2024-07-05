@@ -4,7 +4,7 @@ import jax
 import optax
 import gymnax
 import numpy as np
-from jaxagents import vpg
+from jaxagents import ppo
 from cartpole_nn_gallery import *
 import matplotlib
 matplotlib.use("TkAgg")
@@ -16,7 +16,7 @@ if __name__ == '__main__':
     env, env_params = gymnax.make("CartPole-v1")
 
     """Set up transition template, given the state representation in the cartpole environment."""
-    transition_temp = vpg.Transition(
+    transition_temp = ppo.Transition(
         state=jnp.zeros((1, 4), dtype=jnp.float32),
         action=jnp.zeros(1, dtype=jnp.int32),
         log_prob=jnp.zeros(1, dtype=jnp.float32),
@@ -33,30 +33,32 @@ if __name__ == '__main__':
     )
 
     """Define configuration for agent training"""
-    config = vpg.AgentConfig(
+    config = ppo.AgentConfig(
         actor_network=VanillaPG_Actor_NN_model,
         critic_network=VanillaPG_Critic_NN_model,
         transition_template=transition_temp,
         rollout_length=50,
         n_steps=1_000,
         batch_size=16,
+        actor_epochs=10,
+        critic_epochs=10,
         optimizer=optax.adam,
         eval_rng=jax.random.PRNGKey(18)
     )
 
     """Set up agent"""
-    agent = vpg.ReinforceAgent(env, env_params, config)
+    agent = ppo.PPOAgent(env, env_params, config)
     print(agent.__str__())
 
     """Define optimizer parameters and training hyperparameters"""
-    optimizer_params = vpg.OptimizerParams(learning_rate=1e-2, eps=1e-3, grad_clip=1)
-    hyperparams = vpg.HyperParameters(
+    optimizer_params = ppo.OptimizerParams(learning_rate=1e-3, eps=1e-3, grad_clip=1)
+    hyperparams = ppo.HyperParameters(
         gamma=0.99,
+        eps_clip=0.2,
+        kl_threshold=1.5,
         gae_lambda=1.0,
-        ent_coeff=0.01,
-        # Irrelevant for this agent but helps with using the same optimizer params for critic and network. If you set
-        # vf_coeff=1 and adjust the critic optimizer params to be double, leads to the same results.
-        vf_coeff=0.5,
+        ent_coeff=0.0,
+        vf_coeff=1.0,
         actor_optimizer_params=optimizer_params,
         critic_optimizer_params=optimizer_params
     )
@@ -67,6 +69,7 @@ if __name__ == '__main__':
     """Train agent"""
     t0 = time.time()
     runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
+    # with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     print(f"time: {time.time() - t0:.2f} s")
 
     """ Post-process results"""
@@ -84,4 +87,4 @@ if __name__ == '__main__':
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Training reward [-]", fontsize=14)
     plt.close()
-    fig.savefig(os.path.join(os.getcwd(), r'figs\PG_REINFORCE training.png'))
+    fig.savefig(os.path.join(os.getcwd(), r'figs\PPO Clip training.png'))

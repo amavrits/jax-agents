@@ -1,5 +1,5 @@
 """
-Implementation of Vanilla Policy Gradient agents in JAX.
+Implementation of the PPO agent in JAX.
 
 Author: Antonis Mavritsakis
 @Github: amavrits
@@ -16,7 +16,7 @@ import distrax
 import xarray as xr
 from flax.core import FrozenDict
 import flashbax as fbx
-from jaxagents.agent_utils.vpg_utils import *
+from jaxagents.agent_utils.ppo_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from flax.training.train_state import TrainState
@@ -35,13 +35,12 @@ PI_DIST_TYPE = distrax.Categorical
 RETURNS_TYPE = Float[Array, "batch_size n_rollout"]
 
 
-class PGAgentBase(ABC):
+class PPOAgentBase(ABC):
     """
-    Base for (Vanilla) Policy Gradient agents.
+    Base for PPO agents.
     Can be used for both discrete or continuous action environments, and its use depends on the provided actor network.
-    Follows the instructions of: https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html
-    Uses an actor and critic approach, which helps with lax.scan operations (since trajectories can be truncated). The
-    critic is used to calculate the value, which is used as baseline for advantage estimation.
+    Follows the instructions of: https://spinningup.openai.com/en/latest/algorithms/ppo.html
+    Uses lax.scan for rollout, so trajectories may be truncated.
 
     Training relies on jitting several methods by treating the 'self' arg as static. According to suggested practice,
     this can prove dangerous (https://jax.readthedocs.io/en/latest/faq.html#how-to-use-jit-with-methods -
@@ -307,19 +306,6 @@ class PGAgentBase(ABC):
         action = pi.sample(seed=rng_action_sample)
         return rng, action
 
-    def _update_training(self, training: TrainState, loss_fn: Callable, loss_input: Tuple) -> TrainState:
-        """
-        Updates the TrainState object for the actor or critic network by calculating the gradients of the respective
-        loss function and performing a single Gradient Descent step.
-        :param training: The actor or critic TrainState object used in training.
-        :param loss_fn: The acrtor or critic loss function.
-        :param loss_input: The input for the actor or critic loss function.
-        :return: The updated TrainState object.
-        """
-        grad_fn = jax.grad(loss_fn, allow_int=True)
-        grads = grad_fn(*loss_input)
-        return training.apply_gradients(grads=grads.params)
-
     @partial(jax.jit, static_argnums=(0,))
     def _returns(self, traj_batch: Transition, last_next_state_value: Float[Array, "batch_size"], gamma: float,
                  lambda_: float) -> RETURNS_TYPE:
@@ -409,6 +395,75 @@ class PGAgentBase(ABC):
         return step_runners
 
     @partial(jax.jit, static_argnums=(0,))
+    def _actor_epoch(self, epoch_runner):
+        """
+        Performs a Gradient Ascent update update of the actor ("ascent" by the definition of actor loss).
+        :param epoch_runner: A tuple containing the following information about the update:
+        - actor_training: TrainState object for actor training
+        - actor_loss_input: Tuple with the inputs required by the actor loss function.
+        - kl: The KL divergence collected during the update (used in checking for early stopping).
+        - epoch: The number of the current training epoch.
+        - kl_threshold: The KL divergence threshold for early stopping.
+        :return: The updated epoch runner.
+        """
+
+        actor_training, actor_loss_input, kl, epoch, kl_threshold = epoch_runner
+        grad_input = (actor_training, *actor_loss_input)
+        grad_fn = jax.grad(self._actor_loss, has_aux=True, allow_int=True)
+        # grads, kl = grad_fn(*grad_input)
+        grads, kl = grad_fn(*actor_loss_input)
+        actor_training = actor_training.apply_gradients(grads=grads.params)
+
+        # A = jnp.concatenate((
+        #     grads.params['params']['Dense_0']['bias'].flatten(), grads.params['params']['Dense_0']['kernel'].flatten(),
+        #     grads.params['params']['Dense_1']['bias'].flatten(), grads.params['params']['Dense_1']['kernel'].flatten(),
+        #     grads.params['params']['Dense_2']['bias'].flatten(), grads.params['params']['Dense_2']['kernel'].flatten(),
+        # ))
+        # if jnp.any(jnp.not_equal(A, 0)):
+        #     print()
+
+        return (actor_training, actor_loss_input, kl, epoch+1, kl_threshold)
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _actor_training_cond(self, epoch_runner):
+        """
+        Checks whether the lax.while_loop over epochs should be terminated (either because the number of epochs has been
+        met or due to KL divergence early stopping).
+        :param epoch_runner: A tuple containing the following information about the update:
+        - actor_training: TrainState object for actor training
+        - actor_loss_input: Tuple with the inputs required by the actor loss function.
+        - kl: The KL divergence collected during the update (used in checking for early stopping).
+        - epoch: The number of the current training epoch.
+        - kl_threshold: The KL-divergence threshold for early stopping.
+        :return: Whether the lax.while_loop over training epochs finishes.
+        """
+
+        _, _, kl, epoch, kl_threshold = epoch_runner
+        return jnp.logical_and(
+            jnp.less(epoch, self.config.actor_epochs),
+            jnp.less_equal(kl, kl_threshold)
+        )
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _critic_epoch(self, i_epoch, epoch_runner):
+        """
+        Performs a Gradient Descent update update of the critic.
+        :param: i_epoch: The current training epoch (unused but required by lax.fori_loop).
+        :param epoch_runner: A tuple containing the following information about the update:
+        - critic_training: TrainState object for critic training
+        - critic_loss_input: Tuple with the inputs required by the critic loss function.
+        :return: The updated epoch runner.
+        """
+
+        critic_training, critic_loss_input = epoch_runner
+        grad_input = (critic_training, *critic_loss_input)
+        grad_fn = jax.grad(self._critic_loss, allow_int=True)
+        # grads = grad_fn(*grad_input)
+        grads = grad_fn(*critic_loss_input)
+        critic_training = critic_training.apply_gradients(grads=grads.params)
+        return (critic_training, critic_loss_input)
+
+    @partial(jax.jit, static_argnums=(0,))
     def _update_step(self, update_runner: Runner, i_update_step: int) -> Tuple[Runner, Dict]:
         """
         An update step of the actor and critic networks. This entails:
@@ -449,10 +504,21 @@ class PGAgentBase(ABC):
         )
 
         actor_loss_input = self._actor_loss_input(update_runner, traj_batch, returns)
-        actor_training = self._update_training(update_runner.actor_training, self._actor_loss, actor_loss_input)
+        start_kl, start_epoch = -jnp.inf, 1
+        actor_epoch_runner = (
+            update_runner.actor_training,
+            actor_loss_input,
+            start_kl,
+            start_epoch,
+            update_runner.hyperparams.kl_threshold
+        )
+        actor_epoch_runner = lax.while_loop(self._actor_training_cond, self._actor_epoch, actor_epoch_runner)
+        actor_training, _, _, _, _ = actor_epoch_runner
 
         critic_loss_input = self._critic_loss_input(update_runner, traj_batch, returns)
-        critic_training = self._update_training(update_runner.critic_training, self._critic_loss, critic_loss_input)
+        critic_epoch_runner = (update_runner.critic_training, critic_loss_input)
+        critic_epoch_runner = lax.fori_loop(0, self.config.critic_epochs, self._critic_epoch, critic_epoch_runner)
+        critic_training, _ = critic_epoch_runner
 
         """Update runner as a dataclass"""
         update_runner = update_runner.replace(
@@ -514,17 +580,20 @@ class PGAgentBase(ABC):
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                    action: Float[Array, "n_rollout batch_size"], returns: RETURNS_TYPE,
-                    value: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters) -> float:
+                    action: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
+                    returns: RETURNS_TYPE, value: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters)\
+            -> Tuple[float, float]:
         """
-        Calculates the actor loss.
+        Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
+        discounted returns and the value as estimated by the critic.
         :param training: The actor TrainState object.
         :param state: The states in the trajectory batch.
         :param action: The actions in the trajectory batch.
+        :param log_prob_old: Log-probabilities of the old policy collected over the trajectory batch.
         :param returns: The returns over the trajectory batch.
         :param value: The values over the trajectory batch according to the critic.
         :param hyperparams: The HyperParameters object used for training.
-        :return: The actor loss.
+        :return: A tuple containing the actor loss and the KL divergence (for early checking stopping criterion).
         """
 
         raise NotImplementedError
@@ -569,7 +638,6 @@ class PGAgentBase(ABC):
         """
 
         raise NotImplementedError
-
 
     """ METHODS FOR APPLYING AGENT"""
 
@@ -667,7 +735,6 @@ class PGAgentBase(ABC):
 
         return eval_metrics
 
-
     """ METHODS FOR POST-PROCESSING """
 
     def collect_training(self, runner: Optional[Runner] = None, metrics: Optional[Dict] = None) -> None:
@@ -723,11 +790,11 @@ class PGAgentBase(ABC):
         return self._summary_stats(metric)
 
 
-class ReinforceAgent(PGAgentBase):
+class PPOAgent(PPOAgentBase):
 
     """
-    REINFORCE agent (Vanilla Policy Gradient) using a critic value as a baseline for calculating the advantage function.
-    See "Baselines in Policy Gradients" in : https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html
+    PPO clip agent
+    See : https://spinningup.openai.com/en/latest/algorithms/ppo.html
     """
 
     @partial(jax.jit, static_argnums=(0,))
@@ -748,31 +815,43 @@ class ReinforceAgent(PGAgentBase):
 
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                    action: Float[Array, "n_rollout batch_size"], returns: RETURNS_TYPE,
-                    value: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters) -> float:
+                    action: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
+                    returns: RETURNS_TYPE, value: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters)\
+            -> Tuple[float, Float[Array, "1"]]:
         """
         Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
         discounted returns and the value as estimated by the critic.
         :param training: The actor TrainState object.
         :param state: The states in the trajectory batch.
         :param action: The actions in the trajectory batch.
+        :param log_prob_old: Log-probabilities of the old policy collected over the trajectory batch.
         :param returns: The returns over the trajectory batch.
         :param value: The values over the trajectory batch according to the critic.
         :param hyperparams: The HyperParameters object used for training.
-        :return: The actor loss.
+        :return: A tuple containing the actor loss and the KL divergence (for early checking stopping criterion).
         """
 
         actor_policy = training.apply_fn(training.params, state)
         log_prob = actor_policy.log_prob(action)
+        log_policy_ratio = log_prob - log_prob_old
+        policy_ratio = jnp.exp(log_policy_ratio)
+        # policy_ratio_clipped = jnp.clip(policy_ratio, 1 + hyperparams.eps_clip, 1 - hyperparams.eps_clip)
+        kl = jnp.sum(-log_policy_ratio)
+
         advantage = returns - value
+        # advantage_clip = jnp.clip(policy_ratio, 1 + hyperparams.eps_clip, 1 - hyperparams.eps_clip) * advantage
+        clip = jnp.where(jnp.greater(advantage, 0), 1 + hyperparams.eps_clip, 1 - hyperparams.eps_clip)
+        advantage_clip = advantage * clip
 
         """ Negative gradient, because we want ascent but 'apply_gradients' applies descent """
-        loss_actor = -advantage * log_prob
+        # loss_actor = - advantage * jnp.minimum(policy_ratio, policy_ratio_clipped)
+        loss_actor = - jnp.minimum(policy_ratio * advantage, advantage_clip)
+
         entropy = actor_policy.entropy().mean()
 
         total_loss_actor = loss_actor.mean() - hyperparams.ent_coeff * entropy
 
-        return total_loss_actor
+        return total_loss_actor, kl
 
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
@@ -796,8 +875,8 @@ class ReinforceAgent(PGAgentBase):
     def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition, returns: RETURNS_TYPE) -> tuple:
         """
         Prepares the input required by the actor loss function. For the REINFORCE agent, this entails the:
-        - actor training TrainState object.
         - the actions collected over the trajectory batch.
+        - the log-probability of the actions collected over the trajectory batch.
         - the returns over the trajectory batch.
         - the values over the trajectory batch as evaluated by the critic.
         - the training hyperparameters.
@@ -811,6 +890,7 @@ class ReinforceAgent(PGAgentBase):
             update_runner.actor_training,
             traj_batch.state,
             traj_batch.action,
+            traj_batch.log_prob,
             returns,
             traj_batch.value,
             update_runner.hyperparams
@@ -820,7 +900,6 @@ class ReinforceAgent(PGAgentBase):
     def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition, returns: RETURNS_TYPE) -> tuple:
         """
         Prepares the input required by the critic loss function. For the REINFORCE agent, this entails the:
-        - critic training TrainState object.
         - the states collected over the trajectory batch.
         - the returns over the trajectory batch.
         - the training hyperparameters.
