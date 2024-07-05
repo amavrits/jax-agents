@@ -34,8 +34,8 @@ if __name__ == '__main__':
 
     """Define configuration for agent training"""
     config = vpg.AgentConfig(
-        actor_network=VanillaPG_Actor_NN_model,
-        critic_network=VanillaPG_Critic_NN_model,
+        actor_network=PGActorNN,
+        critic_network=PGCriticNN,
         transition_template=transition_temp,
         rollout_length=50,
         n_steps=1_000,

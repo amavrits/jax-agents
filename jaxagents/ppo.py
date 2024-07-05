@@ -410,17 +410,8 @@ class PPOAgentBase(ABC):
         actor_training, actor_loss_input, kl, epoch, kl_threshold = epoch_runner
         grad_input = (actor_training, *actor_loss_input)
         grad_fn = jax.grad(self._actor_loss, has_aux=True, allow_int=True)
-        # grads, kl = grad_fn(*grad_input)
-        grads, kl = grad_fn(*actor_loss_input)
+        grads, kl = grad_fn(*grad_input)
         actor_training = actor_training.apply_gradients(grads=grads.params)
-
-        # A = jnp.concatenate((
-        #     grads.params['params']['Dense_0']['bias'].flatten(), grads.params['params']['Dense_0']['kernel'].flatten(),
-        #     grads.params['params']['Dense_1']['bias'].flatten(), grads.params['params']['Dense_1']['kernel'].flatten(),
-        #     grads.params['params']['Dense_2']['bias'].flatten(), grads.params['params']['Dense_2']['kernel'].flatten(),
-        # ))
-        # if jnp.any(jnp.not_equal(A, 0)):
-        #     print()
 
         return (actor_training, actor_loss_input, kl, epoch+1, kl_threshold)
 
@@ -458,8 +449,7 @@ class PPOAgentBase(ABC):
         critic_training, critic_loss_input = epoch_runner
         grad_input = (critic_training, *critic_loss_input)
         grad_fn = jax.grad(self._critic_loss, allow_int=True)
-        # grads = grad_fn(*grad_input)
-        grads = grad_fn(*critic_loss_input)
+        grads = grad_fn(*grad_input)
         critic_training = critic_training.apply_gradients(grads=grads.params)
         return (critic_training, critic_loss_input)
 
@@ -657,7 +647,6 @@ class PPOAgentBase(ABC):
         else:
             raise Exception("The agent has not been trained.")
 
-
     """ METHODS FOR PERFORMANCE EVALUATION """
 
     def _eval_agent(self, rng: PRNGKeyArray, actor_training: TrainState, critic_training: TrainState,
@@ -790,7 +779,7 @@ class PPOAgentBase(ABC):
         return self._summary_stats(metric)
 
 
-class PPOAgent(PPOAgentBase):
+class PPOClipAgent(PPOAgentBase):
 
     """
     PPO clip agent
@@ -817,7 +806,7 @@ class PPOAgent(PPOAgentBase):
     def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
                     action: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
                     returns: RETURNS_TYPE, value: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters)\
-            -> Tuple[float, Float[Array, "1"]]:
+            -> Tuple[Union[float, Float[Array, "1"]], Float[Array, "1"]]:
         """
         Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
         discounted returns and the value as estimated by the critic.
@@ -835,39 +824,42 @@ class PPOAgent(PPOAgentBase):
         log_prob = actor_policy.log_prob(action)
         log_policy_ratio = log_prob - log_prob_old
         policy_ratio = jnp.exp(log_policy_ratio)
-        # policy_ratio_clipped = jnp.clip(policy_ratio, 1 + hyperparams.eps_clip, 1 - hyperparams.eps_clip)
         kl = jnp.sum(-log_policy_ratio)
 
         advantage = returns - value
-        # advantage_clip = jnp.clip(policy_ratio, 1 + hyperparams.eps_clip, 1 - hyperparams.eps_clip) * advantage
+
+        """
+        Adopt simplified formulation of clipped policy ratio * advantage as explained in the note of:
+        https://spinningup.openai.com/en/latest/algorithms/ppo.html#id2
+        """
         clip = jnp.where(jnp.greater(advantage, 0), 1 + hyperparams.eps_clip, 1 - hyperparams.eps_clip)
         advantage_clip = advantage * clip
 
-        """ Negative gradient, because we want ascent but 'apply_gradients' applies descent """
-        # loss_actor = - advantage * jnp.minimum(policy_ratio, policy_ratio_clipped)
-        loss_actor = - jnp.minimum(policy_ratio * advantage, advantage_clip)
+        """Actual clip calculation - not used but left here for comparison to simplified version"""
+        # advantage_clip = jnp.clip(policy_ratio, 1 - hyperparams.eps_clip, 1 + hyperparams.eps_clip) * advantage
+
+        loss_actor = jnp.minimum(policy_ratio * advantage, advantage_clip)
 
         entropy = actor_policy.entropy().mean()
+        total_loss_actor = loss_actor.mean() + hyperparams.ent_coeff * entropy
 
-        total_loss_actor = loss_actor.mean() - hyperparams.ent_coeff * entropy
-
-        return total_loss_actor, kl
+        """ Negative loss, because we want ascent but 'apply_gradients' applies descent """
+        return -total_loss_actor, kl
 
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                     targets: Float[Array, "batch_size n_rollout"],
-                     hyperparams: HyperParameters) -> float:
+                     returns: RETURNS_TYPE, hyperparams: HyperParameters) -> Float[Array, "1"]:
         """
         Calculates the critic loss.
         :param training: The critic TrainState object.
         :param state: The states in the trajectory batch.
-        :param targets: The returns over the trajectory batch, which act as the targets for training the critic.
+        :param returns: The returns over the trajectory batch, which act as the targets for training the critic.
         :param hyperparams: The HyperParameters object used for training.
         :return: The critic loss.
         """
 
         value = training.apply_fn(training.params, state)
-        value_loss = jnp.mean((value - targets) ** 2)
+        value_loss = jnp.mean((value - returns) ** 2)
         critic_total_loss = hyperparams.vf_coeff * value_loss
         return critic_total_loss
 
@@ -887,7 +879,6 @@ class PPOAgent(PPOAgentBase):
         """
 
         return (
-            update_runner.actor_training,
             traj_batch.state,
             traj_batch.action,
             traj_batch.log_prob,
@@ -910,7 +901,6 @@ class PPOAgent(PPOAgentBase):
         """
 
         return (
-            update_runner.critic_training,
             traj_batch.state,
             returns,
             update_runner.hyperparams

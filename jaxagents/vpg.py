@@ -749,7 +749,7 @@ class ReinforceAgent(PGAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
                     action: Float[Array, "n_rollout batch_size"], returns: RETURNS_TYPE,
-                    value: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters) -> float:
+                    value: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters) -> Float[Array, "1"]:
         """
         Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
         discounted returns and the value as estimated by the critic.
@@ -766,18 +766,17 @@ class ReinforceAgent(PGAgentBase):
         log_prob = actor_policy.log_prob(action)
         advantage = returns - value
 
-        """ Negative gradient, because we want ascent but 'apply_gradients' applies descent """
         loss_actor = -advantage * log_prob
         entropy = actor_policy.entropy().mean()
-
         total_loss_actor = loss_actor.mean() - hyperparams.ent_coeff * entropy
 
-        return total_loss_actor
+        """ Negative loss, because we want ascent but 'apply_gradients' applies descent """
+        return - total_loss_actor
 
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
                      targets: Float[Array, "batch_size n_rollout"],
-                     hyperparams: HyperParameters) -> float:
+                     hyperparams: HyperParameters) -> Float[Array, "1"]:
         """
         Calculates the critic loss.
         :param training: The critic TrainState object.

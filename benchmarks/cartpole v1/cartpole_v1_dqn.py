@@ -33,7 +33,7 @@ if __name__ == '__main__':
 
     """Define configuration for agent training"""
     config = dqn.AgentConfig(
-        q_network=DQN_NN_model,
+        q_network=DQN_NN,
         transition_template=transition_temp,
         n_steps=500_000,
         buffer_type="FLAT",

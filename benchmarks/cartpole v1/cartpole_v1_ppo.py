@@ -34,8 +34,8 @@ if __name__ == '__main__':
 
     """Define configuration for agent training"""
     config = ppo.AgentConfig(
-        actor_network=VanillaPG_Actor_NN_model,
-        critic_network=VanillaPG_Critic_NN_model,
+        actor_network=PGActorNN,
+        critic_network=PGCriticNN,
         transition_template=transition_temp,
         rollout_length=50,
         n_steps=1_000,
@@ -43,11 +43,11 @@ if __name__ == '__main__':
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
-        eval_rng=jax.random.PRNGKey(18)
+        # eval_rng=jax.random.PRNGKey(18)
     )
 
     """Set up agent"""
-    agent = ppo.PPOAgent(env, env_params, config)
+    agent = ppo.PPOClipAgent(env, env_params, config)
     print(agent.__str__())
 
     """Define optimizer parameters and training hyperparameters"""
@@ -55,7 +55,7 @@ if __name__ == '__main__':
     hyperparams = ppo.HyperParameters(
         gamma=0.99,
         eps_clip=0.2,
-        kl_threshold=1.5,
+        kl_threshold=0.015,
         gae_lambda=1.0,
         ent_coeff=0.0,
         vf_coeff=1.0,
@@ -69,7 +69,6 @@ if __name__ == '__main__':
     """Train agent"""
     t0 = time.time()
     runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
-    # with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     print(f"time: {time.time() - t0:.2f} s")
 
     """ Post-process results"""
