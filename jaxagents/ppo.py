@@ -307,6 +307,27 @@ class PPOAgentBase(ABC):
         return rng, action
 
     @partial(jax.jit, static_argnums=(0,))
+    def _add_next_values(self, traj_batch: Transition, last_state: Float[Array, 'state_size'],
+                         critic_training: TrainState) -> Transition:
+
+        last_state_value = critic_training.apply_fn(jax.lax.stop_gradient(critic_training.params), last_state)
+
+        """Remove first entry so that the next state values per step are in sync with the state rewards."""
+        next_values_t = jnp.concatenate([traj_batch.value.squeeze(), last_state_value[..., jnp.newaxis]],axis=-1)[:, 1:]
+
+        traj_batch = traj_batch._replace(next_value=next_values_t)
+
+        return traj_batch
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _add_advantages(self, traj_batch: Transition, advantage: Float[Array, 'state_size']) -> Transition:
+
+        traj_batch = traj_batch._replace(advantage=advantage)
+
+        return traj_batch
+
+    """Not used for PPO with GAE"""
+    @partial(jax.jit, static_argnums=(0,))
     def _returns(self, traj_batch: Transition, last_next_state_value: Float[Array, "batch_size"], gamma: float,
                  gae_lambda: float) -> RETURNS_TYPE:
         """
@@ -345,8 +366,7 @@ class PPOAgentBase(ABC):
         return returns
 
     @partial(jax.jit, static_argnums=(0,))
-    def _advantages(self, traj_batch: Transition, last_next_state_value: Float[Array, "batch_size"], gamma: float,
-                 gae_lambda: float) -> RETURNS_TYPE:
+    def _advantages(self, traj_batch: Transition, gamma: float, gae_lambda: float) -> RETURNS_TYPE:
         """
         Calculates the advantage of every step in the trajectory batch. To do so, it identifies episodes in the
         trajectories. Note that because lax.scan is used in sampling trajectories, they do not necessarily finish with
@@ -361,24 +381,20 @@ class PPOAgentBase(ABC):
 
         rewards_t = traj_batch.reward.squeeze()
         values_t = traj_batch.value.squeeze()
-        terminated_t = 1.0 - traj_batch.terminated.astype(jnp.float32).squeeze()
-        # discounts_t = (terminated_t * gamma).astype(jnp.float32)
-        # gae_lambda_t = (terminated_t * gae_lambda).astype(jnp.float32)
+        terminated_t = traj_batch.terminated.squeeze()
+        next_state_values_t = traj_batch.next_value.squeeze()
         gamma_t = jnp.ones_like(terminated_t) * gamma
         gae_lambda_t = jnp.ones_like(terminated_t) * gae_lambda
 
-        """Remove first entry so that the next state values per step are in sync with the state rewards."""
-        next_state_values_t = jnp.concatenate(
-            [traj_batch.value.squeeze(), last_next_state_value[..., jnp.newaxis]],
-            axis=-1)[:, 1:]
-
         rewards_t, values_t, next_state_values_t, terminated_t, gamma_t, gae_lambda_t = jax.tree_util.tree_map(
-            lambda x: jnp.swapaxes(x, 0, 1), (rewards_t, values_t, next_state_values_t, terminated_t, gamma_t, gae_lambda_t)
+            lambda x: jnp.swapaxes(x, 0, 1),
+            (rewards_t, values_t, next_state_values_t, terminated_t, gamma_t, gae_lambda_t)
         )
 
         traj_runner = (rewards_t, values_t, next_state_values_t, terminated_t, gamma_t, gae_lambda_t)
-        end_value = jnp.take(next_state_values_t, -1, axis=0)  # Start from end of trajectory and work in reverse.
-        _, advantages = jax.lax.scan(self._trajectory_advantages, end_value, traj_runner, reverse=True)
+        #TODO:  Advantage of last step is set to zero, which is correct only when the last step is terminal in the episode
+        end_advantage = jnp.zeros(self.config.batch_size)
+        _, advantages = jax.lax.scan(self._trajectory_advantages, end_advantage, traj_runner, reverse=True)
 
         advantages = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), advantages)
 
@@ -392,7 +408,7 @@ class PPOAgentBase(ABC):
         - selects action
         - performs environment step
         - creates step transition
-        :param step_runner: A tuple containing inforamtion on the environment state, the actor and critic training
+        :param step_runner: A tuple containing information on the environment state, the actor and critic training
         (parameters and networks) and a random key.
         :param i_step: Unused, required for lax.scan.
         :return: The updated step_runner tuple and the rollout step transition.
@@ -436,7 +452,7 @@ class PPOAgentBase(ABC):
         return step_runners
 
     @partial(jax.jit, static_argnums=(0,))
-    def _actor_epoch(self, epoch_runner):
+    def _actor_epoch(self, epoch_runner: tuple) -> tuple:
         """
         Performs a Gradient Ascent update update of the actor ("ascent" by the definition of actor loss).
         :param epoch_runner: A tuple containing the following information about the update:
@@ -457,7 +473,7 @@ class PPOAgentBase(ABC):
         return (actor_training, actor_loss_input, kl, epoch+1, kl_threshold)
 
     @partial(jax.jit, static_argnums=(0,))
-    def _actor_training_cond(self, epoch_runner):
+    def _actor_training_cond(self, epoch_runner: tuple) -> Bool[Array, "1"]:
         """
         Checks whether the lax.while_loop over epochs should be terminated (either because the number of epochs has been
         met or due to KL divergence early stopping).
@@ -477,7 +493,7 @@ class PPOAgentBase(ABC):
         )
 
     @partial(jax.jit, static_argnums=(0,))
-    def _critic_epoch(self, i_epoch, epoch_runner):
+    def _critic_epoch(self, i_epoch: int, epoch_runner: tuple) -> tuple:
         """
         Performs a Gradient Descent update update of the critic.
         :param: i_epoch: The current training epoch (unused but required by lax.fori_loop).
@@ -500,12 +516,12 @@ class PPOAgentBase(ABC):
         An update step of the actor and critic networks. This entails:
         - performing rollout for sampling a batch of trajectories.
         - assessing the value of the last state per trajectory using the critic.
-        - evaluating the discounted returns per trajectory.
+        - evaluating the advantage per trajectory.
         - updating the actor and critic network parameters via the respective loss functions.
         - generating in-training performance metrics.
         In this approach, the update_runner already has a batch of environments initialized. The environments are not
-        initialized in the begining of every update step, thich means that trajectories to not necessarily start from
-        an intial state (which lead to better results when benchmarking with Cartpole-v1). Moreover, the use of lax.scan
+        initialized in the beginning of every update step, which means that trajectories to not necessarily start from
+        an initial state (which lead to better results when benchmarking with Cartpole-v1). Moreover, the use of lax.scan
         for rollout means that the trajectories do not necessarily stop with episode termination (episodes can be
         truncated in trajectory sampling).
         :param update_runner: The update runner object, containing information about the current status of the actor's/
@@ -517,31 +533,15 @@ class PPOAgentBase(ABC):
         step_runners = self._make_step_runners(update_runner)
         scan_rollout_fn = lambda x: lax.scan(self._rollout, x, None, self.config.rollout_length)
         step_runners, traj_batch = jax.vmap(scan_rollout_fn)(step_runners)
-
-        env_state, state, _, _, rng = step_runners
+        last_env_state, last_state, _, _, rng = step_runners
 
         traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
-        last_next_state_value = update_runner.critic_training.apply_fn(
-            jax.lax.stop_gradient(update_runner.critic_training.params),
-            state
-        )
-        last_next_state_value = jnp.asarray(last_next_state_value)
+        traj_batch = self._add_next_values(traj_batch, last_state, update_runner.critic_training)
 
-        returns = self._returns(
-            traj_batch,
-            last_next_state_value,
-            update_runner.hyperparams.gamma,
-            update_runner.hyperparams.gae_lambda
-        )
+        advantages = self._advantages(traj_batch, update_runner.hyperparams.gamma, update_runner.hyperparams.gae_lambda)
+        traj_batch = self._add_advantages(traj_batch, advantages)
 
-        advantages = self._advantages(
-            traj_batch,
-            last_next_state_value,
-            update_runner.hyperparams.gamma,
-            update_runner.hyperparams.gae_lambda
-        )
-
-        actor_loss_input = self._actor_loss_input(update_runner, traj_batch, advantages)
+        actor_loss_input = self._actor_loss_input(update_runner, traj_batch)
         start_kl, start_epoch = -jnp.inf, 1
         actor_epoch_runner = (
             update_runner.actor_training,
@@ -553,15 +553,15 @@ class PPOAgentBase(ABC):
         actor_epoch_runner = lax.while_loop(self._actor_training_cond, self._actor_epoch, actor_epoch_runner)
         actor_training, _, _, _, _ = actor_epoch_runner
 
-        critic_loss_input = self._critic_loss_input(update_runner, traj_batch, returns)
+        critic_loss_input = self._critic_loss_input(update_runner, traj_batch)
         critic_epoch_runner = (update_runner.critic_training, critic_loss_input)
         critic_epoch_runner = lax.fori_loop(0, self.config.critic_epochs, self._critic_epoch, critic_epoch_runner)
         critic_training, _ = critic_epoch_runner
 
         """Update runner as a dataclass"""
         update_runner = update_runner.replace(
-            env_state=env_state,
-            state=state,
+            env_state=last_env_state,
+            state=last_state,
             actor_training=actor_training,
             critic_training=critic_training,
             rng=rng,
@@ -602,6 +602,7 @@ class PPOAgentBase(ABC):
 
         return runner, metrics
 
+    """Not used for PPO with GAE"""
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
     def _trajectory_returns(self, value: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
@@ -632,8 +633,8 @@ class PPOAgentBase(ABC):
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
                     action: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
-                    returns: RETURNS_TYPE, value: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters)\
-            -> Tuple[float, float]:
+                    advantage: RETURNS_TYPE, hyperparams: HyperParameters) \
+            -> Tuple[Union[float, Float[Array, "1"]], Float[Array, "1"]]:
         """
         Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
         discounted returns and the value as estimated by the critic.
@@ -641,8 +642,7 @@ class PPOAgentBase(ABC):
         :param state: The states in the trajectory batch.
         :param action: The actions in the trajectory batch.
         :param log_prob_old: Log-probabilities of the old policy collected over the trajectory batch.
-        :param returns: The returns over the trajectory batch.
-        :param value: The values over the trajectory batch according to the critic.
+        :param advantage: The advantage over the trajectory batch.
         :param hyperparams: The HyperParameters object used for training.
         :return: A tuple containing the actor loss and the KL divergence (for early checking stopping criterion).
         """
@@ -666,12 +666,11 @@ class PPOAgentBase(ABC):
 
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
-    def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition, returns: RETURNS_TYPE) -> tuple:
+    def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
         """
         Prepares the input required by the actor loss function.
         :param update_runner: The update runner object used in training.
         :param traj_batch: The batch of trajectories.
-        :param returns: The returns over the trajectory batch.
         :return: A tuple of input to the actor loss function.
         """
 
@@ -679,12 +678,11 @@ class PPOAgentBase(ABC):
 
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
-    def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition, returns: RETURNS_TYPE) -> tuple:
+    def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
         """
         Prepares the input required by the critic loss function.
         :param update_runner: The update runner object used in training.
         :param traj_batch: The batch of trajectories.
-        :param returns: The returns over the trajectory batch.
         :return: A tuple of input to the critic loss function.
         """
 
@@ -847,12 +845,11 @@ class PPOAgent(PPOAgentBase):
     See : https://spinningup.openai.com/en/latest/algorithms/ppo.html
     """
 
+    """Not used for PPO with GAE"""
     @partial(jax.jit, static_argnums=(0,))
     def _trajectory_returns(self, value: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
         """
-        Calculates the returns per episode step over a batch of trajectories. For the REINFORCE agent, this is
-        implemented as a weighted average between the discounted sum of rewards and the value according to the critic.
-        Weighting is performed via the GAE λ factor between the
+        Calculates the returns per episode step over a batch of trajectories.
         :param value: The values of the steps in the trajectory according to the critic (including the one of the last
         state). In the begining of the method, 'value' is the value of the state in the next step in the trajectory
         (not the reverse iteration), and after calculation it is the value of the examined state in the examined step.
@@ -864,27 +861,25 @@ class PPOAgent(PPOAgentBase):
         return value, value
 
     @partial(jax.jit, static_argnums=(0,))
-    def _trajectory_advantages(self, gae: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
+    def _trajectory_advantages(self, advantage: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
         """
-        Calculates the returns per episode step over a batch of trajectories. For the REINFORCE agent, this is
-        implemented as a weighted average between the discounted sum of rewards and the value according to the critic.
-        Weighting is performed via the GAE λ factor between the
-        :param gae: The GAE advantages of the steps in the trajectory according to the critic (including the one of
-        the last state). In the beginning of the method, 'advantage' is the advantage of the state in the next step in
-        the trajectory (not the reverse iteration), and after calculation it is the advantage of the examined state in
-        each step.
+        Calculates the GAE per episode step over a batch of trajectories.
+        :param advantage: The GAE advantages of the steps in the trajectory according to the critic (including the one
+        of the last state). In the beginning of the method, 'advantage' is the advantage of the state in the next step
+        in the trajectory (not the reverse iteration), and after calculation it is the advantage of the examined state
+        in each step.
         :param traj: The trajectory batch.
         :return: An array of returns.
         """
         rewards, values, next_state_values, terminated, gamma, gae_lambda = traj
         d_t = rewards + (1 - terminated) * gamma * next_state_values - values  # Temporal difference residual at time t
-        gae = d_t + gamma * gae_lambda * (1 - terminated) * gae
-        return gae, gae
+        advantage = d_t + gamma * gae_lambda * (1 - terminated) * advantage
+        return advantage, advantage
 
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
                     action: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
-                    returns: RETURNS_TYPE, value: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters)\
+                    advantage: RETURNS_TYPE, hyperparams: HyperParameters) \
             -> Tuple[Union[float, Float[Array, "1"]], Float[Array, "1"]]:
         """
         Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
@@ -893,19 +888,18 @@ class PPOAgent(PPOAgentBase):
         :param state: The states in the trajectory batch.
         :param action: The actions in the trajectory batch.
         :param log_prob_old: Log-probabilities of the old policy collected over the trajectory batch.
-        :param returns: The returns over the trajectory batch.
-        :param value: The values over the trajectory batch according to the critic.
+        :param advantage: The GAE over the trajectory batch.
         :param hyperparams: The HyperParameters object used for training.
         :return: A tuple containing the actor loss and the KL divergence (for early checking stopping criterion).
         """
+
+        advantage = (advantage - advantage.mean(axis=0)) / (advantage.std(axis=0) + 1e-8)
 
         actor_policy = training.apply_fn(training.params, state)
         log_prob = actor_policy.log_prob(action)
         log_policy_ratio = log_prob - log_prob_old
         policy_ratio = jnp.exp(log_policy_ratio)
         kl = jnp.sum(-log_policy_ratio)
-
-        advantage = returns - value
 
         """
         Adopt simplified formulation of clipped policy ratio * advantage as explained in the note of:
@@ -932,18 +926,30 @@ class PPOAgent(PPOAgentBase):
         Calculates the critic loss.
         :param training: The critic TrainState object.
         :param state: The states in the trajectory batch.
-        :param targets: The targets over the trajectory batch, which act as the targets for training the critic.
+        :param targets: The targets over the trajectory batch for training the critic.
         :param hyperparams: The HyperParameters object used for training.
         :return: The critic loss.
         """
 
         value = training.apply_fn(training.params, state)
-        value_loss = jnp.mean((value - targets) ** 2)
+        residuals = value - targets
+        value_loss = jnp.mean(residuals ** 2)
         critic_total_loss = hyperparams.vf_coeff * value_loss
+
+        # value_pred = training.apply_fn(training.params, state)
+        # residuals = value - targets
+        # value_loss = residuals ** 2
+        # value_pred_clipped = value + \
+        #                      jnp.clip(value_pred - value, -hyperparams.eps_clip, hyperparams.eps_clip)
+        # value_loss_clipped = jnp.square(value_pred_clipped - targets)
+        # value_loss = jnp.maximum(value_loss, value_loss_clipped).mean()
+        # critic_total_loss = hyperparams.vf_coeff * value_loss
+
+
         return critic_total_loss
 
     @partial(jax.jit, static_argnums=(0,))
-    def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition, gae: RETURNS_TYPE) -> tuple:
+    def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
         """
         Prepares the input required by the actor loss function. For the REINFORCE agent, this entails the:
         - the actions collected over the trajectory batch.
@@ -953,7 +959,6 @@ class PPOAgent(PPOAgentBase):
         - the training hyperparameters.
         :param update_runner: The update runner object used in training.
         :param traj_batch: The batch of trajectories.
-        :param gae: The GAE over the trajectory batch.
         :return: A tuple of input to the actor loss function.
         """
 
@@ -961,27 +966,25 @@ class PPOAgent(PPOAgentBase):
             traj_batch.state,
             traj_batch.action,
             traj_batch.log_prob,
-            gae,
-            traj_batch.value,
+            traj_batch.advantage,
             update_runner.hyperparams
         )
 
     @partial(jax.jit, static_argnums=(0,))
-    def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition, returns: RETURNS_TYPE) -> tuple:
+    def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
         """
         Prepares the input required by the critic loss function. For the REINFORCE agent, this entails the:
         - the states collected over the trajectory batch.
-        - the returns over the trajectory batch.
+        - the targets (returns = GAE + next_value) over the trajectory batch.
         - the training hyperparameters.
         :param update_runner: The update runner object used in training.
         :param traj_batch: The batch of trajectories.
-        :param gae: The GAE over the trajectory batch.
         :return: A tuple of input to the critic loss function.
         """
 
         return (
             traj_batch.state,
-            returns,
+            traj_batch.advantage + traj_batch.next_value,
             update_runner.hyperparams
         )
 

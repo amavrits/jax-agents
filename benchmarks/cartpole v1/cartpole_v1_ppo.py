@@ -51,16 +51,15 @@ if __name__ == '__main__':
     print(agent.__str__())
 
     """Define optimizer parameters and training hyperparameters"""
-    optimizer_params = ppo.OptimizerParams(learning_rate=1e-3, eps=1e-3, grad_clip=1)
     hyperparams = ppo.HyperParameters(
         gamma=0.99,
         eps_clip=0.2,
         kl_threshold=1e-5,
-        gae_lambda=1.0,
+        gae_lambda=0.97,
         ent_coeff=0.0,
         vf_coeff=1.0,
-        actor_optimizer_params=optimizer_params,
-        critic_optimizer_params=optimizer_params
+        actor_optimizer_params=ppo.OptimizerParams(learning_rate=3e-4),
+        critic_optimizer_params=ppo.OptimizerParams(learning_rate=1e-3)
     )
 
     rng = jax.random.PRNGKey(42)
@@ -68,8 +67,8 @@ if __name__ == '__main__':
 
     """Train agent"""
     t0 = time.time()
-    # with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
+    # with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     print(f"time: {time.time() - t0:.2f} s")
 
     """ Post-process results"""

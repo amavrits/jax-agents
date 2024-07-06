@@ -20,7 +20,7 @@ class Transition(NamedTuple):
     """Action selecetd by agent"""
     action: Int[Array, "1"]
 
-    """Value of the selected action"""
+    """Value of the state"""
     value: Float[Array, "1"]
 
     """Log-probability of selected policy action"""
@@ -37,6 +37,12 @@ class Transition(NamedTuple):
 
     """Dictionary of additional information about step"""
     info: Dict
+
+    """Value of next state"""
+    next_value: Optional[Float[Array, "1"]] = None
+
+    """Advantage of step"""
+    advantage: Optional[Float[Array, "1"]] = None
 
 
 class OptimizerParams(NamedTuple):
