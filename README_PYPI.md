@@ -12,7 +12,7 @@ So far, the project includes the following agents:
   * Quantile Regression Deep Q Networks (QRDQN) 
 * Policy gradient:
   * REINFORCE
-  * PPO with clipping
+  * PPO with clipping and GAE
 
 ## Background
 

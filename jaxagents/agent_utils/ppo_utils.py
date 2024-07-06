@@ -138,9 +138,6 @@ class AgentConfig(NamedTuple):
     """Epochs for critic training per update step"""
     critic_epochs: int
 
-    """Template of transition, so that the buffer can be configured"""
-    transition_template: Transition
-
     """Optax optimizer to be used in training. Giving only the optimizer class allows for initializing within the 
     self.train method and eventually running multiple combinations of the optimizer parameters via jax.vmap.
     """

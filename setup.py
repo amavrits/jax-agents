@@ -32,7 +32,7 @@ setup(
         "dev": []
     },
     python_requires=">=3.9.0",
-    version='0.1.3',
+    version='0.1.5',
     license='MIT',
     description='Implementation of Reinforcement Learning agents in JAX',
 )

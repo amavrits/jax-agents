@@ -15,28 +15,10 @@ if __name__ == '__main__':
 
     env, env_params = gymnax.make("CartPole-v1")
 
-    """Set up transition template, given the state representation in the cartpole environment."""
-    transition_temp = vpg.Transition(
-        state=jnp.zeros((1, 4), dtype=jnp.float32),
-        action=jnp.zeros(1, dtype=jnp.int32),
-        log_prob=jnp.zeros(1, dtype=jnp.float32),
-        value=jnp.zeros(1, dtype=jnp.float32),
-        reward=jnp.zeros(1, dtype=jnp.float32),
-        next_state=jnp.zeros((1, 4), dtype=jnp.float32),
-        terminated=jnp.zeros(1, dtype=jnp.bool_),
-        info={
-            "discount": jnp.array((), dtype=jnp.float32),
-            "returned_episode": jnp.array((), dtype=jnp.bool_),
-            "returned_episode_lengths": jnp.array((), dtype=jnp.int32),
-            "returned_episode_returns": jnp.array((), dtype=jnp.float32),
-        }
-    )
-
     """Define configuration for agent training"""
     config = vpg.AgentConfig(
         actor_network=PGActorNN,
         critic_network=PGCriticNN,
-        transition_template=transition_temp,
         rollout_length=50,
         n_steps=1_000,
         batch_size=16,
