@@ -392,7 +392,11 @@ class PPOAgentBase(ABC):
         )
 
         traj_runner = (rewards_t, values_t, next_state_values_t, terminated_t, gamma_t, gae_lambda_t)
-        #TODO:  Advantage of last step is set to zero, which is correct only when the last step is terminal in the episode
+        """
+        TODO:
+        Advantage of last step is set to zero, which is correct only when the last step is terminal in the episode. 
+        However, the method works, so probably this inaccuracy is negligible.
+        """
         end_advantage = jnp.zeros(self.config.batch_size)
         _, advantages = jax.lax.scan(self._trajectory_advantages, end_advantage, traj_runner, reverse=True)
 
@@ -841,7 +845,7 @@ class PPOAgentBase(ABC):
 class PPOAgent(PPOAgentBase):
 
     """
-    PPO clip agent
+    PPO clip agent using the GAE for calculating the advantage. The actor loss function standardizes the advantage.
     See : https://spinningup.openai.com/en/latest/algorithms/ppo.html
     """
 
@@ -893,6 +897,7 @@ class PPOAgent(PPOAgentBase):
         :return: A tuple containing the actor loss and the KL divergence (for early checking stopping criterion).
         """
 
+        """ Standardize GAE, greatly improves behaviour"""
         advantage = (advantage - advantage.mean(axis=0)) / (advantage.std(axis=0) + 1e-8)
 
         actor_policy = training.apply_fn(training.params, state)
@@ -936,15 +941,154 @@ class PPOAgent(PPOAgentBase):
         value_loss = jnp.mean(residuals ** 2)
         critic_total_loss = hyperparams.vf_coeff * value_loss
 
-        # value_pred = training.apply_fn(training.params, state)
-        # residuals = value - targets
-        # value_loss = residuals ** 2
-        # value_pred_clipped = value + \
-        #                      jnp.clip(value_pred - value, -hyperparams.eps_clip, hyperparams.eps_clip)
-        # value_loss_clipped = jnp.square(value_pred_clipped - targets)
-        # value_loss = jnp.maximum(value_loss, value_loss_clipped).mean()
-        # critic_total_loss = hyperparams.vf_coeff * value_loss
+        return critic_total_loss
 
+    @partial(jax.jit, static_argnums=(0,))
+    def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
+        """
+        Prepares the input required by the actor loss function. For the REINFORCE agent, this entails the:
+        - the actions collected over the trajectory batch.
+        - the log-probability of the actions collected over the trajectory batch.
+        - the returns over the trajectory batch.
+        - the values over the trajectory batch as evaluated by the critic.
+        - the training hyperparameters.
+        :param update_runner: The update runner object used in training.
+        :param traj_batch: The batch of trajectories.
+        :return: A tuple of input to the actor loss function.
+        """
+
+        return (
+            traj_batch.state,
+            traj_batch.action,
+            traj_batch.log_prob,
+            traj_batch.advantage,
+            update_runner.hyperparams
+        )
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
+        """
+        Prepares the input required by the critic loss function. For the REINFORCE agent, this entails the:
+        - the states collected over the trajectory batch.
+        - the targets (returns = GAE + next_value) over the trajectory batch.
+        - the training hyperparameters.
+        :param update_runner: The update runner object used in training.
+        :param traj_batch: The batch of trajectories.
+        :return: A tuple of input to the critic loss function.
+        """
+
+        return (
+            traj_batch.state,
+            traj_batch.advantage + traj_batch.next_value,
+            update_runner.hyperparams
+        )
+
+
+class PPOClipCriticAgent(PPOAgentBase):
+
+    """
+    PPO clip agent using the GAE for calculating the advantage. The actor loss function standardizes the advantage. The
+    critic loss function is clipped.
+    See : https://spinningup.openai.com/en/latest/algorithms/ppo.html
+    """
+
+    """Not used for PPO with GAE"""
+    @partial(jax.jit, static_argnums=(0,))
+    def _trajectory_returns(self, value: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
+        """
+        Calculates the returns per episode step over a batch of trajectories.
+        :param value: The values of the steps in the trajectory according to the critic (including the one of the last
+        state). In the begining of the method, 'value' is the value of the state in the next step in the trajectory
+        (not the reverse iteration), and after calculation it is the value of the examined state in the examined step.
+        :param traj: The trajectory batch.
+        :return: An array of returns.
+        """
+        rewards, discounts, next_state_values, gae_lambda = traj
+        value = rewards + discounts * ((1 - gae_lambda) * next_state_values + gae_lambda * value)
+        return value, value
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _trajectory_advantages(self, advantage: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
+        """
+        Calculates the GAE per episode step over a batch of trajectories.
+        :param advantage: The GAE advantages of the steps in the trajectory according to the critic (including the one
+        of the last state). In the beginning of the method, 'advantage' is the advantage of the state in the next step
+        in the trajectory (not the reverse iteration), and after calculation it is the advantage of the examined state
+        in each step.
+        :param traj: The trajectory batch.
+        :return: An array of returns.
+        """
+        rewards, values, next_state_values, terminated, gamma, gae_lambda = traj
+        d_t = rewards + (1 - terminated) * gamma * next_state_values - values  # Temporal difference residual at time t
+        advantage = d_t + gamma * gae_lambda * (1 - terminated) * advantage
+        return advantage, advantage
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
+                    action: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
+                    advantage: RETURNS_TYPE, hyperparams: HyperParameters) \
+            -> Tuple[Union[float, Float[Array, "1"]], Float[Array, "1"]]:
+        """
+        Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
+        discounted returns and the value as estimated by the critic.
+        :param training: The actor TrainState object.
+        :param state: The states in the trajectory batch.
+        :param action: The actions in the trajectory batch.
+        :param log_prob_old: Log-probabilities of the old policy collected over the trajectory batch.
+        :param advantage: The GAE over the trajectory batch.
+        :param hyperparams: The HyperParameters object used for training.
+        :return: A tuple containing the actor loss and the KL divergence (for early checking stopping criterion).
+        """
+
+        """ Standardize GAE, greatly improves behaviour"""
+        advantage = (advantage - advantage.mean(axis=0)) / (advantage.std(axis=0) + 1e-8)
+
+        actor_policy = training.apply_fn(training.params, state)
+        log_prob = actor_policy.log_prob(action)
+        log_policy_ratio = log_prob - log_prob_old
+        policy_ratio = jnp.exp(log_policy_ratio)
+        kl = jnp.sum(-log_policy_ratio)
+
+        """
+        Adopt simplified formulation of clipped policy ratio * advantage as explained in the note of:
+        https://spinningup.openai.com/en/latest/algorithms/ppo.html#id2
+        """
+        clip = jnp.where(jnp.greater(advantage, 0), 1 + hyperparams.eps_clip, 1 - hyperparams.eps_clip)
+        advantage_clip = advantage * clip
+
+        """Actual clip calculation - not used but left here for comparison to simplified version"""
+        # advantage_clip = jnp.clip(policy_ratio, 1 - hyperparams.eps_clip, 1 + hyperparams.eps_clip) * advantage
+
+        loss_actor = jnp.minimum(policy_ratio * advantage, advantage_clip)
+
+        entropy = actor_policy.entropy().mean()
+        total_loss_actor = loss_actor.mean() + hyperparams.ent_coeff * entropy
+
+        """ Negative loss, because we want ascent but 'apply_gradients' applies descent """
+        return -total_loss_actor, kl
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
+                     value_t, targets: RETURNS_TYPE, hyperparams: HyperParameters) -> Float[Array, "1"]:
+        """
+        Calculates the critic loss.
+        :param training: The critic TrainState object.
+        :param state: The states in the trajectory batch.
+        :param targets: The targets over the trajectory batch for training the critic.
+        :param hyperparams: The HyperParameters object used for training.
+        :return: The critic loss.
+        """
+
+        value = training.apply_fn(training.params, state)
+        residuals = value - targets
+        value_loss = residuals ** 2
+
+        value_clipped = value_t + jnp.clip(value - value, -hyperparams.eps_clip, hyperparams.eps_clip)
+        residuals_clipped = value_clipped - targets
+        value_loss_clipped = residuals_clipped ** 2
+
+        critic_total_loss = jnp.maximum(value_loss, value_loss_clipped).mean()
+        critic_total_loss = hyperparams.vf_coeff * critic_total_loss
 
         return critic_total_loss
 
@@ -984,6 +1128,7 @@ class PPOAgent(PPOAgentBase):
 
         return (
             traj_batch.state,
+            traj_batch.value,
             traj_batch.advantage + traj_batch.next_value,
             update_runner.hyperparams
         )
