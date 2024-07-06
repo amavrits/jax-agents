@@ -47,7 +47,7 @@ if __name__ == '__main__':
     )
 
     """Set up agent"""
-    agent = ppo.PPOClipAgent(env, env_params, config)
+    agent = ppo.PPOAgent(env, env_params, config)
     print(agent.__str__())
 
     """Define optimizer parameters and training hyperparameters"""
@@ -68,6 +68,7 @@ if __name__ == '__main__':
 
     """Train agent"""
     t0 = time.time()
+    # with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     print(f"time: {time.time() - t0:.2f} s")
 
