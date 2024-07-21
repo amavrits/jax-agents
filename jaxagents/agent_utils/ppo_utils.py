@@ -1,9 +1,6 @@
 import numpy as np
-import jax
-import jax.numpy as jnp
 from flax.training.train_state import TrainState
 from flax import struct
-import optax
 from optax._src import base
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
@@ -51,10 +48,10 @@ class OptimizerParams(NamedTuple):
     learning_rate: float = 1e-3
 
     """Epsilon of the optimizer"""
-    eps: float = 1e-3
+    eps: float = 1e-8
 
     """Maximum value for gradient clipping"""
-    grad_clip: float = 1.0
+    grad_clip: float = 10.0
 
 
 class HyperParameters(NamedTuple):
@@ -71,13 +68,6 @@ class HyperParameters(NamedTuple):
     """Entropy coefficient for actor loss function"""
     ent_coeff: float
 
-    """
-    Value function coefficient.
-    Not relevant for the VPG-REINFORCE agent but help in using the same optimizer parameters for both actor and critic
-    training.
-    """
-    vf_coeff: float
-
     """KL divergence threshold for early stopping of the actor training"""
     kl_threshold: float
 
@@ -86,6 +76,13 @@ class HyperParameters(NamedTuple):
 
     """Optimizer parameters for the critic network"""
     critic_optimizer_params: OptimizerParams
+
+    """
+    Value function coefficient.
+    Not relevant for the VPG-REINFORCE agent but help in using the same optimizer parameters for both actor and critic
+    training.
+    """
+    vf_coeff: float = 1.0
 
 
 @struct.dataclass

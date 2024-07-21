@@ -6,16 +6,13 @@ Author: Antonis Mavritsakis
 
 """
 
-
 import jax
 import jax.numpy as jnp
 from jax import lax
 from jax_tqdm import scan_tqdm
-import optax
 import distrax
-import xarray as xr
+import optax
 from flax.core import FrozenDict
-import flashbax as fbx
 from jaxagents.agent_utils.ppo_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
@@ -74,7 +71,6 @@ class PPOAgentBase(ABC):
         output_lst = ['Agent configuration:'] + output_lst
 
         return '\n'.join(output_lst)
-
 
     """ GENERAL METHODS"""
 
@@ -218,13 +214,14 @@ class PPOAgentBase(ABC):
         return transition
 
     @partial(jax.jit, static_argnums=(0,))
-    def _generate_metrics(self, runner: Runner) -> Dict:
+    def _generate_metrics(self, runner: Runner, update_step: int) -> Dict:
         """
         Generates metrics for on-policy learning. The agent performance during training is evaluated by running
         batch_size episodes (until termination). The selected metric is the sum of rewards collected dring the episode.
         If the user selects not to generate metrics (leading to faster training), an empty dictinary is returned.
         :param runner: The update runner object, containing information about the current status of the actor's/critic's
         training, the state of the environment and training hyperparameters.
+        :param update_step: The number of the update step.
         :return: A dictionary of the sum of rewards collected over 'batch_size' episodes, or empty dictionary.
         """
 
@@ -571,7 +568,7 @@ class PPOAgentBase(ABC):
             rng=rng,
         )
 
-        metrics = self._generate_metrics(runner=update_runner)
+        metrics = self._generate_metrics(runner=update_runner, update_step=i_update_step)
 
         return update_runner, metrics
 
@@ -845,7 +842,8 @@ class PPOAgentBase(ABC):
 class PPOAgent(PPOAgentBase):
 
     """
-    PPO clip agent using the GAE for calculating the advantage. The actor loss function standardizes the advantage.
+    PPO clip agent using the GAE (PPO2) for calculating the advantage. The actor loss function standardizes the
+    advantage.
     See : https://spinningup.openai.com/en/latest/algorithms/ppo.html
     """
 
@@ -987,8 +985,8 @@ class PPOAgent(PPOAgentBase):
 class PPOClipCriticAgent(PPOAgentBase):
 
     """
-    PPO clip agent using the GAE for calculating the advantage. The actor loss function standardizes the advantage. The
-    critic loss function is clipped.
+    PPO clip agent using the GAE (PPO2) for calculating the advantage. The actor loss function standardizes the
+    advantage. The critic loss function is clipped.
     See : https://spinningup.openai.com/en/latest/algorithms/ppo.html
     """
 
@@ -1053,8 +1051,8 @@ class PPOClipCriticAgent(PPOAgentBase):
         Adopt simplified formulation of clipped policy ratio * advantage as explained in the note of:
         https://spinningup.openai.com/en/latest/algorithms/ppo.html#id2
         """
-        clip = jnp.where(jnp.greater(advantage, 0), 1 + hyperparams.eps_clip, 1 - hyperparams.eps_clip)
-        advantage_clip = advantage * clip
+        policy_ratio_clip = jnp.where(jnp.greater(advantage, 0), 1 + hyperparams.eps_clip, 1 - hyperparams.eps_clip)
+        advantage_clip = advantage * policy_ratio_clip
 
         """Actual clip calculation - not used but left here for comparison to simplified version"""
         # advantage_clip = jnp.clip(policy_ratio, 1 - hyperparams.eps_clip, 1 + hyperparams.eps_clip) * advantage

@@ -1,9 +1,6 @@
 import numpy as np
-import jax
-import jax.numpy as jnp
 from flax.training.train_state import TrainState
 from flax import struct
-import optax
 from optax._src import base
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
@@ -62,18 +59,18 @@ class HyperParameters(NamedTuple):
     """Entropy coefficient for actor loss function"""
     ent_coeff: float
 
-    """
-    Value function coefficient.
-    Not relevant for the VPG-REINFORCE agent but help in using the same optimizer parameters for both actor and critic
-    training.
-    """
-    vf_coeff: float
-
     """Optimizer parameters for the actor network"""
     actor_optimizer_params: OptimizerParams
 
     """Optimizer parameters for the critic network"""
     critic_optimizer_params: OptimizerParams
+
+    """
+    Value function coefficient.
+    Not relevant for the VPG-REINFORCE agent but help in using the same optimizer parameters for both actor and critic
+    training.
+    """
+    vf_coeff: float = 1.0
 
 
 @struct.dataclass

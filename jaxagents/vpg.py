@@ -6,16 +6,10 @@ Author: Antonis Mavritsakis
 
 """
 
-
-import jax
-import jax.numpy as jnp
 from jax import lax
 from jax_tqdm import scan_tqdm
-import optax
 import distrax
-import xarray as xr
 from flax.core import FrozenDict
-import flashbax as fbx
 from jaxagents.agent_utils.vpg_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState

@@ -40,8 +40,8 @@ if __name__ == '__main__':
         gae_lambda=0.97,
         ent_coeff=0.0,
         vf_coeff=1.0,
-        actor_optimizer_params=ppo.OptimizerParams(learning_rate=3e-4),
-        critic_optimizer_params=ppo.OptimizerParams(learning_rate=1e-3)
+        actor_optimizer_params=ppo.OptimizerParams(learning_rate=3e-4, eps=1e-3, grad_clip=1),
+        critic_optimizer_params=ppo.OptimizerParams(learning_rate=1e-3, eps=1e-3, grad_clip=1)
     )
 
     rng = jax.random.PRNGKey(42)

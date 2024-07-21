@@ -30,7 +30,6 @@ if __name__ == '__main__':
         }
     )
 
-
     """Define configuration for agent training"""
     config = dqn.AgentConfig(
         q_network=DQN_NN,
@@ -49,38 +48,31 @@ if __name__ == '__main__':
         epsilon_params=(0.9, 0.05, 50_000)
     )
 
-
     """Set up agent"""
     agent = dqn.DDQN_Agent(env, env_params, config)
     print(agent.__str__())
-
 
     """Define optimizer parameters and training hyperparameters"""
     optimizer_params = dqn.OptimizerParams(learning_rate=5e-3, eps=1e-3, grad_clip=1)
     hyperparams = dqn.HyperParameters(0.99, 4, optimizer_params)
 
-
     """Draw random key"""
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
-
 
     """Train agent"""
     t0 = time.time()
     runner, training_metrics = agent.train(rng_train, hyperparams)
     print(f"time: {time.time() - t0:.2f} s")
 
-
     """ Post-process results"""
     agent.collect_training(runner)
     training_rewards = agent.summarize(training_metrics["done"], training_metrics["reward"])
     buffer_export = agent.export_buffer()
 
-
     """Evaluate agent performance"""
     eval_metrics = agent.eval(rng_eval, n_evals=500_000)
     eval_rewards = agent.summarize(eval_metrics["done"], eval_metrics["reward"])
-
 
     """ Plot results"""
     running_window = 100
