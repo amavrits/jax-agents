@@ -692,17 +692,16 @@ class PPOAgentBase(ABC):
     """ METHODS FOR APPLYING AGENT"""
 
     @partial(jax.jit, static_argnums=(0,))
-    def policy(self, rng: PRNGKeyArray, state: STATE_TYPE) -> int:
+    def policy(self, state: STATE_TYPE) -> Int[Array, "1"]:
         """
-
-        :param rng: Random key for evaluation.
+        Evaluates the action of the optimal policy (argmax) according to the trained agent for the given state.
         :param state: The current state of the episode step in array format.
         :return:
         """
 
         if self.agent_trained:
             pi, value = self._pi_value(self.actor_training, self.critic_training, state)
-            rng, action = self._select_action(rng, pi)
+            action = jnp.argmax(pi.logits)
             return action
         else:
             raise Exception("The agent has not been trained.")
@@ -749,7 +748,7 @@ class PPOAgentBase(ABC):
 
         pi, value = self._pi_value(actor_training, critic_training, state)
 
-        rng, action = self._select_action(rng, pi)
+        action = jnp.argmax(pi.logits)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, action)
 
