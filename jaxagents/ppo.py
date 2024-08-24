@@ -17,12 +17,16 @@ from jaxagents.agent_utils.ppo_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from flax.training.train_state import TrainState
+import orbax.checkpoint as ocp
 from abc import abstractmethod
 from functools import partial
 from abc import ABC
 from typing import Tuple, Dict, NamedTuple, Type, Union, Optional, ClassVar
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 import warnings
+from datetime import datetime
+import os
+
 
 warnings.filterwarnings("ignore")
 
@@ -51,14 +55,17 @@ class PPOAgentBase(ABC):
     training_metrics: ClassVar[Optional[Dict]] = None  # Metrics collected during training.
     eval_during_training: ClassVar[bool] = False  # Whether the agent's performance is evaluated during training
 
-    def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfig) -> None:
+    def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfig, checkpoint: bool = False) ->\
+            None:
         """
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
         :param env_params: A dataclass named "EnvParams" containing the parametrization of the environment.
         :param config: The configuration of the agent as and AgentConfig object (from vpf_utils).
+        :param checkpoint: Boolean variable, whether the agent should keep checkpoints during training.
         """
 
         self.config = config
+        self.checkpoint = checkpoint
         self.eval_during_training = self.config.eval_rng is not None
         self._init_env(env, env_params)
 
@@ -388,18 +395,18 @@ class PPOAgentBase(ABC):
             (rewards_t, values_t, next_state_values_t, terminated_t, gamma_t, gae_lambda_t)
         )
 
+        # TODO: Check this as solution to the inaccuracy above
         traj_runner = (rewards_t, values_t, next_state_values_t, terminated_t, gamma_t, gae_lambda_t)
+
         """
-        TODO:
-        Advantage of last step is set to zero, which is correct only when the last step is terminal in the episode. 
-        However, the method works, so probably this inaccuracy is negligible.
+        The advantage of the step after the last one is set to zero. The iterations start from the last state, where the 
+        next state is known from trajectory sampling. So, for the last state (first in iterations),
+        the advantage can be properly calculated.
         """
         end_advantage = jnp.zeros(self.config.batch_size)
         _, advantages = jax.lax.scan(self._trajectory_advantages, end_advantage, traj_runner, reverse=True)
 
-        advantages = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), advantages)
-
-        return advantages
+        return jnp.swapaxes(advantages, 0, 1)
 
     @partial(jax.jit, static_argnums=(0,))
     def _rollout(self, step_runner: STEP_RUNNER_TYPE, i_step: int) -> Tuple[STEP_RUNNER_TYPE, Transition]:
@@ -570,7 +577,66 @@ class PPOAgentBase(ABC):
 
         metrics = self._generate_metrics(runner=update_runner, update_step=i_update_step)
 
+        if self.checkpoint:
+            self._checkpoint(update_runner, metrics, i_update_step)
+
         return update_runner, metrics
+
+    def _checkpoint(self, runner: Runner, metrics: Dict, i_update_step: int) -> None:
+        """
+        Checkpoints training runner.
+        :param runner: The update runner object, containing information about the current status of the actor's/critic's
+        training, the state of the environment and training hyperparameters.
+        :param i_update_step: Current training step.
+        """
+
+        checkpoint_str = datetime.now().strftime("%Y%m%d%H%M%S")
+        options = ocp.CheckpointManagerOptions(
+            create=True,
+            save_interval_steps=10,
+            max_to_keep=100
+        )
+        # mngr = ocp.CheckpointManager(
+        #     ocp.test_utils.erase_and_create_empty(r'C:/Users/Repositories/jax-agents/benchmarks/cartpole v1/A/' + 'aaa'),
+        #     # item_names=('training_step', 'runner', 'episode_metrics'),
+        #     # item_names=('runner', 'episode_metrics'),
+        #     options=options
+        # )
+
+        with ocp.CheckpointManager(
+            ocp.test_utils.erase_and_create_empty(r'C:/Users/Repositories/jax-agents/benchmarks/cartpole v1/A/'+'aaa'),
+            options=options
+        ) as mngr:
+            # mngr.save(0, args=ocp.args.ArraySave(np.array([0, 1, 2])))
+            # mngr.save(0, args=ocp.args.ArraySave(np.array([0, 1, 2])))
+            mngr.save(0, args=ocp.args.StandardSave(runner.actor_training))
+            # mngr.wait_until_finished()
+
+        # mngr.save(
+        #     step=i_update_step,
+        #     args=ocp.args.Composite(
+        #         runner=ocp.args.ArraySave(jnp.array([0, 1, 2])),
+        #         episode_metrics=ocp.args.ArraySave(jnp.array([0, 1, 2])),
+        #     ),
+        # )
+
+        # with self.mngr as mngr:
+        #     mngr.save(
+        #         step=i_update_step,
+        #         args=ocp.args.Composite(
+        #             # training_step=ocp.args.StandardSave(jnp.array([0])),
+        #             runner=ocp.args.ArraySave(jnp.array([0, 1, 2])),
+        #             episode_metrics=ocp.args.ArraySave(jnp.array([0, 1, 2])),
+        #             # episode_metrics=ocp.args.JsonSave(metrics),
+        #             # rng=ocp.args.JaxRandomKeySave(runner.rng),
+        #             # state=ocp.args.StandardSave(runner.state),
+        #             # actor_training=ocp.args.StandardSave(runner.actor_training),
+        #             # critic_training=ocp.args.StandardSave(runner.critic_training)
+        #         ),
+        #     )
+
+            # mngr.wait_until_finished()
+            # mngr.close()
 
     @partial(jax.jit, static_argnums=(0,))
     def train(self, rng: PRNGKeyArray, hyperparams: HyperParameters) -> Tuple[Runner, Dict]:
@@ -591,6 +657,21 @@ class PPOAgentBase(ABC):
         critic_training = self._create_training(
             critic_init_rng, self.config.critic_network,  hyperparams.critic_optimizer_params
         )
+
+
+        # checkpoint_str = datetime.now().strftime("%Y%m%d%H%M%S")
+        # options = ocp.CheckpointManagerOptions(
+        #     create=True,
+        #     save_interval_steps=10,
+        #     max_to_keep=100
+        # )
+        # self.mngr = ocp.CheckpointManager(
+        #     ocp.test_utils.erase_and_create_empty(
+        #         r'C:/Users/Repositories/jax-agents/benchmarks/cartpole v1/A/' + 'aaa'),
+        #     # item_names=('training_step', 'runner', 'episode_metrics'),
+        #     item_names=('runner', 'episode_metrics'),
+        #     options=options
+        # )
 
         update_runner = self._create_update_runner(runner_rng, actor_training, critic_training, hyperparams)
 
@@ -872,6 +953,7 @@ class PPOAgent(PPOAgentBase):
         :param traj: The trajectory batch.
         :return: An array of returns.
         """
+
         rewards, values, next_state_values, terminated, gamma, gae_lambda = traj
         d_t = rewards + (1 - terminated) * gamma * next_state_values - values  # Temporal difference residual at time t
         advantage = d_t + gamma * gae_lambda * (1 - terminated) * advantage
@@ -907,7 +989,7 @@ class PPOAgent(PPOAgentBase):
         Adopt simplified formulation of clipped policy ratio * advantage as explained in the note of:
         https://spinningup.openai.com/en/latest/algorithms/ppo.html#id2
         """
-        clip = jnp.where(jnp.greater(advantage, 0), 1 + hyperparams.eps_clip, 1 - hyperparams.eps_clip)
+        clip = jnp.where(jnp.greater_equal(advantage, 0), 1 + hyperparams.eps_clip, 1 - hyperparams.eps_clip)
         advantage_clip = advantage * clip
 
         """Actual clip calculation - not used but left here for comparison to simplified version"""
@@ -1015,6 +1097,7 @@ class PPOClipCriticAgent(PPOAgentBase):
         :param traj: The trajectory batch.
         :return: An array of returns.
         """
+
         rewards, values, next_state_values, terminated, gamma, gae_lambda = traj
         d_t = rewards + (1 - terminated) * gamma * next_state_values - values  # Temporal difference residual at time t
         advantage = d_t + gamma * gae_lambda * (1 - terminated) * advantage

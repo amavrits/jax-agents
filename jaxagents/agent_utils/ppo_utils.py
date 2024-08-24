@@ -55,7 +55,9 @@ class OptimizerParams(NamedTuple):
 
 
 class HyperParameters(NamedTuple):
+
     """Training hyperparameters for the DQN and DDQN agents"""
+
     """Gamma (discount parameter) of Bellman equation"""
     gamma: float
 
