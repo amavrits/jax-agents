@@ -128,9 +128,8 @@ class PPOAgentBase(ABC):
 
         return tx
 
-    # @partial(jax.jit, static_argnums=(0,))
     def _init_network(self, rng: PRNGKeyArray, network: Type[flax.linen.Module])\
-            -> Tuple[PRNGKeyArray, Union[Dict, FrozenDict]]:
+            -> Tuple[Type[flax.linen.Module], Union[Dict, FrozenDict]]:
         """
         Initialization of the actor or critic network.
         :param rng: Random key for initialization.
@@ -163,8 +162,11 @@ class PPOAgentBase(ABC):
         return rng, state, env_state
 
     @partial(jax.jit, static_argnums=(0,))
-    def _env_step(self, rng: PRNGKeyArray, env_state: Type[NamedTuple], action: Int[Array, "1"]) ->\
-        Tuple[PRNGKeyArray, Float[Array, "state_size"], Type[LogEnvState], Float[Array, "1"], Bool[Array, "1"], Dict]:
+    def _env_step(self, rng: PRNGKeyArray, env_state: Type[NamedTuple], action: Union[Int[Array, "1"], int]) -> \
+        Tuple[
+            PRNGKeyArray, Float[Array, "state_size"], Type[LogEnvState], Union[float, Float[Array, "1"]],
+            Union[bool, Bool[Array, "1"]], dict
+        ]:
         """
         Environment step.
         :param rng: Random key for initialization.
@@ -276,18 +278,42 @@ class PPOAgentBase(ABC):
         return update_runner
 
     @partial(jax.jit, static_argnums=(0,))
+    def _pi(self, actor_training: TrainState, state: STATE_TYPE) -> PI_DIST_TYPE:
+        """
+        Assess the stochastic policy via the actor network for the state.
+        :param actor_training: The actor TrainState object used in training.
+        :param state: The current state of the episode step in array format.
+        :return: The stochastic policy for the input state.
+        """
+
+        pi = actor_training.apply_fn(lax.stop_gradient(actor_training.params), state)
+        return pi
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _value(self, critic_training: TrainState, state: STATE_TYPE) -> Float[Array, "1"]:
+        """
+        Assess the stochastic policy via the actor network for the state.
+        :param critic_training: The critic TrainState object used in training.
+        :param state: The current state of the episode step in array format.
+        :return: The value for the input state.
+        """
+
+        value = critic_training.apply_fn(lax.stop_gradient(critic_training.params), state)
+        return value
+
+    @partial(jax.jit, static_argnums=(0,))
     def _pi_value(self, actor_training: TrainState, critic_training: TrainState, state: STATE_TYPE)\
             -> Tuple[PI_DIST_TYPE, Float[Array, "1"]]:
         """
-        Assess the stochastic policy via the actor network and the value via the critic network for state.
+        Assess the stochastic policy via the actor network and the value via the critic network for the state.
         :param actor_training: The actor TrainState object used in training.
         :param critic_training: The critic TrainState object used in training.
         :param state: The current state of the episode step in array format.
         :return: A tuple of the stochastic policy and the value of the state.
         """
 
-        pi = actor_training.apply_fn(lax.stop_gradient(actor_training.params), state)
-        value = critic_training.apply_fn(lax.stop_gradient(critic_training.params), state)
+        pi = self._pi(actor_training, state)
+        value = self._value(critic_training, state)
         return pi, value
 
     @partial(jax.jit, static_argnums=(0,))
@@ -471,7 +497,7 @@ class PPOAgentBase(ABC):
         grads, kl = grad_fn(*grad_input)
         actor_training = actor_training.apply_gradients(grads=grads.params)
 
-        return (actor_training, actor_loss_input, kl, epoch+1, kl_threshold)
+        return actor_training, actor_loss_input, kl, epoch+1, kl_threshold
 
     @partial(jax.jit, static_argnums=(0,))
     def _actor_training_cond(self, epoch_runner: tuple) -> Bool[Array, "1"]:
@@ -509,7 +535,7 @@ class PPOAgentBase(ABC):
         grad_fn = jax.grad(self._critic_loss, allow_int=True)
         grads = grad_fn(*grad_input)
         critic_training = critic_training.apply_gradients(grads=grads.params)
-        return (critic_training, critic_loss_input)
+        return critic_training, critic_loss_input
 
     @partial(jax.jit, static_argnums=(0,))
     def _update_step(self, update_runner: Runner, i_update_step: int) -> Tuple[Runner, Dict]:
@@ -700,7 +726,7 @@ class PPOAgentBase(ABC):
         """
 
         if self.agent_trained:
-            pi, value = self._pi_value(self.actor_training, self.critic_training, state)
+            pi = self._pi(self.actor_training, state)
             action = jnp.argmax(pi.logits)
             return action
         else:
@@ -746,7 +772,7 @@ class PPOAgentBase(ABC):
 
         env_state, state, actor_training, critic_training, terminated, sum_rewards, rng = eval_runner
 
-        pi, value = self._pi_value(actor_training, critic_training, state)
+        pi = self._pi(actor_training, state)
 
         action = jnp.argmax(pi.logits)
 
