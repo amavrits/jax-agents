@@ -336,7 +336,9 @@ class PPOAgentBase(ABC):
         last_state_value = critic_training.apply_fn(jax.lax.stop_gradient(critic_training.params), last_state)
 
         """Remove first entry so that the next state values per step are in sync with the state rewards."""
-        next_values_t = jnp.concatenate([traj_batch.value.squeeze(), last_state_value[..., jnp.newaxis]],axis=-1)[:, 1:]
+        next_values_t = jnp.concatenate(
+            [traj_batch.value.squeeze(), last_state_value[..., jnp.newaxis]],
+            axis=-1)[:, 1:]
 
         traj_batch = traj_batch._replace(next_value=next_values_t)
 

@@ -36,14 +36,22 @@ if __name__ == '__main__':
 
     """Define optimizer parameters and training hyperparameters"""
     hyperparams = ppo.HyperParameters(
-        gamma=jnp.ones(2) * 0.99,
-        eps_clip=jnp.ones(2) * 0.2,
-        kl_threshold=jnp.ones(2) * 1e-5,
-        gae_lambda=jnp.ones(2) * 0.97,
-        ent_coeff=jnp.ones(2) * 0.0,
-        vf_coeff=jnp.ones(2) * 1.0,
-        actor_optimizer_params=ppo.OptimizerParams(learning_rate=jnp.ones(2) * 3e-4, eps=jnp.ones(2) * 1e-3, grad_clip=jnp.ones(2) * 1),
-        critic_optimizer_params=ppo.OptimizerParams(learning_rate=jnp.ones(2) * 1e-3, eps=jnp.ones(2) * 1e-3, grad_clip=jnp.ones(2) * 1)
+        gamma=jnp.array([0.99, 0.99, 0.99, 0.99]),
+        eps_clip=jnp.array([0.05, 0.1, 0.15, 0.2]),
+        kl_threshold=jnp.array([1e-8, 1e-7, 1e-6, 1e-5]),
+        gae_lambda=jnp.array([0.97, 0.97, 0.97, 0.97]),
+        ent_coeff=jnp.zeros(4),
+        vf_coeff=jnp.ones(4),
+        actor_optimizer_params=ppo.OptimizerParams(
+            learning_rate=jnp.array([5e-5, 1e-4, 2e-4, 3e-4]),
+            eps=jnp.ones(4)*1e-3,
+            grad_clip=jnp.ones(4)
+        ),
+        critic_optimizer_params=ppo.OptimizerParams(
+            learning_rate=jnp.array([1e-4, 2e-4, 5e-4, 1e-3]),
+            eps=jnp.ones(4)*1e-3,
+            grad_clip=jnp.ones(4)
+        )
     )
 
     rng = jax.random.PRNGKey(42)
@@ -77,8 +85,9 @@ if __name__ == '__main__':
     colors = cm.rainbow(np.linspace(0, 1, n_parallel))
     for i_parallel in range(n_parallel):
         plt.fill_between(np.arange(1, agent.config.n_steps+1), training_rewards.min[i_parallel],
-                         training_rewards.max[i_parallel], color=colors[i_parallel], alpha=0.4)
+                         training_rewards.max[i_parallel], color=colors[i_parallel], alpha=0.4, label=str(i_parallel+1))
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Training reward [-]", fontsize=14)
+    plt.legend(title="Hyperparameter set:", fontsize="small")
     plt.close()
     fig.savefig(os.path.join(os.getcwd(), r'figures\PPO Clip training vmap.png'))
