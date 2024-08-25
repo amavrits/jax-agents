@@ -615,7 +615,7 @@ class PPOAgentBase(ABC):
             actor_init_rng, self.config.actor_network, hyperparams.actor_optimizer_params
         )
         critic_training = self._create_training(
-            critic_init_rng, self.config.critic_network,  hyperparams.critic_optimizer_params
+            critic_init_rng, self.config.critic_network, hyperparams.critic_optimizer_params
         )
 
         update_runner = self._create_update_runner(runner_rng, actor_training, critic_training, hyperparams)
@@ -833,7 +833,8 @@ class PPOAgentBase(ABC):
         self.critic_training = self.training_runner.critic_training
 
     @staticmethod
-    def _summary_stats(episode_metric: np.ndarray["size_metrics", float]) -> MetricStats:
+    def _summary_stats(episode_metric: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]])\
+            -> MetricStats:
         """
         Summarizes statistics for sample of episode metric (to be used for training or evaluation).
         :param episode_metric: Metric collected in training or evaluation adjusted for each episode.
@@ -842,24 +843,24 @@ class PPOAgentBase(ABC):
 
         return MetricStats(
             episode_metric=episode_metric,
-            mean=episode_metric.mean(),
-            var=episode_metric.var(),
-            std=episode_metric.std(),
-            min=episode_metric.min(),
-            max=episode_metric.max(),
-            median=np.median(episode_metric),
-            has_nans=np.any(np.isnan(episode_metric)),
+            mean=episode_metric.mean(axis=-1),
+            var=episode_metric.var(axis=-1),
+            std=episode_metric.std(axis=-1),
+            min=episode_metric.min(axis=-1),
+            max=episode_metric.max(axis=-1),
+            median=jnp.median(episode_metric, axis=-1),
+            has_nans=jnp.any(jnp.isnan(episode_metric), axis=-1),
         )
 
-    def summarize(self, metric: Union[np.ndarray["size_metrics", float], Float[Array, "dim5"]]) -> MetricStats:
+    def summarize(self, metric: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]) -> MetricStats:
         """
         Summarizes collection of per-episode metrics.
         :param metric: Metric per episode.
         :return: Summary of metric per episode.
         """
 
-        if not isinstance(metric, np.ndarray):
-            metric = np.asarray(metric).astype(np.float32)
+        # if not isinstance(metric, np.ndarray):
+        #     metric = np.asarray(metric).astype(np.float32)
 
         return self._summary_stats(metric)
 

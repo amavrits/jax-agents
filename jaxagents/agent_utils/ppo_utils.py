@@ -45,31 +45,31 @@ class Transition(NamedTuple):
 class OptimizerParams(NamedTuple):
     """Parameters of the training optimizer"""
     """Learning rate"""
-    learning_rate: float = 1e-3
+    learning_rate: Union[float, Float[Array, "n_hyperparam_sets"]] = 1e-3
 
     """Epsilon of the optimizer"""
-    eps: float = 1e-8
+    eps: Union[float, Float[Array, "n_hyperparam_sets"]] = 1e-8
 
     """Maximum value for gradient clipping"""
-    grad_clip: float = 10.0
+    grad_clip: Union[float, Float[Array, "n_hyperparam_sets"]] = 10.0
 
 
 class HyperParameters(NamedTuple):
     """Training hyperparameters for the DQN and DDQN agents"""
     """Gamma (discount parameter) of Bellman equation"""
-    gamma: float
+    gamma: Union[float, Float[Array, "n_hyperparam_sets"]]
 
     """λ for weighting the discounted returns and the value as estimated by the critic in evaluating returns."""
-    gae_lambda: float
+    gae_lambda: Union[float, Float[Array, "n_hyperparam_sets"]]
 
     """Epsilon for policy ratio clipping"""
-    eps_clip: float
+    eps_clip: Union[float, Float[Array, "n_hyperparam_sets"]]
 
     """Entropy coefficient for actor loss function"""
-    ent_coeff: float
+    ent_coeff: Union[float, Float[Array, "n_hyperparam_sets"]]
 
     """KL divergence threshold for early stopping of the actor training"""
-    kl_threshold: float
+    kl_threshold: Union[float, Float[Array, "n_hyperparam_sets"]]
 
     """Optimizer parameters for the actor network"""
     actor_optimizer_params: OptimizerParams
@@ -82,7 +82,7 @@ class HyperParameters(NamedTuple):
     Not relevant for the VPG-REINFORCE agent but help in using the same optimizer parameters for both actor and critic
     training.
     """
-    vf_coeff: float = 1.0
+    vf_coeff: Union[float, Float[Array, "n_hyperparam_sets"]] = 1.0
 
 
 @struct.dataclass
@@ -144,7 +144,7 @@ class AgentConfig(NamedTuple):
     eval_rng: Optional[PRNGKeyArray] = None
 
 
-@dataclass
+@struct.dataclass
 class MetricStats:
     """
     Dataclass summarizing statistics of a metric sample connected to the agent's performance (collected during either

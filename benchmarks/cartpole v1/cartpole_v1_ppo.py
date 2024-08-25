@@ -62,8 +62,8 @@ if __name__ == '__main__':
     print(eval_rewards.episode_metric.min(), eval_rewards.episode_metric.max())
 
     fig = plt.figure()
-    plt.fill_between(np.arange(1, agent.config.n_steps+1), training_rewards.episode_metric.min(axis=1),
-                     training_rewards.episode_metric.max(axis=1), color='b', alpha=0.4)
+    plt.fill_between(np.arange(1, agent.config.n_steps+1), training_rewards.min, training_rewards.max, color='b',
+                     alpha=0.4)
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Training reward [-]", fontsize=14)
     plt.close()
