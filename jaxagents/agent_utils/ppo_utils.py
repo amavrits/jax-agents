@@ -1,12 +1,13 @@
 import numpy as np
+import jax.numpy as jnp
 from flax.training.train_state import TrainState
 from flax import struct
 from optax._src import base
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
+from functools import partial
 from typing import Tuple, Dict, NamedTuple, Callable, Any, Type, Union, Optional
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
-from dataclasses import dataclass
 
 
 class Transition(NamedTuple):
@@ -144,7 +145,7 @@ class AgentConfig(NamedTuple):
     eval_rng: Optional[PRNGKeyArray] = None
 
 
-@struct.dataclass
+@partial(struct.dataclass, frozen=False)
 class MetricStats:
     """
     Dataclass summarizing statistics of a metric sample connected to the agent's performance (collected during either
@@ -154,22 +155,31 @@ class MetricStats:
     episode_metric: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample average"""
-    mean: Union[np.float32, Float[Array, "size_metrics"]]
+    mean: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = struct.field(init=False)
 
     """Sample variance"""
-    var: Union[np.float32, Float[Array, "size_metrics"]]
+    var: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = struct.field(init=False)
 
     """Sample standard deviation"""
-    std: Union[np.float32, Float[Array, "size_metrics"]]
+    std: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = struct.field(init=False)
 
     """Sample minimum"""
-    min: Union[np.float32, Float[Array, "size_metrics"]]
+    min: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = struct.field(init=False)
 
     """Sample maximum"""
-    max: Union[np.float32, Float[Array, "size_metrics"]]
+    max: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = struct.field(init=False)
 
     """Sample median"""
-    median: Union[np.float32, Float[Array, "size_metrics"]]
+    median: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = struct.field(init=False)
 
     """Whether the sample contains nan values"""
-    has_nans: Union[np.bool_, Bool[Array, "size_metrics"]]
+    has_nans: Union[np.ndarray["size_metrics", bool], Bool[Array, "size_metrics"]] = struct.field(init=False)
+
+    def process(self) -> None:
+        self.mean = self.episode_metric.mean(axis=-1)
+        self.var = self.episode_metric.var(axis=-1)
+        self.std = self.episode_metric.std(axis=-1)
+        self.min = self.episode_metric.min(axis=-1)
+        self.max = self.episode_metric.max(axis=-1)
+        self.median = jnp.median(self.episode_metric, axis=-1)
+        self.has_nans = jnp.any(jnp.isnan(self.episode_metric), axis=-1)

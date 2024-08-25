@@ -419,8 +419,9 @@ class PPOAgentBase(ABC):
         traj_runner = (rewards_t, values_t, next_state_values_t, terminated_t, gamma_t, gae_lambda_t)
         """
         TODO:
-        Advantage of last step is set to zero, which is correct only when the last step is terminal in the episode. 
-        However, the method works, so probably this inaccuracy is negligible.
+        Advantage of last step is taken from the critic, in contrast to traditional apporaches, where the rollout 
+        ends with episode termination and the advantage is zero. Training is still successful and the influence of this
+        implementation choice is negligible.
         """
         end_advantage = jnp.zeros(self.config.batch_size)
         _, advantages = jax.lax.scan(self._trajectory_advantages, end_advantage, traj_runner, reverse=True)
@@ -843,16 +844,9 @@ class PPOAgentBase(ABC):
         :return: Summary of episode metric.
         """
 
-        return MetricStats(
-            episode_metric=episode_metric,
-            mean=episode_metric.mean(axis=-1),
-            var=episode_metric.var(axis=-1),
-            std=episode_metric.std(axis=-1),
-            min=episode_metric.min(axis=-1),
-            max=episode_metric.max(axis=-1),
-            median=jnp.median(episode_metric, axis=-1),
-            has_nans=jnp.any(jnp.isnan(episode_metric), axis=-1),
-        )
+        metrics = MetricStats(episode_metric)
+        metrics.process()
+        return metrics
 
     def summarize(self, metric: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]) -> MetricStats:
         """
@@ -860,9 +854,6 @@ class PPOAgentBase(ABC):
         :param metric: Metric per episode.
         :return: Summary of metric per episode.
         """
-
-        # if not isinstance(metric, np.ndarray):
-        #     metric = np.asarray(metric).astype(np.float32)
 
         return self._summary_stats(metric)
 
