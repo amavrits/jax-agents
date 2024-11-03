@@ -1,32 +1,24 @@
-[build-system]
-requires = ["setuptools >= 61.0"]
-build-backend = "setuptools.build_meta"
-
-[project]
+[tool.poetry]
 name = "jaxagents"
-version = "0.1.10"
-authors = [
-    {name = "Antonis Mavritsakis (amavrits)", email = "amavrits@gmail.com"},
-]
+version = "0.1.8"
 description = "JAX implementation of Reinforcement Learning agents"
-readme  = "README_PYPI.md"
-classifiers = ["Programming Language :: Python :: 3"]
-license = { file = "LICENSE" }
-requires-python = ">=3.10"
-dependencies = [
-    "jax >= 0.4.28",
-    "chex >= 0.1.86",
-    "distrax >= 0.1.5",
-    "flax >= 0.8.4",
-    "flashbax >= 0.1.2",
-    "jaxtyping >= 0.2.29",
-    "gymnax >= 0.0.6",
-    "jax-tqdm >= 0.2.1",
-    "optax >= 0.2.2",
-]
+authors = ["Antonis Mavritsakis (amavrits) <amavrits@gmail.com>"]
+license = "{ file = \"LICENSE\" }"
+readme = "README.md"
 
-[project.optional-dependencies]
-dev = ["jax[cuda12]"]
+[tool.poetry.dependencies]
+python = "^3.10"
+jax = "^0.4.28"
+chex = "^0.1.86"
+distrax = "^0.1.5"
+flax = "^0.8.4"
+flashbax = "^0.1.2"
+jaxtyping = "^0.2.29"
+gymnax = "^0.0.6"
+jax-tqdm = "^0.2.1"
+optax = "^0.2.2"
 
-[project.urls]
-"Homepage" = "https://github.com/amavrits/jax-agents"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
