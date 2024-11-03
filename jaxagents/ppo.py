@@ -333,7 +333,9 @@ class PPOAgentBase(ABC):
     def _add_next_values(self, traj_batch: Transition, last_state: Float[Array, 'state_size'],
                          critic_training: TrainState) -> Transition:
 
-        last_state_value = critic_training.apply_fn(jax.lax.stop_gradient(critic_training.params), last_state)
+        # last_state_value = critic_training.apply_fn(jax.lax.stop_gradient(critic_training.params), last_state)
+        last_state_value_vmap = jax.vmap(critic_training.apply_fn, in_axes=(None, 0))
+        last_state_value = last_state_value_vmap(jax.lax.stop_gradient(critic_training.params), last_state)
 
         """Remove first entry so that the next state values per step are in sync with the state rewards."""
         next_values_t = jnp.concatenate(
@@ -419,7 +421,7 @@ class PPOAgentBase(ABC):
         traj_runner = (rewards_t, values_t, next_state_values_t, terminated_t, gamma_t, gae_lambda_t)
         """
         TODO:
-        Advantage of last step is taken from the critic, in contrast to traditional apporaches, where the rollout 
+        Advantage of last step is taken from the critic, in contrast to traditional approaches, where the rollout 
         ends with episode termination and the advantage is zero. Training is still successful and the influence of this
         implementation choice is negligible.
         """
@@ -917,7 +919,9 @@ class PPOAgent(PPOAgentBase):
         """ Standardize GAE, greatly improves behaviour"""
         advantage = (advantage - advantage.mean(axis=0)) / (advantage.std(axis=0) + 1e-8)
 
-        actor_policy = training.apply_fn(training.params, state)
+        # actor_policy = training.apply_fn(training.params, state)
+        actor_policy_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
+        actor_policy = actor_policy_vmap(training.params, state)
         log_prob = actor_policy.log_prob(action)
         log_policy_ratio = log_prob - log_prob_old
         policy_ratio = jnp.exp(log_policy_ratio)
@@ -953,7 +957,9 @@ class PPOAgent(PPOAgentBase):
         :return: The critic loss.
         """
 
-        value = training.apply_fn(training.params, state)
+        # value = training.apply_fn(training.params, state)
+        value_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
+        value = value_vmap(training.params, state)
         residuals = value - targets
         value_loss = jnp.mean(residuals ** 2)
         critic_total_loss = hyperparams.vf_coeff * value_loss
@@ -1060,7 +1066,9 @@ class PPOClipCriticAgent(PPOAgentBase):
         """ Standardize GAE, greatly improves behaviour"""
         advantage = (advantage - advantage.mean(axis=0)) / (advantage.std(axis=0) + 1e-8)
 
-        actor_policy = training.apply_fn(training.params, state)
+        # actor_policy = training.apply_fn(training.params, state)
+        actor_policy_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
+        actor_policy = actor_policy_vmap(training.params, state)
         log_prob = actor_policy.log_prob(action)
         log_policy_ratio = log_prob - log_prob_old
         policy_ratio = jnp.exp(log_policy_ratio)
@@ -1096,7 +1104,9 @@ class PPOClipCriticAgent(PPOAgentBase):
         :return: The critic loss.
         """
 
-        value = training.apply_fn(training.params, state)
+        # value = training.apply_fn(training.params, state)
+        value_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
+        value = value_vmap(training.params, state)
         residuals = value - targets
         value_loss = residuals ** 2
 

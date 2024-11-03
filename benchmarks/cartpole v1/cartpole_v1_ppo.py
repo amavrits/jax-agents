@@ -67,4 +67,4 @@ if __name__ == '__main__':
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Training reward [-]", fontsize=14)
     plt.close()
-    fig.savefig(os.path.join(os.getcwd(), r'figures\PPO Clip training.png'))
+    fig.savefig(os.path.join(os.getcwd(), r'figures/PPO Clip training.png'))
