@@ -421,7 +421,7 @@ class PPOAgentBase(ABC):
         traj_runner = (rewards_t, values_t, next_state_values_t, terminated_t, gamma_t, gae_lambda_t)
         """
         TODO:
-        Advantage of last step is taken from the critic, in contrast to traditional apporaches, where the rollout 
+        Advantage of last step is taken from the critic, in contrast to traditional approaches, where the rollout 
         ends with episode termination and the advantage is zero. Training is still successful and the influence of this
         implementation choice is negligible.
         """
