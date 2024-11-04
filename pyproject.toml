@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "jaxagents"
-version = "0.1.11"
+version = "0.1.12"
 description = "JAX implementation of Reinforcement Learning agents"
 authors = ["Antonis Mavritsakis (amavrits) <amavrits@gmail.com>"]
 license = "{ file = \"LICENSE\" }"
@@ -9,8 +9,8 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.10"
 jax = [
-    {extras = ['cpu'], version = "^0.4.28", platform = "windows"},
-    {extras = ['cuda'], version = "^0.4.28", platform = "linux"}
+    {extras = ['cpu'], version = "^0.4.28", platform  = "win32"},
+    {extras = ['cuda'], version = "^0.4.28", platform  = "linux"}
 ]
 chex = "^0.1.86"
 distrax = "^0.1.5"
