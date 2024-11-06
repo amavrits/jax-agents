@@ -8,6 +8,7 @@ Author: Antonis Mavritsakis
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import lax
 from jax_tqdm import scan_tqdm
 import distrax
@@ -600,6 +601,35 @@ class PPOAgentBase(ABC):
         )
 
         metrics = self._generate_metrics(runner=update_runner, update_step=i_update_step)
+
+
+
+        from flax.serialization import to_state_dict
+        from flax.training import orbax_utils
+        import orbax
+
+        def save_array(array, i):
+            A = to_state_dict(array)
+            # i = jax.experimental.io_callback(ff, None, i_update_step)
+
+            orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+            save_args = orbax_utils.save_args_from_target(A)
+            options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=10, create=True)
+            checkpoint_manager = orbax.checkpoint.CheckpointManager(
+                # 'C:\\Users\\Repositories\\jax-agents\\benchmarks\\cartpole v1\\log', orbax_checkpointer, options)
+                '/mnt/c/Users/Repositories/jax-agents/benchmarks/cartpole v1/log', orbax_checkpointer, options)
+            checkpoint_manager.save(i, A, save_kwargs={'save_args': save_args})
+            print('saved dict')
+
+
+        @jax.jit
+        def f(x, i):
+            jax.experimental.io_callback(save_array, None, x, i)
+            return None
+
+        params = actor_training.params
+        x = params
+        A = f(x, i_update_step)
 
         return update_runner, metrics
 

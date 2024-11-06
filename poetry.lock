@@ -153,7 +153,7 @@ files = [
 [package.dependencies]
 fsspec = {version = "*", optional = true, markers = "extra == \"epath\""}
 importlib_resources = {version = "*", optional = true, markers = "extra == \"epath\""}
-typing_extensions = {version = "*", optional = true, markers = "extra == \"epath\" or extra == \"epy\""}
+typing_extensions = {version = "*", optional = true, markers = "extra == \"epy\""}
 zipp = {version = "*", optional = true, markers = "extra == \"epath\""}
 
 [package.extras]
@@ -731,6 +731,19 @@ examples = ["dp_accounting (>=0.4)", "flax", "ipywidgets", "tensorflow (>=2.4.0)
 test = ["dm-tree (>=0.1.7)", "flax (>=0.5.3)", "scikit-learn", "scipy (>=1.7.1)"]
 
 [[package]]
+name = "orbax"
+version = "0.1.9"
+description = "Orbax"
+optional = false
+python-versions = "*"
+files = [
+    {file = "orbax-0.1.9.tar.gz", hash = "sha256:42dd487ceef9fbf027f4720f3d041686af75120466a528a8a8141226bc197218"},
+]
+
+[package.dependencies]
+orbax-checkpoint = ">=0.1.8"
+
+[[package]]
 name = "orbax-checkpoint"
 version = "0.8.0"
 description = "Orbax Checkpoint"
@@ -1090,4 +1103,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.10"
-content-hash = "22fd3e1608f0bf6e4cbe731360050c764d988d82c85557120a00312cfc53c9dd"
+content-hash = "48c2f8ddb3f97021c002eca24dad43d5fa41348b5b68b95914dad1a679435776"

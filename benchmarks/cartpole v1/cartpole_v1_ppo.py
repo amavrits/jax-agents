@@ -20,7 +20,7 @@ if __name__ == '__main__':
         actor_network=PGActorNN,
         critic_network=PGCriticNN,
         rollout_length=50,
-        n_steps=1_000,
+        n_steps=5,
         batch_size=16,
         actor_epochs=10,
         critic_epochs=10,
