@@ -5,7 +5,7 @@ from flax import struct
 from optax._src import base
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
-from typing import Dict, NamedTuple, Callable, Type, Union, Optional
+from typing import Dict, NamedTuple, Callable, Type, Union, Optional, Any
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 from dataclasses import dataclass, field
 
@@ -111,6 +111,15 @@ class Runner:
     """Training hyperparameters"""
     hyperparams: HyperParameters
 
+    """Best actor collected during training so far, according to the performance evaluation."""
+    best_actor_training: dict
+
+    """Best critic collected during training so far, according to the performance evaluation."""
+    best_critic_training: dict
+
+    """Best performance collected during training so far, calculated as the mean return across batches in evaluation."""
+    best_performance: Float[Array, "1"] = -jnp.inf
+
 
 class AgentConfig(NamedTuple):
     """Configuration of the DQN and DDQN agents, passed at initialization of instance."""
@@ -139,7 +148,11 @@ class AgentConfig(NamedTuple):
     """Optax optimizer to be used in training. Giving only the optimizer class allows for initializing within the 
     self.train method and eventually running multiple combinations of the optimizer parameters via jax.vmap.
     """
-    optimizer: Callable[[Dict], Optional[base.GradientTransformation]]
+    # optimizer: Callable[[Dict], Optional[base.GradientTransformation]]
+    optimizer: Callable[[Any], Optional[base.GradientTransformation]]
+
+    """Frequency of evaluating the agent in update steps."""
+    eval_frequency: int = 1
 
     """PRNG key for evaluation of agent performance during training (if 'None' evaluation isn't performed)"""
     eval_rng: Optional[PRNGKeyArray] = None

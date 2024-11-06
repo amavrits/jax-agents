@@ -20,11 +20,12 @@ if __name__ == '__main__':
         actor_network=PGActorNN,
         critic_network=PGCriticNN,
         rollout_length=50,
-        n_steps=5,
+        n_steps=1_000,
         batch_size=16,
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
+        eval_frequency=2,
         eval_rng=jax.random.PRNGKey(18)
     )
 
@@ -53,7 +54,7 @@ if __name__ == '__main__':
     print(f"time: {time.time() - t0:.2f} s")
 
     """ Post-process results"""
-    training_rewards = agent.summarize(training_metrics["episode_rewards"])
+    training_rewards = agent.summarize(training_metrics["episode_returns"])
     agent.collect_training(runner, training_metrics)
 
     """Evaluate agent performance"""
@@ -62,7 +63,7 @@ if __name__ == '__main__':
     print(eval_rewards.episode_metric.min(), eval_rewards.episode_metric.max())
 
     fig = plt.figure()
-    plt.fill_between(np.arange(1, agent.config.n_steps+1), training_rewards.min, training_rewards.max, color='b',
+    plt.fill_between(agent.eval_steps_in_training, training_rewards.min, training_rewards.max, color='b',
                      alpha=0.4)
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Training reward [-]", fontsize=14)
