@@ -757,10 +757,8 @@ class PPOAgentBase(ABC):
         # )
 
         def a(runner, i):
-            n_training_iters = jnp.minimum(
-                self.config.eval_frequency,
-                self.config.n_steps - self.config.n_steps // self.config.eval_frequency * i
-            )
+            n_training_iters = self.config.n_steps - self.config.n_steps // self.config.eval_frequency * i
+            n_training_iters = jnp.clip(n_training_iters, 1, self.config.eval_frequency)
             runner = lax.fori_loop(
                 0,
                 n_training_iters,
@@ -769,18 +767,18 @@ class PPOAgentBase(ABC):
             )
 
             metrics = self._generate_metrics(runner=runner, update_step=i)
-            mean_returns = metrics["episode_returns"].mean()
-
-            if jnp.greater(mean_returns, runner.best_performance):
-                best_actor = runner.actor_training
-            else:
-                best_actor = runner.best_actor_training
-
-            runner = runner.replace(
-                best_actor=best_actor,
-                best_critic=best_critic,
-                best_performance=max(runner.best_performance, mean_returns)
-            )
+            # mean_returns = metrics["episode_returns"].mean()
+            #
+            # if jnp.greater(mean_returns, runner.best_performance):
+            #     best_actor = runner.actor_training
+            # else:
+            #     best_actor = runner.best_actor_training
+            #
+            # runner = runner.replace(
+            #     best_actor=best_actor,
+            #     best_critic=best_critic,
+            #     best_performance=max(runner.best_performance, mean_returns)
+            # )
 
             return runner, metrics
 

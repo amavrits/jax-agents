@@ -25,7 +25,7 @@ if __name__ == '__main__':
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
-        eval_frequency=2,
+        eval_frequency=1,
         eval_rng=jax.random.PRNGKey(18)
     )
 
