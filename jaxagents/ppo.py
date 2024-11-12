@@ -617,76 +617,6 @@ class PPOAgentBase(ABC):
 
         return critic_training
 
-    # @partial(jax.jit, static_argnums=(0,))
-    # def _update_step(self, update_runner: Runner, i_update_step: int) -> Tuple[Runner, Dict]:
-    #     """
-    #     An update step of the actor and critic networks. This entails:
-    #     - performing rollout for sampling a batch of trajectories.
-    #     - assessing the value of the last state per trajectory using the critic.
-    #     - evaluating the advantage per trajectory.
-    #     - updating the actor and critic network parameters via the respective loss functions.
-    #     - generating in-training performance metrics.
-    #     In this approach, the update_runner already has a batch of environments initialized. The environments are not
-    #     initialized in the beginning of every update step, which means that trajectories to not necessarily start from
-    #     an initial state (which lead to better results when benchmarking with Cartpole-v1). Moreover, the use of lax.scan
-    #     for rollout means that the trajectories do not necessarily stop with episode termination (episodes can be
-    #     truncated in trajectory sampling).
-    #     :param update_runner: The Runner object, containing information about the current status of the actor's/
-    #     critic's training, the state of the environment and training hyperparameters.
-    #     :param i_update_step: Unused, required for progressbar.
-    #     :return: Tuple with updated runner and dictionary of metrics.
-    #     """
-    #
-    #     step_runners = self._make_step_runners(update_runner)
-    #     scan_rollout_fn = lambda x: lax.scan(self._rollout, x, None, self.config.rollout_length)
-    #     step_runners, traj_batch = jax.vmap(scan_rollout_fn)(step_runners)
-    #     last_env_state, last_state, _, _, rng = step_runners
-    #     traj_batch  =self._process_trajectory(update_runner, traj_batch, last_state)
-    #
-    #     actor_training = self._actor_update(update_runner, traj_batch)
-    #     critic_training = self._critic_update(update_runner, traj_batch)
-    #
-    #     """Update runner as a struct.dataclass."""
-    #     update_runner = update_runner.replace(
-    #         env_state=last_env_state,
-    #         state=last_state,
-    #         actor_training=actor_training,
-    #         critic_training=critic_training,
-    #         rng=rng
-    #     )
-    #
-    #     """Evaluate agent per eval_frequency steps. If not evaluating, return empty dictionary."""
-    #     metrics = self._generate_metrics(runner=update_runner, update_step=i_update_step)
-    #
-    #     # from flax.serialization import to_state_dict
-    #     # from flax.training import orbax_utils
-    #     # import orbax
-    #     #
-    #     # def save_array(array, i):
-    #     #     A = to_state_dict(array)
-    #     #     # i = jax.experimental.io_callback(ff, None, i_update_step)
-    #     #
-    #     #     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-    #     #     save_args = orbax_utils.save_args_from_target(A)
-    #     #     options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=10, create=True)
-    #     #     checkpoint_manager = orbax.checkpoint.CheckpointManager(
-    #     #         # 'C:\\Users\\Repositories\\jax-agents\\benchmarks\\cartpole v1\\log', orbax_checkpointer, options)
-    #     #         '/mnt/c/Users/Repositories/jax-agents/benchmarks/cartpole v1/log', orbax_checkpointer, options)
-    #     #     checkpoint_manager.save(i, A, save_kwargs={'save_args': save_args})
-    #     #     print('saved dict')
-    #     #
-    #     #
-    #     # @jax.jit
-    #     # def f(x, i):
-    #     #     jax.experimental.io_callback(save_array, None, x, i)
-    #     #     return None
-    #     #
-    #     # params = actor_training.params
-    #     # x = params
-    #     # A = f(x, i_update_step)
-    #
-    #     return update_runner, metrics
-
     @partial(jax.jit, static_argnums=(0,))
     def _update_step(self, i_update_step: int, update_runner: Runner) -> Runner:
         """
@@ -704,7 +634,7 @@ class PPOAgentBase(ABC):
         :param i_update_step: Unused, required for progressbar.
         :param update_runner: The runner object, containing information about the current status of the actor's/
         critic's training, the state of the environment and training hyperparameters.
-        :return: Tuple with updated runner and dictionary of metrics.
+        :return: Updated runner
         """
 
         step_runners = self._make_step_runners(update_runner)
@@ -728,6 +658,65 @@ class PPOAgentBase(ABC):
         return update_runner
 
     @partial(jax.jit, static_argnums=(0,))
+    def _training_step(self, update_runner: Runner, i_training_step: int) -> Tuple[Runner, dict]:
+        """
+        Performs trainings steps to update the agent per training batch.
+        :param update_runner: The runner object, containing information about the current status of the actor's/
+        critic's training, the state of the environment and training hyperparameters.
+        :param i_training_step: Training batch loop counter.
+        :return: Tuple with updated runner and dictionary of metrics.
+        """
+
+        n_training_steps = self.config.n_steps - self.config.n_steps // self.config.eval_frequency * i_training_step
+        n_training_steps = jnp.clip(n_training_steps, 1, self.config.eval_frequency)
+
+        update_runner = lax.fori_loop(0, n_training_steps, self._update_step, update_runner)
+
+        metrics = self._generate_metrics(runner=update_runner, update_step=i_training_step)
+
+        #     # from flax.serialization import to_state_dict
+        #     # from flax.training import orbax_utils
+        #     # import orbax
+        #     #
+        #     # def save_array(array, i):
+        #     #     A = to_state_dict(array)
+        #     #     # i = jax.experimental.io_callback(ff, None, i_update_step)
+        #     #
+        #     #     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+        #     #     save_args = orbax_utils.save_args_from_target(A)
+        #     #     options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=10, create=True)
+        #     #     checkpoint_manager = orbax.checkpoint.CheckpointManager(
+        #     #         # 'C:\\Users\\Repositories\\jax-agents\\benchmarks\\cartpole v1\\log', orbax_checkpointer, options)
+        #     #         '/mnt/c/Users/Repositories/jax-agents/benchmarks/cartpole v1/log', orbax_checkpointer, options)
+        #     #     checkpoint_manager.save(i, A, save_kwargs={'save_args': save_args})
+        #     #     print('saved dict')
+        #     #
+        #     #
+        #     # @jax.jit
+        #     # def f(x, i):
+        #     #     jax.experimental.io_callback(save_array, None, x, i)
+        #     #     return None
+        #     #
+        #     # params = actor_training.params
+        #     # x = params
+        #     # A = f(x, i_update_step)
+
+        # mean_returns = metrics["episode_returns"].mean()
+        #
+        # if jnp.greater(mean_returns, runner.best_performance):
+        #     best_actor = runner.actor_training
+        # else:
+        #     best_actor = runner.best_actor_training
+        #
+        # runner = runner.replace(
+        #     best_actor=best_actor,
+        #     best_critic=best_critic,
+        #     best_performance=max(runner.best_performance, mean_returns)
+        # )
+
+        return update_runner, metrics
+
+    @partial(jax.jit, static_argnums=(0,))
     def train(self, rng: PRNGKeyArray, hyperparams: HyperParameters) -> Tuple[Runner, Dict]:
         """
         Trains the agent. A jax_tqdm progressbar has been added in the lax.scan loop.
@@ -749,46 +738,15 @@ class PPOAgentBase(ABC):
 
         update_runner = self._create_update_runner(runner_rng, actor_training, critic_training, hyperparams)
 
-        # runner, metrics = lax.scan(
-        #     scan_tqdm(self.config.n_steps, desc='Training steps')(self._update_step),
-        #     update_runner,
-        #     jnp.arange(self.config.n_steps),
-        #     self.config.n_steps
-        # )
+        n_training_batches = self.config.n_steps // self.config.eval_frequency
 
-        def a(runner, i):
-            n_training_iters = self.config.n_steps - self.config.n_steps // self.config.eval_frequency * i
-            n_training_iters = jnp.clip(n_training_iters, 1, self.config.eval_frequency)
-            runner = lax.fori_loop(
-                0,
-                n_training_iters,
-                self._update_step,
-                runner,
-            )
+        progressbar_desc = f'Training batch (x {self.config.eval_frequency} training steps)'
 
-            metrics = self._generate_metrics(runner=runner, update_step=i)
-            # mean_returns = metrics["episode_returns"].mean()
-            #
-            # if jnp.greater(mean_returns, runner.best_performance):
-            #     best_actor = runner.actor_training
-            # else:
-            #     best_actor = runner.best_actor_training
-            #
-            # runner = runner.replace(
-            #     best_actor=best_actor,
-            #     best_critic=best_critic,
-            #     best_performance=max(runner.best_performance, mean_returns)
-            # )
-
-            return runner, metrics
-
-        n_iters = self.config.n_steps // self.config.eval_frequency
         runner, metrics = lax.scan(
-            scan_tqdm(n_iters, desc='Training steps')(a),
-            # scan_tqdm(self.config.n_steps, self.config.eval_frequency, desc='Training steps')(a),
+            scan_tqdm(n_training_batches, desc=progressbar_desc)(self._training_step),
             update_runner,
-            jnp.arange(n_iters),
-            n_iters
+            jnp.arange(n_training_batches),
+            n_training_batches
         )
 
         return runner, metrics
