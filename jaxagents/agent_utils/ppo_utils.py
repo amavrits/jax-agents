@@ -8,6 +8,7 @@ from gymnax.wrappers.purerl import LogEnvState
 from typing import Dict, NamedTuple, Callable, Type, Union, Optional, Any
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 from dataclasses import dataclass, field
+import os
 
 
 class Transition(NamedTuple):
@@ -156,6 +157,9 @@ class AgentConfig(NamedTuple):
 
     """PRNG key for evaluation of agent performance during training (if 'None' evaluation isn't performed)"""
     eval_rng: Optional[PRNGKeyArray] = None
+
+    """Path for checkpointing"""
+    checkpoint_dir: Optional[Union[str, os.PathLike]] = None
 
 
 @dataclass

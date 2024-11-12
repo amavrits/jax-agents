@@ -25,8 +25,10 @@ if __name__ == '__main__':
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
-        eval_frequency=1,
-        eval_rng=jax.random.PRNGKey(18)
+        eval_frequency=100,
+        eval_rng=jax.random.PRNGKey(18),
+        # checkpoint_dir='/mnt/c/Users/Repositories/jax-agents/benchmarks/cartpole v1/checkpoints/ppo'
+        checkpoint_dir='C:\\Users\\Repositories\\jax-agents\\benchmarks\\cartpole v1\\checkpoints\\ppo'
     )
 
     """Set up agent"""

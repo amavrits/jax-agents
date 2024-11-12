@@ -18,12 +18,17 @@ from jaxagents.agent_utils.ppo_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from flax.training.train_state import TrainState
+from flax.serialization import to_state_dict
+from flax.training import orbax_utils
+import orbax
 from abc import abstractmethod
 from functools import partial
 from abc import ABC
 from typing import Tuple, Dict, NamedTuple, Type, Union, Optional, ClassVar
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 import warnings
+import os
+import shutil
 
 warnings.filterwarnings("ignore")
 
@@ -61,6 +66,7 @@ class PPOAgentBase(ABC):
 
         self.config = config
         self.eval_during_training = self.config.eval_rng is not None
+        self._set_checkpointer()
         self._init_env(env, env_params)
 
     def __str__(self) -> str:
@@ -87,6 +93,46 @@ class PPOAgentBase(ABC):
         self.env = LogWrapper(env)
         self.env_params = env_params
         self.n_actions = self.env.action_space(self.env_params).n
+
+    def _set_checkpointer(self) -> None:
+        """
+        Sets whether checkpointing should be performed, decided by whether a checkpoint directory has been provided. If
+        so, sets the checkpoint manager using orbax.
+        :return:
+        """
+
+        self.checkpointing = self.config.checkpoint_dir is not None
+
+        if self.checkpointing:
+
+            dir_exists = os.path.exists(self.config.checkpoint_dir)
+            if not dir_exists:
+                os.mkdir(self.config.checkpoint_dir)
+
+            dir_files = [
+                file for file in os.listdir(self.config.checkpoint_dir)
+                if os.path.isdir(os.path.join(self.config.checkpoint_dir, file))
+            ]
+            if len(dir_files) > 0:
+                for file in dir_files:
+                    file_path = os.path.join(self.config.checkpoint_dir, file)
+                    shutil.rmtree(file_path)
+
+            orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
+            options = orbax.checkpoint.CheckpointManagerOptions(create=True)
+            self.checkpoint_manager = orbax.checkpoint.CheckpointManager(
+                self.config.checkpoint_dir,
+                orbax_checkpointer,
+                options
+            )
+
+            # Log training configuration
+            with open(os.path.join(self.config.checkpoint_dir, 'training_configuration.txt'), "w") as f:
+                f.write(self.__str__())
+
+        else:
+
+            self.checkpoint_manager = None
 
     def _init_optimizer(self, optimizer_params: OptimizerParams) -> optax.chain:
         """
@@ -658,61 +704,70 @@ class PPOAgentBase(ABC):
         return update_runner
 
     @partial(jax.jit, static_argnums=(0,))
-    def _training_step(self, update_runner: Runner, i_training_step: int) -> Tuple[Runner, dict]:
+    def _checkpoint(self, update_runner: Runner, metrics: dict, i_training_step: Union[int, Int[Array, "1"]]) -> None:
+        """
+        Wraps the base checkpointing method in a Python callback.
+        :param update_runner: The runner object, containing information about the current status of the actor's/
+        critic's training, the state of the environment and training hyperparameters.
+        :param metrics: Dictionary of evaluation metrics (return per environment evaluation)
+        :param i_training_step: Training step
+        :return:
+        """
+
+        jax.experimental.io_callback(self._checkpoint_base, None, update_runner, metrics, i_training_step)
+
+    def _checkpoint_base(self, update_runner: Runner, metrics: dict, i_training_step: Union[int, Int[Array, "1"]])\
+            -> None:
+        """
+        Implements checkpointing, to be wrapped in a Python callback. Checkpoints the following:
+        - Training step number
+        - Average return over evaluation episodes
+        - Standard deviation of the returns over evaluation episodes
+        - Min/max of the returns over evaluation episodes
+        - Returns of the evaluation episodes
+        - The parameters of the actor network
+        - The parameters of the critic network
+        :param update_runner: The runner object, containing information about the current status of the actor's/
+        critic's training, the state of the environment and training hyperparameters.
+        :param metrics: Dictionary of evaluation metrics (return per episode evaluation)
+        :param i_training_step: Training step
+        :return:
+        """
+
+        if self.checkpointing:
+
+            ckpt = {
+                'training_step': i_training_step,
+                'average_return': metrics['episode_returns'].mean(),
+                'std_return': metrics['episode_returns'].std(),
+                'min_max_return': [metrics['episode_returns'].min(), metrics['episode_returns'].max()],
+                'episode_returns': metrics['episode_returns'],
+                'actor_training': update_runner.actor_training,
+                'critic_training': update_runner.critic_training
+            }
+            save_args = orbax_utils.save_args_from_target(ckpt)
+            self.checkpoint_manager.save(i_training_step, ckpt, save_kwargs={'save_args': save_args})
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _training_step(self, update_runner: Runner, i_training_batch: int) -> Tuple[Runner, dict]:
         """
         Performs trainings steps to update the agent per training batch.
         :param update_runner: The runner object, containing information about the current status of the actor's/
         critic's training, the state of the environment and training hyperparameters.
-        :param i_training_step: Training batch loop counter.
+        :param i_training_batch: Training batch loop counter.
         :return: Tuple with updated runner and dictionary of metrics.
         """
 
-        n_training_steps = self.config.n_steps - self.config.n_steps // self.config.eval_frequency * i_training_step
+        n_training_steps = self.config.n_steps - self.config.n_steps // self.config.eval_frequency * i_training_batch
         n_training_steps = jnp.clip(n_training_steps, 1, self.config.eval_frequency)
 
         update_runner = lax.fori_loop(0, n_training_steps, self._update_step, update_runner)
 
-        metrics = self._generate_metrics(runner=update_runner, update_step=i_training_step)
+        metrics = self._generate_metrics(runner=update_runner, update_step=i_training_batch)
 
-        #     # from flax.serialization import to_state_dict
-        #     # from flax.training import orbax_utils
-        #     # import orbax
-        #     #
-        #     # def save_array(array, i):
-        #     #     A = to_state_dict(array)
-        #     #     # i = jax.experimental.io_callback(ff, None, i_update_step)
-        #     #
-        #     #     orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-        #     #     save_args = orbax_utils.save_args_from_target(A)
-        #     #     options = orbax.checkpoint.CheckpointManagerOptions(max_to_keep=10, create=True)
-        #     #     checkpoint_manager = orbax.checkpoint.CheckpointManager(
-        #     #         # 'C:\\Users\\Repositories\\jax-agents\\benchmarks\\cartpole v1\\log', orbax_checkpointer, options)
-        #     #         '/mnt/c/Users/Repositories/jax-agents/benchmarks/cartpole v1/log', orbax_checkpointer, options)
-        #     #     checkpoint_manager.save(i, A, save_kwargs={'save_args': save_args})
-        #     #     print('saved dict')
-        #     #
-        #     #
-        #     # @jax.jit
-        #     # def f(x, i):
-        #     #     jax.experimental.io_callback(save_array, None, x, i)
-        #     #     return None
-        #     #
-        #     # params = actor_training.params
-        #     # x = params
-        #     # A = f(x, i_update_step)
-
-        # mean_returns = metrics["episode_returns"].mean()
-        #
-        # if jnp.greater(mean_returns, runner.best_performance):
-        #     best_actor = runner.actor_training
-        # else:
-        #     best_actor = runner.best_actor_training
-        #
-        # runner = runner.replace(
-        #     best_actor=best_actor,
-        #     best_critic=best_critic,
-        #     best_performance=max(runner.best_performance, mean_returns)
-        # )
+        i_training_step = self.config.eval_frequency * i_training_batch
+        i_training_step = jnp.minimum(i_training_step, self.config.n_steps)
+        self._checkpoint(update_runner, metrics, i_training_step)
 
         return update_runner, metrics
 
@@ -723,7 +778,7 @@ class PPOAgentBase(ABC):
         :param rng: Random key for initialization. This is the original key for training.
         :param hyperparams: An instance of HyperParameters for training.
         :return: The final state of the step runner after training and the training metrics accumulated over all
-                 training steps.
+                 training batches and steps.
         """
 
         rng, *_rng = jax.random.split(rng, 4)
@@ -740,13 +795,20 @@ class PPOAgentBase(ABC):
 
         n_training_batches = self.config.n_steps // self.config.eval_frequency
 
-        progressbar_desc = f'Training batch (x {self.config.eval_frequency} training steps)'
+        progressbar_desc = f'Training batch (training steps = batch x {self.config.eval_frequency})'
 
         runner, metrics = lax.scan(
             scan_tqdm(n_training_batches, desc=progressbar_desc)(self._training_step),
             update_runner,
             jnp.arange(n_training_batches),
             n_training_batches
+        )
+
+        # Checkpoint final state
+        self._checkpoint(
+            update_runner,
+            {'episode_returns': jnp.take(metrics['episode_returns'], -1, axis=0)},
+            self.config.n_steps
         )
 
         return runner, metrics
