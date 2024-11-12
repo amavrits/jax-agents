@@ -46,6 +46,7 @@ if __name__ == '__main__':
         actor_optimizer_params=ppo.OptimizerParams(learning_rate=3e-4, eps=1e-3, grad_clip=1),
         critic_optimizer_params=ppo.OptimizerParams(learning_rate=1e-3, eps=1e-3, grad_clip=1)
     )
+    agent.log_hyperparams(hyperparams)
 
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)

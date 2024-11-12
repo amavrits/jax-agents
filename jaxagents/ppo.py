@@ -161,8 +161,10 @@ class PPOAgentBase(ABC):
             arg_name for arg_name in optimizer_arg_names if arg_name in list(optimizer_params_dict.keys())
         ]
         if len(optimizer_arg_names) == 0:
-            raise Exception("The defined optimizer parameters do not include relevant arguments for this optimizer."
-                            "The optimizer has not been implemented yet. Define your own OptimizerParams object.")
+            raise Exception(
+                "The defined optimizer parameters do not include relevant arguments for this optimizer."
+                "The optimizer has not been implemented yet. Define your own OptimizerParams object."
+            )
 
         # Keep only the optimizer params that are arg names for the specific optimizer
         optimizer_params_dict = {arg_name: optimizer_params_dict[arg_name] for arg_name in optimizer_arg_names}
@@ -176,7 +178,7 @@ class PPOAgentBase(ABC):
         return tx
 
     def _init_network(self, rng: PRNGKeyArray, network: Type[flax.linen.Module])\
-            -> Tuple[Type[flax.linen.Module], Union[Dict, FrozenDict]]:
+            -> Tuple[Type[flax.linen.Module], FrozenDict]:
         """
         Initialization of the actor or critic network.
         :param rng: Random key for initialization.
@@ -737,13 +739,13 @@ class PPOAgentBase(ABC):
         if self.checkpointing:
 
             ckpt = {
-                'training_step': i_training_step,
-                'average_return': metrics['episode_returns'].mean(),
-                'std_return': metrics['episode_returns'].std(),
-                'min_max_return': [metrics['episode_returns'].min(), metrics['episode_returns'].max()],
-                'episode_returns': metrics['episode_returns'],
-                'actor_training': update_runner.actor_training,
-                'critic_training': update_runner.critic_training
+                "training_step": i_training_step,
+                "average_return": metrics["episode_returns"].mean(),
+                "std_return": metrics["episode_returns"].std(),
+                "min_max_return": [metrics["episode_returns"].min(), metrics["episode_returns"].max()],
+                "episode_returns": metrics["episode_returns"],
+                "actor_training": update_runner.actor_training,
+                "critic_training": update_runner.critic_training
             }
             save_args = orbax_utils.save_args_from_target(ckpt)
             self.checkpoint_manager.save(i_training_step, ckpt, save_kwargs={'save_args': save_args})
@@ -807,7 +809,7 @@ class PPOAgentBase(ABC):
         # Checkpoint final state
         self._checkpoint(
             update_runner,
-            {'episode_returns': jnp.take(metrics['episode_returns'], -1, axis=0)},
+            {"episode_returns": jnp.take(metrics["episode_returns"], -1, axis=0)},
             self.config.n_steps
         )
 
@@ -994,6 +996,21 @@ class PPOAgentBase(ABC):
         return eval_metrics
 
     """ METHODS FOR POST-PROCESSING """
+
+    def log_hyperparams(self, hyperparams: HyperParameters) -> None:
+        """
+        Logs training hyperparameters in a text file. To be used outside training.
+        :param hyperparams: An instance of HyperParameters for training.
+        :return:
+        """
+
+        output_lst = [field + ': ' + str(getattr(hyperparams, field)) for field in hyperparams._fields]
+        output_lst = ['Hyperparameters:'] + output_lst
+        output_lst = '\n'.join(output_lst)
+
+        if self.checkpointing:
+            with open(os.path.join(self.config.checkpoint_dir, 'hyperparameters.txt'), "w") as f:
+                f.write(output_lst)
 
     def collect_training(self, runner: Optional[Runner] = None, metrics: Optional[Dict] = None) -> None:
         """

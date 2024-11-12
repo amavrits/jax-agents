@@ -27,7 +27,10 @@ if __name__ == '__main__':
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
-        eval_rng=jax.random.PRNGKey(18)
+        eval_frequency=100,
+        eval_rng=jax.random.PRNGKey(18),
+        # checkpoint_dir='/mnt/c/Users/Repositories/jax-agents/benchmarks/cartpole v1/checkpoints/ppo'
+        checkpoint_dir='C:\\Users\\Repositories\\jax-agents\\benchmarks\\cartpole v1\\checkpoints\\ppo'
     )
 
     """Set up agent"""
@@ -53,6 +56,7 @@ if __name__ == '__main__':
             grad_clip=jnp.ones(4)
         )
     )
+    agent.log_hyperparams(hyperparams)
 
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
@@ -64,7 +68,7 @@ if __name__ == '__main__':
     print(f"time: {time.time() - t0:.2f} s")
 
     """ Post-process results"""
-    training_rewards = jax.vmap(agent.summarize)(training_metrics["episode_rewards"])
+    training_rewards = jax.vmap(agent.summarize)(training_metrics["episode_returns"])
 
     @partial(jax.jit, static_argnums=(0,))
     def vmap_eval(agent, runner, rng_eval):
