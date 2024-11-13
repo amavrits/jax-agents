@@ -66,7 +66,7 @@ class PPOAgentBase(ABC):
 
         self.config = config
         self.eval_during_training = self.config.eval_rng is not None
-        self._set_checkpointer()
+        self._init_checkpointer()
         self._init_env(env, env_params)
 
     def __str__(self) -> str:
@@ -94,7 +94,7 @@ class PPOAgentBase(ABC):
         self.env_params = env_params
         self.n_actions = self.env.action_space(self.env_params).n
 
-    def _set_checkpointer(self) -> None:
+    def _init_checkpointer(self) -> None:
         """
         Sets whether checkpointing should be performed, decided by whether a checkpoint directory has been provided. If
         so, sets the checkpoint manager using orbax.
@@ -118,8 +118,8 @@ class PPOAgentBase(ABC):
                     file_path = os.path.join(self.config.checkpoint_dir, file)
                     shutil.rmtree(file_path)
 
-            orbax_checkpointer = orbax.checkpoint.PyTreeCheckpointer()
-            options = orbax.checkpoint.CheckpointManagerOptions(create=True)
+            orbax_checkpointer = orbax.checkpoint.Checkpointer(orbax.checkpoint.PyTreeCheckpointHandler())
+            options = orbax.checkpoint.CheckpointManagerOptions(create=True, step_prefix='training step')
             self.checkpoint_manager = orbax.checkpoint.CheckpointManager(
                 self.config.checkpoint_dir,
                 orbax_checkpointer,

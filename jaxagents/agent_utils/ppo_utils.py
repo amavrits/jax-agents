@@ -158,7 +158,7 @@ class AgentConfig(NamedTuple):
     """PRNG key for evaluation of agent performance during training (if 'None' evaluation isn't performed)"""
     eval_rng: Optional[PRNGKeyArray] = None
 
-    """Path for checkpointing"""
+    """Absolute path for checkpointing"""
     checkpoint_dir: Optional[Union[str, os.PathLike]] = None
 
 
