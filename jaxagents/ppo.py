@@ -8,7 +8,6 @@ Author: Antonis Mavritsakis
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import lax
 from jax_tqdm import scan_tqdm
 import distrax
@@ -18,7 +17,6 @@ from jaxagents.agent_utils.ppo_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from flax.training.train_state import TrainState
-from flax.serialization import to_state_dict
 from flax.training import orbax_utils
 import orbax
 from abc import abstractmethod
@@ -54,6 +52,8 @@ class PPOAgentBase(ABC):
 
     agent_trained: ClassVar[bool] = False  # Whether the agent has been trained.
     training_runner: ClassVar[Optional[Runner]] = None  # Runner object after training.
+    actor_training: ClassVar[Optional[TrainState]] = None  # Actor training object.
+    critic_training: ClassVar[Optional[TrainState]] = None  # Critic training object.
     training_metrics: ClassVar[Optional[Dict]] = None  # Metrics collected during training.
     eval_during_training: ClassVar[bool] = False  # Whether the agent's performance is evaluated during training
 
@@ -105,18 +105,24 @@ class PPOAgentBase(ABC):
 
         if self.checkpointing:
 
-            dir_exists = os.path.exists(self.config.checkpoint_dir)
-            if not dir_exists:
-                os.mkdir(self.config.checkpoint_dir)
+            if not self.config.restore_agent:
 
-            dir_files = [
-                file for file in os.listdir(self.config.checkpoint_dir)
-                if os.path.isdir(os.path.join(self.config.checkpoint_dir, file))
-            ]
-            if len(dir_files) > 0:
-                for file in dir_files:
-                    file_path = os.path.join(self.config.checkpoint_dir, file)
-                    shutil.rmtree(file_path)
+                dir_exists = os.path.exists(self.config.checkpoint_dir)
+                if not dir_exists:
+                    os.mkdir(self.config.checkpoint_dir)
+
+                dir_files = [
+                    file for file in os.listdir(self.config.checkpoint_dir)
+                    if os.path.isdir(os.path.join(self.config.checkpoint_dir, file))
+                ]
+                if len(dir_files) > 0:
+                    for file in dir_files:
+                        file_path = os.path.join(self.config.checkpoint_dir, file)
+                        shutil.rmtree(file_path)
+
+                # Log training configuration
+                with open(os.path.join(self.config.checkpoint_dir, 'training_configuration.txt'), "w") as f:
+                    f.write(self.__str__())
 
             orbax_checkpointer = orbax.checkpoint.Checkpointer(orbax.checkpoint.PyTreeCheckpointHandler())
             options = orbax.checkpoint.CheckpointManagerOptions(create=True, step_prefix='training step')
@@ -126,20 +132,69 @@ class PPOAgentBase(ABC):
                 options
             )
 
-            # Log training configuration
-            with open(os.path.join(self.config.checkpoint_dir, 'training_configuration.txt'), "w") as f:
-                f.write(self.__str__())
-
         else:
 
             self.checkpoint_manager = None
+
+    def restore(self, mode: str = "best"):
+
+        steps = sorted([
+            int(file.split('_')[-1]) for file in os.listdir(self.config.checkpoint_dir)
+            if os.path.isdir(os.path.join(self.config.checkpoint_dir, file))
+        ])
+
+        performances = [None] * len(steps)
+        metrics_lst = [None] * len(steps)
+        for i, step in enumerate(steps):
+            ckpt = self.checkpoint_manager.restore(step)
+            performances[i] = ckpt["average_return"].item()
+            metrics_lst[i] = ckpt["episode_returns"][jnp.newaxis, :]
+
+        metrics_array = jnp.concatenate(metrics_lst, axis=0)
+        metrics = {"episode_returns": metrics_array}
+
+        if mode == "best":
+            # In case of multiple max performances, get the last one.
+            idx = len(steps) - jnp.argmax(jnp.asarray(performances)) - 1
+        elif mode == "last":
+            idx = len(steps) - 1
+        else:
+            raise Exception("Unknown method for selecting a checkpoint.")
+
+        step = steps[idx]
+        ckpt = self.checkpoint_manager.restore(step)
+        runner_dict = ckpt["runner"]
+        
+        actor_network = self.config.actor_network(self.n_actions, self.config)
+        actor_training = TrainState.create(
+            apply_fn=actor_network.apply,
+            tx=optax.adam(learning_rate=1),
+            params=runner_dict["actor_training"]["params"],
+        )
+
+        critic_network = self.config.critic_network(self.n_actions, self.config)
+        critic_training = TrainState.create(
+            apply_fn=critic_network.apply,
+            tx=optax.adam(learning_rate=1),
+            params=runner_dict["critic_training"]["params"],
+        )
+        
+        best_runner = Runner(
+            actor_training=actor_training,
+            critic_training=critic_training,
+            env_state=runner_dict["env_state"],
+            state=runner_dict["state"],
+            rng=runner_dict["rng"],
+            hyperparams=runner_dict["hyperparams"]
+        )
+
+        self.collect_training(best_runner, metrics)
 
     def _init_optimizer(self, optimizer_params: OptimizerParams) -> optax.chain:
         """
         Optimizer initialization. This method uses the optax optimizer function given in the agent configuration to
         initialize the appropriate optimizer. In this way, the optimizer can be initialized within the "train" method,
-        and thus several combinations of its parameters can be ran with jax.vmap.
-        Jitting is neither possible nor necessary, since the method returns an optax.chain class, not numerical output.
+        and thus several combinations of its parameters can be ran with jax.vmap. Jit is neither possible nor necessary.
         :param optimizer_params: A NamedTuple containing the parametrization of the optimizer.
         :return: An optimizer in optax.chain.
         """
@@ -328,10 +383,7 @@ class PPOAgentBase(ABC):
             env_state=env_state,
             state=state,
             rng=runner_rngs,
-            hyperparams=hyperparams,
-            best_actor_training={},
-            best_critic_training={},
-            best_performance=-jnp.inf
+            hyperparams=hyperparams
         )
 
         return update_runner
@@ -727,8 +779,7 @@ class PPOAgentBase(ABC):
         - Standard deviation of the returns over evaluation episodes
         - Min/max of the returns over evaluation episodes
         - Returns of the evaluation episodes
-        - The parameters of the actor network
-        - The parameters of the critic network
+        - The training runner object.
         :param update_runner: The runner object, containing information about the current status of the actor's/
         critic's training, the state of the environment and training hyperparameters.
         :param metrics: Dictionary of evaluation metrics (return per episode evaluation)
@@ -744,8 +795,7 @@ class PPOAgentBase(ABC):
                 "std_return": metrics["episode_returns"].std(),
                 "min_max_return": [metrics["episode_returns"].min(), metrics["episode_returns"].max()],
                 "episode_returns": metrics["episode_returns"],
-                "actor_training": update_runner.actor_training,
-                "critic_training": update_runner.critic_training
+                "runner": update_runner
             }
             save_args = orbax_utils.save_args_from_target(ckpt)
             self.checkpoint_manager.save(i_training_step, ckpt, save_kwargs={'save_args': save_args})

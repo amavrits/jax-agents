@@ -34,12 +34,14 @@ if __name__ == '__main__':
         eval_frequency=100,
         eval_rng=jax.random.PRNGKey(18),
         checkpoint_dir=checkpoint_dir,
-        restore_agent=False
+        restore_agent=True
     )
 
     """Set up agent"""
     agent = ppo.PPOAgent(env, env_params, config)
     print(agent.__str__())
+
+    agent.restore()
 
     """Define optimizer parameters and training hyperparameters"""
     hyperparams = ppo.HyperParameters(
@@ -52,29 +54,12 @@ if __name__ == '__main__':
         actor_optimizer_params=ppo.OptimizerParams(learning_rate=3e-4, eps=1e-3, grad_clip=1),
         critic_optimizer_params=ppo.OptimizerParams(learning_rate=1e-3, eps=1e-3, grad_clip=1)
     )
-    agent.log_hyperparams(hyperparams)
 
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
 
-    """Train agent"""
-    t0 = time.time()
-    runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
-    print(f"time: {time.time() - t0:.2f} s")
-
-    """ Post-process results"""
-    training_returns = agent.summarize(training_metrics["episode_returns"])
-    agent.collect_training(runner, training_metrics)
-
     """Evaluate agent performance"""
     eval_metrics = agent.eval(rng_eval, n_evals=16)
-    eval_returns = agent.summarize(eval_metrics)
-    print(eval_returns.episode_metric.min(), eval_returns.episode_metric.max())
+    eval_rewards = agent.summarize(eval_metrics)
+    print(eval_rewards.episode_metric.min(), eval_rewards.episode_metric.max())
 
-    fig = plt.figure()
-    plt.fill_between(agent.eval_steps_in_training, training_returns.min, training_returns.max, color='b',
-                     alpha=0.4)
-    plt.xlabel("Episode", fontsize=14)
-    plt.ylabel("Training reward [-]", fontsize=14)
-    plt.close()
-    fig.savefig(os.path.join(os.getcwd(), r'figures/PPO Clip training.png'))

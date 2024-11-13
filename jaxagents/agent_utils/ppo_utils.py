@@ -94,6 +94,7 @@ class Runner:
     The runner is directed to have batch_size environment (states) and PRNG's but only a single TrainState per the actor
     and critic.
     """
+
     """Training status (params, training step and optimizer) of the actor"""
     actor_training: TrainState
 
@@ -111,15 +112,6 @@ class Runner:
 
     """Training hyperparameters"""
     hyperparams: HyperParameters
-
-    """Best actor collected during training so far, according to the performance evaluation."""
-    best_actor_training: dict
-
-    """Best critic collected during training so far, according to the performance evaluation."""
-    best_critic_training: dict
-
-    """Best performance collected during training so far, calculated as the mean return across batches in evaluation."""
-    best_performance: Float[Array, "1"] = -jnp.inf
 
 
 class AgentConfig(NamedTuple):
@@ -160,6 +152,9 @@ class AgentConfig(NamedTuple):
 
     """Absolute path for checkpointing"""
     checkpoint_dir: Optional[Union[str, os.PathLike]] = None
+
+    """Whether an agent should be restored from training checkpoints, for continuing training or deploying."""
+    restore_agent: bool = False
 
 
 @dataclass
