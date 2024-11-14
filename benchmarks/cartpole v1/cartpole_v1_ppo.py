@@ -28,6 +28,7 @@ if __name__ == '__main__':
         rollout_length=50,
         n_steps=1_000,
         batch_size=16,
+        minibatch_size=4,
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
