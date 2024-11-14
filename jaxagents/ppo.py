@@ -162,7 +162,8 @@ class PPOAgentBase(ABC):
 
     def restore(self, mode: str = "best"):
         """
-        Restores a checkpoint (best or latest) and collects the history of metrics as assessed during training.
+        Restores a checkpoint (best or latest) and collects the history of metrics as assessed during training. Then,
+        post-processes the restored checkpoint.
         :param mode: Determines whether the best performing or latest checkpoint should be restored.
         :return:
         """
