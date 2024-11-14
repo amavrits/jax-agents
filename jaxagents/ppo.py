@@ -856,6 +856,60 @@ class PPOAgentBase(ABC):
         i_training_step = jnp.minimum(i_training_step, self.config.n_steps)
         self._checkpoint(update_runner, metrics, i_training_step)
 
+        import json
+
+        # def log(runner):
+        #     params = runner.actor_training.params
+        #     # with open(r'log/data.json', 'w') as f:
+        #     #     json.dump(params, f)
+        #     pass
+        #
+        # from flax.serialization import to_state_dict
+        #
+        # A = to_state_dict(update_runner.actor_training)
+        #
+        # jax.debug.callback(log, update_runner)
+
+        def convert(d):
+            """Convert any jax devicearray leaves to numpy arrays in place."""
+            if isinstance(d, dict):
+                for k, v in d.items():
+                    if isinstance(v, jax.Array):
+                        result_shape = jax.core.ShapedArray(v.shape, v.dtype)
+                        jax.pure_callback(np.asarray, result_shape, v)
+                        # d[k] = jax.pure_callback(v.tolist())
+                    elif isinstance(v, dict):
+                        convert(v)
+            elif isinstance(d, jax.Array):
+                return np.array(d)
+            return d
+
+        params = update_runner.actor_training.params
+        # A = jax.experimental.io_callback(convert(params))
+        A = convert(params)
+
+
+        x = params['params']['Dense_0']['bias']
+        result_shape = jax.core.ShapedArray(x.shape, x.dtype)
+        A  = jax.pure_callback(np.asarray, result_shape, x)
+
+        def save_array(array):
+            np.save(r'C:\Users\Repositories\jax-agents\benchmarks\cartpole v1\logarray.npy', array)
+            print('saved array')
+            return jax.numpy.sin(x)
+
+        x = [0, 1, 2]
+        def dummy(x):
+            with open(r'log/data.json', 'w') as f:
+                    json.dump(x, f)
+
+        jax.experimental.io_callback(dummy, None, x)
+        jax.pure_callback(dummy, None, x)
+
+
+        with open(r'log/data.json', 'w') as f:
+            json.dump(A, f)
+
         return update_runner, metrics
 
     @partial(jax.jit, static_argnums=(0,))
