@@ -26,7 +26,7 @@ if __name__ == '__main__':
         actor_network=PGActorNN,
         critic_network=PGCriticNN,
         rollout_length=50,
-        n_steps=20,
+        n_steps=30,
         batch_size=16,
         minibatch_size=4,
         actor_epochs=10,
@@ -67,7 +67,7 @@ if __name__ == '__main__':
         actor_network=PGActorNN,
         critic_network=PGCriticNN,
         rollout_length=50,
-        n_steps=80,
+        n_steps=70,
         batch_size=16,
         minibatch_size=4,
         actor_epochs=10,
@@ -83,8 +83,8 @@ if __name__ == '__main__':
     agent.restore(mode='last')
 
     """Continue training agent"""
-    # Use the same training rng, it is trivial when training with a restored agent.
     t0 = time.time()
+    # Use the same training rng, it is trivial when training with a restored agent.
     runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     print(f"time: {time.time() - t0:.2f} s")
 

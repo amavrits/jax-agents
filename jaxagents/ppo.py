@@ -580,9 +580,9 @@ class PPOAgentBase(ABC):
         return advantages
 
     @partial(jax.jit, static_argnums=(0,))
-    def _make_step_runners(self, update_runner: Runner) -> tuple:
+    def _make_rollout_runners(self, update_runner: Runner) -> tuple:
         """
-        Creates a step_runners tuple to be used in rollout by combining the batched environments in the update_runner
+        Creates a rollout_runners tuple to be used in rollout by combining the batched environments in the update_runner
         object and broadcasting the TrainState object for the critic and the network in the update_runner object to the
         same dimension.
         :param update_runner: The Runner object, containing information about the current status of the actor's/
@@ -590,15 +590,15 @@ class PPOAgentBase(ABC):
         :return: Tuple with step runners to be used in rollout.
         """
 
-        step_runner = (
+        rollout_runner = (
             update_runner.env_state,
             update_runner.state,
             update_runner.actor_training,
             update_runner.critic_training,
             update_runner.rng
         )
-        step_runners = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))(*step_runner)
-        return step_runners
+        rollout_runners = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))(*rollout_runner)
+        return rollout_runners
 
     @partial(jax.jit, static_argnums=(0,))
     def _rollout(self, step_runner: STEP_RUNNER_TYPE, i_step: int) -> Tuple[STEP_RUNNER_TYPE, Transition]:
@@ -815,10 +815,10 @@ class PPOAgentBase(ABC):
         :return: The updated runner
         """
 
-        step_runners = self._make_step_runners(update_runner)
+        rollout_runners = self._make_rollout_runners(update_runner)
         scan_rollout_fn = lambda x: lax.scan(self._rollout, x, None, self.config.rollout_length)
-        step_runners, traj_batch = jax.vmap(scan_rollout_fn)(step_runners)
-        last_env_state, last_state, _, _, rng = step_runners
+        rollout_runners, traj_batch = jax.vmap(scan_rollout_fn)(rollout_runners)
+        last_env_state, last_state, _, _, rng = rollout_runners
         traj_batch = self._process_trajectory(update_runner, traj_batch, last_state)
 
         actor_training = self._actor_update(update_runner, traj_batch)
@@ -937,10 +937,6 @@ class PPOAgentBase(ABC):
             update_runner = self.training_runner
             update_runner = update_runner.replace(hyperparams=hyperparams)  # Use newly provided hyperparameters.
 
-        n_training_batches = self.config.n_steps // self.config.eval_frequency
-
-        progressbar_desc = f'Training batch (training steps = batch x {self.config.eval_frequency})'
-
         # Checkpoint initial state
         metrics_start = self._generate_metrics(runner=update_runner, update_step=0)
         self._checkpoint(update_runner, metrics_start, self.previous_training_max_step)
@@ -953,6 +949,10 @@ class PPOAgentBase(ABC):
         self._critic_minibatch_fn = lambda x, y: self._critic_minibatch_update(x, y, critic_grad_fn)
 
         # Train, evaluate, checkpoint
+
+        n_training_batches = self.config.n_steps // self.config.eval_frequency
+        progressbar_desc = f'Training batch (training steps = batch x {self.config.eval_frequency})'
+
         runner, metrics = lax.scan(
             scan_tqdm(n_training_batches, desc=progressbar_desc)(self._training_step),
             update_runner,
