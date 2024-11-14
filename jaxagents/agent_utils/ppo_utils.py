@@ -123,10 +123,13 @@ class AgentConfig(NamedTuple):
     """
     n_steps: int
 
-    """Size of batch collected from buffer for updating the policy network"""
+    """Size of batch collected from buffer for updating the agent's networks"""
     batch_size: int
 
-    """Number of steps to be collected when sampling trajectories (must be large enough to sample entire batch)"""
+    """Size of the minibatch batch to be used in updating the agent's networks."""
+    minibatch_size: int
+
+    """Number of steps to be collected when sampling trajectories"""
     rollout_length: int
 
     """Architecture of the actor network"""

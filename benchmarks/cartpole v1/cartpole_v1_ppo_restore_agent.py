@@ -26,12 +26,13 @@ if __name__ == '__main__':
         actor_network=PGActorNN,
         critic_network=PGCriticNN,
         rollout_length=50,
-        n_steps=1_000,
+        n_steps=30,
         batch_size=16,
+        minibatch_size=4,
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
-        eval_frequency=100,
+        eval_frequency=1,
         eval_rng=jax.random.PRNGKey(18),
         checkpoint_dir=checkpoint_dir,
         restore_agent=False
@@ -58,7 +59,7 @@ if __name__ == '__main__':
 
     """Train agent"""
     t0 = time.time()
-    _, _ = jax.block_until_ready(agent.train(rng_train, hyperparams))
+    runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     print(f"time: {time.time() - t0:.2f} s")
 
     """Restore agent"""
@@ -66,23 +67,24 @@ if __name__ == '__main__':
         actor_network=PGActorNN,
         critic_network=PGCriticNN,
         rollout_length=50,
-        n_steps=1_000,
+        n_steps=70,
         batch_size=16,
+        minibatch_size=4,
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
-        eval_frequency=100,
+        eval_frequency=1,
         eval_rng=jax.random.PRNGKey(18),
         checkpoint_dir=checkpoint_dir,
         restore_agent=True
     )
 
     agent = ppo.PPOAgent(env, env_params, config_restore)
-    agent.restore()
+    agent.restore(mode='last')
 
     """Continue training agent"""
-    # Use the same training rng, it is trivial when training with a restored agent.
     t0 = time.time()
+    # Use the same training rng, it is trivial when training with a restored agent.
     runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     print(f"time: {time.time() - t0:.2f} s")
 

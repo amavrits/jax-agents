@@ -8,6 +8,7 @@ Author: Antonis Mavritsakis
 
 import jax
 import jax.numpy as jnp
+from flax.nnx.nnx.transforms.transforms import grad_fn
 from jax import lax
 from jax_tqdm import scan_tqdm
 import distrax
@@ -50,6 +51,10 @@ class PPOAgentBase(ABC):
     suggested practice is valid. Otherwise, strategy 3 should have been used.
     """
 
+    # Function for performing a minibatch update of the actor network.
+    _actor_minibatch_fn: ClassVar[Callable[[Tuple[TrainState, tuple, float]], Tuple[TrainState, tuple, float]]]
+    # Function for performing a minibatch update of the critic network.
+    _critic_minibatch_fn: ClassVar[Callable[[Tuple[TrainState, tuple]], Tuple[TrainState, tuple]]]
     agent_trained: ClassVar[bool] = False  # Whether the agent has been trained.
     training_runner: ClassVar[Optional[Runner]] = None  # Runner object after training.
     actor_training: ClassVar[Optional[TrainState]] = None  # Actor training object.
@@ -58,7 +63,7 @@ class PPOAgentBase(ABC):
     eval_during_training: ClassVar[bool] = False  # Whether the agent's performance is evaluated during training
     # The maximum step reached in precious training. Zero by default for starting a new training. Will be set by
     # restoring or passing a trained agent (from serial training or restoring)
-    step_previous_training: ClassVar[int] = 0
+    previous_training_max_step: ClassVar[int] = 0
 
     def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfig) -> None:
         """
@@ -132,7 +137,6 @@ class PPOAgentBase(ABC):
             options = orbax.checkpoint.CheckpointManagerOptions(
                 create=True,
                 best_fn=jnp.max,  # The checkpoint with the maximum metric is selected.
-                step_format_fixed_length=len(str(self.config.n_steps)),
                 step_prefix='training step',
             )
 
@@ -205,7 +209,7 @@ class PPOAgentBase(ABC):
             critic_training=empty_critic_training,
             env_state=env_state,
             state=state,
-            rng=jax.random.PRNGKey(1),  # Just a dummy PRNGKey for initializing the networks parameters.
+            rng=jax.random.split(jax.random.PRNGKey(1), self.config.batch_size),  # Just a dummy PRNGKey for initializing the networks parameters.
             # Hyperparams can be loaded as a dict. If training continues, new hyperparams will be provided.
             hyperparams=ckpt["runner"]["hyperparams"]
         )
@@ -217,7 +221,7 @@ class PPOAgentBase(ABC):
 
         ckpt = self.checkpoint_manager.restore(step, items=target_ckpt)
 
-        self.collect_training(ckpt["runner"], metrics, step_previous_training=max(steps))
+        self.collect_training(ckpt["runner"], metrics, previous_training_max_step=max(steps))
 
     def _init_optimizer(self, optimizer_params: OptimizerParams) -> optax.chain:
         """
@@ -576,9 +580,9 @@ class PPOAgentBase(ABC):
         return advantages
 
     @partial(jax.jit, static_argnums=(0,))
-    def _make_step_runners(self, update_runner: Runner) -> tuple:
+    def _make_rollout_runners(self, update_runner: Runner) -> tuple:
         """
-        Creates a step_runners tuple to be used in rollout by combining the batched environments in the update_runner
+        Creates a rollout_runners tuple to be used in rollout by combining the batched environments in the update_runner
         object and broadcasting the TrainState object for the critic and the network in the update_runner object to the
         same dimension.
         :param update_runner: The Runner object, containing information about the current status of the actor's/
@@ -586,15 +590,15 @@ class PPOAgentBase(ABC):
         :return: Tuple with step runners to be used in rollout.
         """
 
-        step_runner = (
+        rollout_runner = (
             update_runner.env_state,
             update_runner.state,
             update_runner.actor_training,
             update_runner.critic_training,
             update_runner.rng
         )
-        step_runners = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))(*step_runner)
-        return step_runners
+        rollout_runners = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))(*rollout_runner)
+        return rollout_runners
 
     @partial(jax.jit, static_argnums=(0,))
     def _rollout(self, step_runner: STEP_RUNNER_TYPE, i_step: int) -> Tuple[STEP_RUNNER_TYPE, Transition]:
@@ -648,8 +652,49 @@ class PPOAgentBase(ABC):
 
         return traj_batch
 
+    @staticmethod
+    def _actor_minibatch_update(i_minibatch: int, minibatch_runner: Tuple[TrainState, tuple, float],
+                                grad_fn: Callable[[Any], tuple]) -> Tuple[TrainState, tuple, float]:
+        """
+        Performs a minibatch update of the actor network. Not jitted, so that the grad_fn argument can be
+        passed. This choice doesn't hurt performance. To be called using a lambda function for defining grad_fn.
+        :param i_minibatch: Number of minibatch update.
+        :param minibatch_runner: A tuple containing the TranState object, the loss input arguments and the KL divergence.
+        :param grad_fn: The gradient function of the training loss.
+        :return: Minibatch runner with an updated TrainState.
+        """
+
+        actor_training, actor_loss_input, kl = minibatch_runner
+        *traj_batch, hyperparams = actor_loss_input
+        traj_minibatch = jax.tree_map(lambda x: jnp.take(x, i_minibatch, axis=0), traj_batch)
+        grad_input_minibatch = (actor_training, *traj_minibatch, hyperparams)
+        grads, kl = grad_fn(*grad_input_minibatch)
+        actor_training = actor_training.apply_gradients(grads=grads.params)
+        return actor_training, actor_loss_input, kl
+
+    @staticmethod
+    def _critic_minibatch_update(i_minibatch: int, minibatch_runner: Tuple[TrainState, tuple],
+                                grad_fn: Callable[[Any], tuple]) -> Tuple[TrainState, tuple]:
+        """
+        Performs a minibatch update of the critic network. Not jitted, so that the grad_fn argument can be
+        passed. This choice doesn't hurt performance. To be called using a lambda function for defining grad_fn.
+        :param i_minibatch: Number of minibatch update.
+        :param minibatch_runner: A tuple containing the TranState object and the loss input arguments.
+        :param grad_fn: The gradient function of the training loss.
+        :return: Minibatch runner with an updated TrainState.
+        """
+
+        critic_training, critic_loss_input = minibatch_runner
+        *traj_batch, hyperparams = critic_loss_input
+        traj_minibatch = jax.tree_map(lambda x: jnp.take(x, i_minibatch, axis=0), traj_batch)
+        grad_input_minibatch = (critic_training, *traj_minibatch, hyperparams)
+        grads = grad_fn(*grad_input_minibatch)
+        critic_training = critic_training.apply_gradients(grads=grads.params)
+        return critic_training, critic_loss_input
+
     @partial(jax.jit, static_argnums=(0,))
-    def _actor_epoch(self, epoch_runner: tuple) -> tuple:
+    def _actor_epoch(self, epoch_runner: Tuple[TrainState, tuple, float, int, float])\
+            -> Tuple[TrainState, tuple, float, int, float]:
         """
         Performs a Gradient Ascent update of the actor.
         :param epoch_runner: A tuple containing the following information about the update:
@@ -662,10 +707,10 @@ class PPOAgentBase(ABC):
         """
 
         actor_training, actor_loss_input, kl, epoch, kl_threshold = epoch_runner
-        grad_input = (actor_training, *actor_loss_input)
-        grad_fn = jax.grad(self._actor_loss, has_aux=True, allow_int=True)
-        grads, kl = grad_fn(*grad_input)
-        actor_training = actor_training.apply_gradients(grads=grads.params)
+        minibatch_runner = (actor_training, actor_loss_input, 0)
+        n_minibatch_updates = self.config.batch_size // self.config.minibatch_size
+        minibatch_runner = lax.fori_loop(0, n_minibatch_updates, self._actor_minibatch_fn, minibatch_runner)
+        actor_training, _, kl = minibatch_runner
 
         return actor_training, actor_loss_input, kl, epoch+1, kl_threshold
 
@@ -715,7 +760,7 @@ class PPOAgentBase(ABC):
         return actor_training
 
     @partial(jax.jit, static_argnums=(0,))
-    def _critic_epoch(self, i_epoch: int, epoch_runner: tuple) -> tuple:
+    def _critic_epoch(self, i_epoch: int, epoch_runner: Tuple[TrainState, tuple]) -> Tuple[TrainState, tuple]:
         """
         Performs a Gradient Descent update of the critic.
         :param: i_epoch: The current training epoch (unused but required by lax.fori_loop).
@@ -726,10 +771,11 @@ class PPOAgentBase(ABC):
         """
 
         critic_training, critic_loss_input = epoch_runner
-        grad_input = (critic_training, *critic_loss_input)
-        grad_fn = jax.grad(self._critic_loss, allow_int=True)
-        grads = grad_fn(*grad_input)
-        critic_training = critic_training.apply_gradients(grads=grads.params)
+        minibatch_runner = (critic_training, critic_loss_input)
+        n_minibatch_updates = self.config.batch_size // self.config.minibatch_size
+        minibatch_runner = lax.fori_loop(0, n_minibatch_updates, self._critic_minibatch_fn, minibatch_runner)
+        critic_training, _ = minibatch_runner
+
         return critic_training, critic_loss_input
 
     @partial(jax.jit, static_argnums=(0,))
@@ -766,13 +812,13 @@ class PPOAgentBase(ABC):
         :param i_update_step: Unused, required for progressbar.
         :param update_runner: The runner object, containing information about the current status of the actor's/
         critic's training, the state of the environment and training hyperparameters.
-        :return: Updated runner
+        :return: The updated runner
         """
 
-        step_runners = self._make_step_runners(update_runner)
+        rollout_runners = self._make_rollout_runners(update_runner)
         scan_rollout_fn = lambda x: lax.scan(self._rollout, x, None, self.config.rollout_length)
-        step_runners, traj_batch = jax.vmap(scan_rollout_fn)(step_runners)
-        last_env_state, last_state, _, _, rng = step_runners
+        rollout_runners, traj_batch = jax.vmap(scan_rollout_fn)(rollout_runners)
+        last_env_state, last_state, _, _, rng = rollout_runners
         traj_batch = self._process_trajectory(update_runner, traj_batch, last_state)
 
         actor_training = self._actor_update(update_runner, traj_batch)
@@ -829,7 +875,7 @@ class PPOAgentBase(ABC):
                 # Use maximum number of steps reached in previous training. Set to zero by default during agent
                 # initialization if a new training is executed. In case of continuing training, the checkpoint of step
                 # zero replaces the last checkpoint of the previous training. The two checkpoints are the same.
-                i_training_step+self.step_previous_training,
+                i_training_step+self.previous_training_max_step,
                 ckpt,
                 save_kwargs={'save_args': save_args},
                 metrics=float(jnp.mean(metrics["episode_returns"]))
@@ -852,63 +898,9 @@ class PPOAgentBase(ABC):
 
         metrics = self._generate_metrics(runner=update_runner, update_step=i_training_batch)
 
-        i_training_step = self.config.eval_frequency * i_training_batch
+        i_training_step = self.config.eval_frequency * (i_training_batch + 1)
         i_training_step = jnp.minimum(i_training_step, self.config.n_steps)
         self._checkpoint(update_runner, metrics, i_training_step)
-
-        import json
-
-        # def log(runner):
-        #     params = runner.actor_training.params
-        #     # with open(r'log/data.json', 'w') as f:
-        #     #     json.dump(params, f)
-        #     pass
-        #
-        # from flax.serialization import to_state_dict
-        #
-        # A = to_state_dict(update_runner.actor_training)
-        #
-        # jax.debug.callback(log, update_runner)
-
-        def convert(d):
-            """Convert any jax devicearray leaves to numpy arrays in place."""
-            if isinstance(d, dict):
-                for k, v in d.items():
-                    if isinstance(v, jax.Array):
-                        result_shape = jax.core.ShapedArray(v.shape, v.dtype)
-                        jax.pure_callback(np.asarray, result_shape, v)
-                        # d[k] = jax.pure_callback(v.tolist())
-                    elif isinstance(v, dict):
-                        convert(v)
-            elif isinstance(d, jax.Array):
-                return np.array(d)
-            return d
-
-        params = update_runner.actor_training.params
-        # A = jax.experimental.io_callback(convert(params))
-        A = convert(params)
-
-
-        x = params['params']['Dense_0']['bias']
-        result_shape = jax.core.ShapedArray(x.shape, x.dtype)
-        A  = jax.pure_callback(np.asarray, result_shape, x)
-
-        def save_array(array):
-            np.save(r'C:\Users\Repositories\jax-agents\benchmarks\cartpole v1\logarray.npy', array)
-            print('saved array')
-            return jax.numpy.sin(x)
-
-        x = [0, 1, 2]
-        def dummy(x):
-            with open(r'log/data.json', 'w') as f:
-                    json.dump(x, f)
-
-        jax.experimental.io_callback(dummy, None, x)
-        jax.pure_callback(dummy, None, x)
-
-
-        with open(r'log/data.json', 'w') as f:
-            json.dump(A, f)
 
         return update_runner, metrics
 
@@ -945,8 +937,20 @@ class PPOAgentBase(ABC):
             update_runner = self.training_runner
             update_runner = update_runner.replace(hyperparams=hyperparams)  # Use newly provided hyperparameters.
 
-        n_training_batches = self.config.n_steps // self.config.eval_frequency
+        # Checkpoint initial state
+        metrics_start = self._generate_metrics(runner=update_runner, update_step=0)
+        self._checkpoint(update_runner, metrics_start, self.previous_training_max_step)
 
+        # Initialize agent updating functions, which can be avoided to be done within the training loops.
+        actor_grad_fn = jax.grad(self._actor_loss, has_aux=True, allow_int=True)
+        self._actor_minibatch_fn = lambda x, y: self._actor_minibatch_update(x, y, actor_grad_fn)
+
+        critic_grad_fn = jax.grad(self._critic_loss, allow_int=True)
+        self._critic_minibatch_fn = lambda x, y: self._critic_minibatch_update(x, y, critic_grad_fn)
+
+        # Train, evaluate, checkpoint
+
+        n_training_batches = self.config.n_steps // self.config.eval_frequency
         progressbar_desc = f'Training batch (training steps = batch x {self.config.eval_frequency})'
 
         runner, metrics = lax.scan(
@@ -956,17 +960,17 @@ class PPOAgentBase(ABC):
             n_training_batches
         )
 
-        # Checkpoint final state
-        self._checkpoint(
-            runner,
-            {"episode_returns": jnp.take(metrics["episode_returns"], -1, axis=0)},
-            self.config.n_steps
-        )
-
-        # If training has been continued from a previous state, append the previously collected metrics.
         if self.agent_trained:
+            # If training has been continued from a previous state, append the previously collected metrics.
             metrics["episode_returns"] = jnp.concatenate((
                 self.training_metrics["episode_returns"],
+                metrics["episode_returns"]
+            ), axis=0)
+        else:
+            # If training is not continued, append the metrics before training starts. In case training is continued,
+            # this is replaced by the last iteration of the previous training's metrics.
+            metrics["episode_returns"] = jnp.concatenate((
+                metrics_start["episode_returns"][jnp.newaxis, :],
                 metrics["episode_returns"]
             ), axis=0)
 
@@ -1038,7 +1042,8 @@ class PPOAgentBase(ABC):
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
         """
-        Prepares the input required by the actor loss function.
+        Prepares the input required by the actor loss function. The input is reshaped so that it is split into
+        minibatches.
         :param update_runner: The runner object used in training.
         :param traj_batch: The batch of trajectories.
         :return: A tuple of input to the actor loss function.
@@ -1050,7 +1055,8 @@ class PPOAgentBase(ABC):
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
         """
-        Prepares the input required by the critic loss function.
+        Prepares the input required by the critic loss function. The input is reshaped so that it is split into
+        minibatches.
         :param update_runner: The Runner object used in training.
         :param traj_batch: The batch of trajectories.
         :return: A tuple of input to the critic loss function.
@@ -1170,7 +1176,7 @@ class PPOAgentBase(ABC):
                 f.write(output_lst)
 
     def collect_training(self, runner: Optional[Runner] = None, metrics: Optional[Dict] = None,
-                         step_previous_training: int = 0) -> None:
+                         previous_training_max_step: int = 0) -> None:
         """
         Collects training or restored checkpoint of output (the final state of the runner after training and the
         collected metrics).
@@ -1178,12 +1184,12 @@ class PPOAgentBase(ABC):
         critic's training, the state of the environment and training hyperparameters. This is at the state reached at
         the end of training.
         :param metrics: Dictionary of evaluation metrics (return per environment evaluation)
-        :param step_previous_training: Maximum step reached during training.
+        :param previous_training_max_step: Maximum step reached during training.
         :return:
         """
 
         self.agent_trained = True
-        self.step_previous_training = step_previous_training
+        self.previous_training_max_step = previous_training_max_step
         self.training_runner = runner
         self.training_metrics = metrics
         n_evals = metrics["episode_returns"].shape[0]
@@ -1278,7 +1284,6 @@ class PPOAgent(PPOAgentBase):
         """ Standardize GAE, greatly improves behaviour"""
         advantage = (advantage - advantage.mean(axis=0)) / (advantage.std(axis=0) + 1e-8)
 
-        # actor_policy = training.apply_fn(training.params, state)
         actor_policy_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
         actor_policy = actor_policy_vmap(training.params, state)
         log_prob = actor_policy.log_prob(action)
@@ -1328,40 +1333,68 @@ class PPOAgent(PPOAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
         """
-        Prepares the input required by the actor loss function. For the REINFORCE agent, this entails the:
+        Prepares the input required by the actor loss function. For the PPO agent, this entails the:
         - the actions collected over the trajectory batch.
         - the log-probability of the actions collected over the trajectory batch.
         - the returns over the trajectory batch.
         - the values over the trajectory batch as evaluated by the critic.
         - the training hyperparameters.
+        The input is reshaped so that it is split into minibatches.
         :param update_runner: The Runner object used in training.
         :param traj_batch: The batch of trajectories.
         :return: A tuple of input to the actor loss function.
         """
 
+        # Shuffle the trajectory batch to collect minibatches.
+        # Poor practice in using the random key, which however doesn't influence the training, since all trajectories in
+        # the batch are used per epoch.
+        minibatch_idx = jax.random.choice(
+            self.config.eval_rng,
+            jnp.arange(self.config.batch_size),
+            replace=False,
+            shape=(self.config.batch_size,)
+        )
+
+        traj_minibatch = jax.tree_map(lambda x: jnp.take(x, minibatch_idx, axis=0), traj_batch)
+        traj_minibatch = jax.tree_map(lambda x: x.reshape(-1, self.config.minibatch_size, *x.shape[1:]), traj_minibatch)
+
         return (
-            traj_batch.state,
-            traj_batch.action,
-            traj_batch.log_prob,
-            traj_batch.advantage,
+            traj_minibatch.state,
+            traj_minibatch.action,
+            traj_minibatch.log_prob,
+            traj_minibatch.advantage,
             update_runner.hyperparams
         )
 
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
         """
-        Prepares the input required by the critic loss function. For the REINFORCE agent, this entails the:
+        Prepares the input required by the critic loss function. For the PPO agent, this entails the:
         - the states collected over the trajectory batch.
         - the targets (returns = GAE + next_value) over the trajectory batch.
         - the training hyperparameters.
+        The input is reshaped so that it is split into minibatches.
         :param update_runner: The Runner object used in training.
         :param traj_batch: The batch of trajectories.
         :return: A tuple of input to the critic loss function.
         """
 
+        # Shuffle the trajectory batch to collect minibatches.
+        # Poor practice in using the random key, which however doesn't influence the training, since all trajectories in
+        # the batch are used per epoch.
+        minibatch_idx = jax.random.choice(
+            self.config.eval_rng,
+            jnp.arange(self.config.batch_size),
+            replace=False,
+            shape=(self.config.batch_size,)
+        )
+
+        traj_minibatch = jax.tree_map(lambda x: jnp.take(x, minibatch_idx, axis=0), traj_batch)
+        traj_minibatch = jax.tree_map(lambda x: x.reshape(-1, self.config.minibatch_size, *x.shape[1:]), traj_minibatch)
+
         return (
-            traj_batch.state,
-            traj_batch.advantage + traj_batch.next_value,
+            traj_minibatch.state,
+            traj_minibatch.advantage + traj_minibatch.next_value,
             update_runner.hyperparams
         )
 
@@ -1481,12 +1514,13 @@ class PPOClipCriticAgent(PPOAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
         """
-        Prepares the input required by the actor loss function. For the REINFORCE agent, this entails the:
+        Prepares the input required by the actor loss function. For the PPO agent, this entails the:
         - the actions collected over the trajectory batch.
         - the log-probability of the actions collected over the trajectory batch.
         - the returns over the trajectory batch.
         - the values over the trajectory batch as evaluated by the critic.
         - the training hyperparameters.
+        The input is reshaped so that it is split into minibatches.
         :param update_runner: The Runner object used in training.
         :param traj_batch: The batch of trajectories.
         :return: A tuple of input to the actor loss function.
@@ -1503,10 +1537,11 @@ class PPOClipCriticAgent(PPOAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
         """
-        Prepares the input required by the critic loss function. For the REINFORCE agent, this entails the:
+        Prepares the input required by the critic loss function. For the PPO agent, this entails the:
         - the states collected over the trajectory batch.
         - the targets (returns = GAE + next_value) over the trajectory batch.
         - the training hyperparameters.
+        The input is reshaped so that it is split into minibatches.
         :param update_runner: The Runner object used in training.
         :param traj_batch: The batch of trajectories.
         :return: A tuple of input to the critic loss function.
