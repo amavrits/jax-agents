@@ -143,13 +143,33 @@ class PPOAgentBase(ABC):
 
             self.checkpoint_manager = None
 
+    def _create_empty_trainstate(self, network) -> TrainState:
+        """
+        Creates an empty TrainState object for restoring checkpoints.
+        :param network: The actor or critic network.
+        :return:
+        """
+
+        rng = jax.random.PRNGKey(1)  # Just a dummy PRNGKey for initializing the networks parameters.
+        network, params = self._init_network(rng, network)
+
+        optimizer_params = OptimizerParams()  # Use the default values of the OptimizerParams object.
+        tx = self._init_optimizer(optimizer_params)
+
+        empty_training = TrainState.create(apply_fn=network.apply, params=params, tx=tx)
+
+        return empty_training
+
     def restore(self, mode: str = "best"):
+        """
+        Restores a checkpoint (best or latest) and collects the history of metrics as assessed during training.
+        :param mode: Determines whether the best performing or latest checkpoint should be restored.
+        :return:
+        """
 
-        steps = sorted([
-            int(file.split('_')[-1]) for file in os.listdir(self.config.checkpoint_dir)
-            if os.path.isdir(os.path.join(self.config.checkpoint_dir, file))
-        ])
+        steps = self.checkpoint_manager.all_steps()
 
+        # Collect history of metrics in training. Useful for continuing training.
         metrics_lst = [None] * len(steps)
         for i, step in enumerate(steps):
             ckpt = self.checkpoint_manager.restore(step)
@@ -159,46 +179,37 @@ class PPOAgentBase(ABC):
         metrics = {"episode_returns": metrics_array}
 
         if mode == "best":
-            # In case of multiple max performances, the last one is used.
-            step = self.checkpoint_manager.best_step()
+            step = self.checkpoint_manager.best_step()  # In case of multiple max performances, the last one is used.
         elif mode == "last":
             step = self.checkpoint_manager.latest_step()
         else:
             raise Exception("Unknown method for selecting a checkpoint.")
 
-        # empty_state = TrainState.create(
-        #     apply_fn=self.config.actor_network.apply,
-        #     params=jax.tree_map(np.zeros_like, variables['params']),  # values of the tree leaf doesn't matter
-        #     tx=self.config.optimizer(learning_rate=1),
-        # )
+        """
+        Create an empty target for restoring the checkpoint.
+        Some of the arguments come from restoring one of the ckpts.
+        """
 
-        ckpt = self.checkpoint_manager.restore(step)
-        runner_dict = ckpt["runner"]
-        
-        actor_network = self.config.actor_network(self.n_actions, self.config)
-        actor_training = TrainState.create(
-            apply_fn=actor_network.apply,
-            tx=optax.adam(learning_rate=1),
-            params=runner_dict["actor_training"]["params"],
+        empty_actor_training = self._create_empty_trainstate(self.config.actor_network)
+        empty_critic_training = self._create_empty_trainstate(self.config.critic_network)
+
+        empty_runner = Runner(
+            actor_training=empty_actor_training,
+            critic_training=empty_critic_training,
+            env_state=ckpt["runner"]["env_state"],
+            state=ckpt["runner"]["state"],
+            rng=ckpt["runner"]["rng"],
+            hyperparams=ckpt["runner"]["hyperparams"]
         )
 
-        critic_network = self.config.critic_network(self.n_actions, self.config)
-        critic_training = TrainState.create(
-            apply_fn=critic_network.apply,
-            tx=optax.adam(learning_rate=1),
-            params=runner_dict["critic_training"]["params"],
-        )
-        
-        best_runner = Runner(
-            actor_training=actor_training,
-            critic_training=critic_training,
-            env_state=runner_dict["env_state"],
-            state=runner_dict["state"],
-            rng=runner_dict["rng"],
-            hyperparams=runner_dict["hyperparams"]
-        )
+        target_ckpt = {
+            "runner": empty_runner,
+            "episode_returns": jnp.zeros(metrics["episode_returns"].shape[1])
+        }
 
-        self.collect_training(best_runner, metrics)
+        ckpt = self.checkpoint_manager.restore(step, items=target_ckpt)
+
+        self.collect_training(ckpt["runner"], metrics)
 
     def _init_optimizer(self, optimizer_params: OptimizerParams) -> optax.chain:
         """
@@ -251,6 +262,9 @@ class PPOAgentBase(ABC):
         :return: A random key after splitting the input and the initial parameters of the policy network.
         """
 
+        # Initialize the agent networks. The number of actions is irrelevant for the Critic network, which should return
+        # a single value in the final layer. However, the network class should accept the number of actions as an
+        # argument, even if it isn't used.
         network = network(self.n_actions, self.config)
 
         rng, *_rng = jax.random.split(rng, 3)
@@ -868,7 +882,7 @@ class PPOAgentBase(ABC):
 
         # Checkpoint final state
         self._checkpoint(
-            update_runner,
+            runner,
             {"episode_returns": jnp.take(metrics["episode_returns"], -1, axis=0)},
             self.config.n_steps
         )
@@ -1085,9 +1099,8 @@ class PPOAgentBase(ABC):
 
     def _pp(self) -> None:
         """
-        Post-processes the training results,, which includes:
-            - Setting the policy network parameters to be the parameters of the runner #TODO: Update for stored agent.
-            - Extracting the buffer from the runner so that the training history can be exported.
+        Post-processes the training results, which includes:
+            - Setting the policy actor and critic TrainStates of a Runner object (e.g. last in training of restored).
         :return:
         """
 

@@ -42,6 +42,11 @@ if __name__ == '__main__':
     print(agent.__str__())
 
     agent.restore()
+    training_metrics = agent.training_metrics
+
+    """ Post-process results"""
+    training_returns = agent.summarize(training_metrics["episode_returns"])
+    agent.collect_training(agent.training_runner, training_metrics)
 
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
