@@ -125,7 +125,14 @@ class PPOAgentBase(ABC):
                     f.write(self.__str__())
 
             orbax_checkpointer = orbax.checkpoint.Checkpointer(orbax.checkpoint.PyTreeCheckpointHandler())
-            options = orbax.checkpoint.CheckpointManagerOptions(create=True, step_prefix='training step')
+
+            options = orbax.checkpoint.CheckpointManagerOptions(
+                create=True,
+                best_fn=jnp.max,  # The checkpoint with the maximum metric is selected.
+                step_format_fixed_length=len(str(self.config.n_steps)),
+                step_prefix='training step',
+            )
+
             self.checkpoint_manager = orbax.checkpoint.CheckpointManager(
                 self.config.checkpoint_dir,
                 orbax_checkpointer,
@@ -143,25 +150,28 @@ class PPOAgentBase(ABC):
             if os.path.isdir(os.path.join(self.config.checkpoint_dir, file))
         ])
 
-        performances = [None] * len(steps)
         metrics_lst = [None] * len(steps)
         for i, step in enumerate(steps):
             ckpt = self.checkpoint_manager.restore(step)
-            performances[i] = ckpt["average_return"].item()
             metrics_lst[i] = ckpt["episode_returns"][jnp.newaxis, :]
 
         metrics_array = jnp.concatenate(metrics_lst, axis=0)
         metrics = {"episode_returns": metrics_array}
 
         if mode == "best":
-            # In case of multiple max performances, get the last one.
-            idx = len(steps) - jnp.argmax(jnp.asarray(performances)) - 1
+            # In case of multiple max performances, the last one is used.
+            step = self.checkpoint_manager.best_step()
         elif mode == "last":
-            idx = len(steps) - 1
+            step = self.checkpoint_manager.latest_step()
         else:
             raise Exception("Unknown method for selecting a checkpoint.")
 
-        step = steps[idx]
+        # empty_state = TrainState.create(
+        #     apply_fn=self.config.actor_network.apply,
+        #     params=jax.tree_map(np.zeros_like, variables['params']),  # values of the tree leaf doesn't matter
+        #     tx=self.config.optimizer(learning_rate=1),
+        # )
+
         ckpt = self.checkpoint_manager.restore(step)
         runner_dict = ckpt["runner"]
         
@@ -774,12 +784,9 @@ class PPOAgentBase(ABC):
             -> None:
         """
         Implements checkpointing, to be wrapped in a Python callback. Checkpoints the following:
-        - Training step number
-        - Average return over evaluation episodes
-        - Standard deviation of the returns over evaluation episodes
-        - Min/max of the returns over evaluation episodes
-        - Returns of the evaluation episodes
         - The training runner object.
+        - Returns of the evaluation episodes
+        The average return over the evaluated episodes is used as the checkpoint metric.
         :param update_runner: The runner object, containing information about the current status of the actor's/
         critic's training, the state of the environment and training hyperparameters.
         :param metrics: Dictionary of evaluation metrics (return per episode evaluation)
@@ -790,15 +797,18 @@ class PPOAgentBase(ABC):
         if self.checkpointing:
 
             ckpt = {
-                "training_step": i_training_step,
-                "average_return": metrics["episode_returns"].mean(),
-                "std_return": metrics["episode_returns"].std(),
-                "min_max_return": [metrics["episode_returns"].min(), metrics["episode_returns"].max()],
-                "episode_returns": metrics["episode_returns"],
-                "runner": update_runner
+                "runner": update_runner,
+                "episode_returns": metrics["episode_returns"]
             }
+
             save_args = orbax_utils.save_args_from_target(ckpt)
-            self.checkpoint_manager.save(i_training_step, ckpt, save_kwargs={'save_args': save_args})
+
+            self.checkpoint_manager.save(
+                i_training_step,
+                ckpt,
+                save_kwargs={'save_args': save_args},
+                metrics=float(jnp.mean(metrics["episode_returns"]))
+            )
 
     @partial(jax.jit, static_argnums=(0,))
     def _training_step(self, update_runner: Runner, i_training_batch: int) -> Tuple[Runner, dict]:
