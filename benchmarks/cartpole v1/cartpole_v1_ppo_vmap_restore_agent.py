@@ -28,14 +28,15 @@ if __name__ == '__main__':
         actor_network=PGActorNN,
         critic_network=PGCriticNN,
         rollout_length=50,
-        n_steps=1_000,
+        n_steps=200,
         batch_size=16,
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
         eval_frequency=100,
         eval_rng=jax.random.PRNGKey(18),
-        checkpoint_dir=checkpoint_dir
+        checkpoint_dir=checkpoint_dir,
+        restore_agent=False
     )
 
     """Set up agent"""
@@ -72,32 +73,42 @@ if __name__ == '__main__':
     runner, training_metrics = jax.block_until_ready(vmap_train(rng_train, hyperparams))
     print(f"time: {time.time() - t0:.2f} s")
 
+    """Continue training agent"""
+    config_restore = ppo.AgentConfig(
+        actor_network=PGActorNN,
+        critic_network=PGCriticNN,
+        rollout_length=50,
+        n_steps=800,
+        batch_size=16,
+        actor_epochs=10,
+        critic_epochs=10,
+        optimizer=optax.adam,
+        eval_frequency=100,
+        eval_rng=jax.random.PRNGKey(18),
+        checkpoint_dir=checkpoint_dir,
+        restore_agent=True
+    )
+
+    agent = ppo.PPOAgent(env, env_params, config_restore)
+    agent.restore()
+
+    t0 = time.time()
+    # Use the same training rng, it is trivial when training with a restored agent.
+    vmap_train = jax.vmap(agent.train, in_axes=(None, 0))
+    runner, training_metrics = jax.block_until_ready(vmap_train(rng_train, hyperparams))
+    print(f"time: {time.time() - t0:.2f} s")
+
     """ Post-process results"""
     training_returns = jax.vmap(agent.summarize)(training_metrics["episode_returns"])
-
-    @partial(jax.jit, static_argnums=(0,))
-    def vmap_eval(agent, runner, metrics, rng_eval):
-
-        agent.collect_training(runner, metrics)
-
-        """Evaluate agent performance"""
-        eval_metrics = agent.eval(rng_eval, n_evals=16)
-
-        return eval_metrics
-
-    single_metrics = {"episode_returns": training_metrics["episode_returns"][0]}
-    eval_metrics = jax.vmap(vmap_eval, in_axes=(None, 0, None, None))(agent, runner, single_metrics, rng_eval)
-    eval_returns = agent.summarize(eval_metrics)
-    print(eval_returns.episode_metric.min(), eval_returns.episode_metric.max())
 
     fig = plt.figure()
     n_parallel = training_returns.max.shape[0]
     colors = cm.rainbow(np.linspace(0, 1, n_parallel))
     for i_parallel in range(n_parallel):
-        plt.fill_between(np.arange(1, config.n_steps+1, config.eval_frequency), training_returns.min[i_parallel],
+        plt.fill_between(np.arange(1, 1_000+2, config.eval_frequency), training_returns.min[i_parallel],
                          training_returns.max[i_parallel], color=colors[i_parallel], alpha=0.4, label=str(i_parallel+1))
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Training reward [-]", fontsize=14)
     plt.legend(title="Hyperparameter set:", fontsize="small")
     plt.close()
-    fig.savefig(os.path.join(os.getcwd(), r'figures\PPO Clip training vmap.png'))
+    fig.savefig(os.path.join(os.getcwd(), r'figures\PPO Clip training vmap restored.png'))

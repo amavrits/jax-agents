@@ -5,9 +5,10 @@ from flax import struct
 from optax._src import base
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
-from typing import Dict, NamedTuple, Callable, Type, Union, Optional
+from typing import Dict, NamedTuple, Callable, Type, Union, Optional, Any
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 from dataclasses import dataclass, field
+import os
 
 
 class Transition(NamedTuple):
@@ -93,6 +94,7 @@ class Runner:
     The runner is directed to have batch_size environment (states) and PRNG's but only a single TrainState per the actor
     and critic.
     """
+
     """Training status (params, training step and optimizer) of the actor"""
     actor_training: TrainState
 
@@ -115,7 +117,10 @@ class Runner:
 class AgentConfig(NamedTuple):
     """Configuration of the DQN and DDQN agents, passed at initialization of instance."""
 
-    """Number of training steps (not episodes)"""
+    """
+    Number of training steps (not episodes).
+    In case of continuing training, this is the additional steps to be performed.
+    """
     n_steps: int
 
     """Size of batch collected from buffer for updating the policy network"""
@@ -139,47 +144,49 @@ class AgentConfig(NamedTuple):
     """Optax optimizer to be used in training. Giving only the optimizer class allows for initializing within the 
     self.train method and eventually running multiple combinations of the optimizer parameters via jax.vmap.
     """
-    optimizer: Callable[[Dict], Optional[base.GradientTransformation]]
+    # optimizer: Callable[[Dict], Optional[base.GradientTransformation]]
+    optimizer: Callable[[Any], Optional[base.GradientTransformation]]
+
+    """Frequency of evaluating the agent in update steps."""
+    eval_frequency: int = 1
 
     """PRNG key for evaluation of agent performance during training (if 'None' evaluation isn't performed)"""
     eval_rng: Optional[PRNGKeyArray] = None
 
+    """Absolute path for checkpointing"""
+    checkpoint_dir: Optional[Union[str, os.PathLike]] = None
 
-@dataclass
+    """Whether an agent should be restored from training checkpoints, for continuing training or deploying."""
+    restore_agent: bool = False
+
+
+@struct.dataclass
 class MetricStats:
     """
     Dataclass summarizing statistics of a metric sample connected to the agent's performance (collected during either
-    training or evaluation).
+    training or evaluation). Post-processed metrics are provided upon instance initialization to support the use of
+    struct.dataclass, which is required for using jax.vmap.
     """
     """Metric per episode"""
     episode_metric: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample average"""
-    mean: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = field(init=False)
+    mean: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample variance"""
-    var: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = field(init=False)
+    var: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample standard deviation"""
-    std: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = field(init=False)
+    std: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample minimum"""
-    min: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = field(init=False)
+    min: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample maximum"""
-    max: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = field(init=False)
+    max: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample median"""
-    median: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = field(init=False)
+    median: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Whether the sample contains nan values"""
-    has_nans: Union[np.ndarray["size_metrics", bool], Bool[Array, "size_metrics"]] = field(init=False)
-
-    def process(self) -> None:
-        self.mean = self.episode_metric.mean(axis=-1)
-        self.var = self.episode_metric.var(axis=-1)
-        self.std = self.episode_metric.std(axis=-1)
-        self.min = self.episode_metric.min(axis=-1)
-        self.max = self.episode_metric.max(axis=-1)
-        self.median = jnp.median(self.episode_metric, axis=-1)
-        self.has_nans = jnp.any(jnp.isnan(self.episode_metric), axis=-1)
+    has_nans: Union[np.ndarray["size_metrics", bool], Bool[Array, "size_metrics"]]

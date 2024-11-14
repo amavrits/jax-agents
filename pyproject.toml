@@ -20,6 +20,7 @@ jaxtyping = "^0.2.29"
 gymnax = "^0.0.6"
 jax-tqdm = "^0.2.1"
 optax = "^0.2.2"
+orbax = "^0.1.9"
 
 
 [build-system]

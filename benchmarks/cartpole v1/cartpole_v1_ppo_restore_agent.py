@@ -52,12 +52,36 @@ if __name__ == '__main__':
         actor_optimizer_params=ppo.OptimizerParams(learning_rate=3e-4, eps=1e-3, grad_clip=1),
         critic_optimizer_params=ppo.OptimizerParams(learning_rate=1e-3, eps=1e-3, grad_clip=1)
     )
-    agent.log_hyperparams(hyperparams)
 
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
 
     """Train agent"""
+    t0 = time.time()
+    _, _ = jax.block_until_ready(agent.train(rng_train, hyperparams))
+    print(f"time: {time.time() - t0:.2f} s")
+
+    """Restore agent"""
+    config_restore = ppo.AgentConfig(
+        actor_network=PGActorNN,
+        critic_network=PGCriticNN,
+        rollout_length=50,
+        n_steps=1_000,
+        batch_size=16,
+        actor_epochs=10,
+        critic_epochs=10,
+        optimizer=optax.adam,
+        eval_frequency=100,
+        eval_rng=jax.random.PRNGKey(18),
+        checkpoint_dir=checkpoint_dir,
+        restore_agent=True
+    )
+
+    agent = ppo.PPOAgent(env, env_params, config_restore)
+    agent.restore()
+
+    """Continue training agent"""
+    # Use the same training rng, it is trivial when training with a restored agent.
     t0 = time.time()
     runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     print(f"time: {time.time() - t0:.2f} s")
@@ -72,9 +96,14 @@ if __name__ == '__main__':
     print(eval_returns.episode_metric.min(), eval_returns.episode_metric.max())
 
     fig = plt.figure()
-    plt.fill_between(agent.eval_steps_in_training, training_returns.min, training_returns.max, color='b',
-                     alpha=0.4)
+    idx = jnp.where(agent.eval_steps_in_training <= config.n_steps)
+    plt.fill_between(agent.eval_steps_in_training[idx], training_returns.min[idx], training_returns.max[idx], color='b',
+                     alpha=0.4, label='Initial training')
+    idx = jnp.where(agent.eval_steps_in_training >= config.n_steps)
+    plt.fill_between(agent.eval_steps_in_training[idx], training_returns.min[idx], training_returns.max[idx], color='r',
+                     alpha=0.4, label='Continued training')
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Training reward [-]", fontsize=14)
+    plt.legend(fontsize=12)
     plt.close()
-    fig.savefig(os.path.join(os.getcwd(), r'figures/PPO Clip training.png'))
+    fig.savefig(os.path.join(os.getcwd(), r'figures/PPO Clip training restored.png'))
