@@ -827,7 +827,8 @@ class PPOAgentBase(ABC):
 
             self.checkpoint_manager.save(
                 # Use maximum number of steps reached in previous training. Set to zero by default during agent
-                # initialization if a new training is executed.
+                # initialization if a new training is executed. In case of continuing training, the checkpoint of step
+                # zero replaces the last checkpoint of the previous training. The two checkpoints are the same.
                 i_training_step+self.step_previous_training,
                 ckpt,
                 save_kwargs={'save_args': save_args},
@@ -1132,7 +1133,7 @@ class PPOAgentBase(ABC):
         self.training_runner = runner
         self.training_metrics = metrics
         n_evals = metrics["episode_returns"].shape[0]
-        self.eval_steps_in_training = jnp.arange(0, n_evals) * self.config.eval_frequency
+        self.eval_steps_in_training = jnp.arange(n_evals) * self.config.eval_frequency
         self._pp()
 
     def _pp(self) -> None:
@@ -1145,27 +1146,23 @@ class PPOAgentBase(ABC):
         self.actor_training = self.training_runner.actor_training
         self.critic_training = self.training_runner.critic_training
 
-    @staticmethod
-    def _summary_stats(episode_metric: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]])\
-            -> MetricStats:
-        """
-        Summarizes statistics for sample of episode metric (to be used for training or evaluation).
-        :param episode_metric: Metric collected in training or evaluation adjusted for each episode.
-        :return: Summary of episode metric.
-        """
-
-        metrics = MetricStats(episode_metric)
-        metrics.process()
-        return metrics
-
-    def summarize(self, metric: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]) -> MetricStats:
+    def summarize(self, metrics: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]) -> MetricStats:
         """
         Summarizes collection of per-episode metrics.
-        :param metric: Metric per episode.
+        :param metrics: Metric per episode.
         :return: Summary of metric per episode.
         """
 
-        return self._summary_stats(metric)
+        return MetricStats(
+            episode_metric=metrics,
+            mean=metrics.mean(axis=-1),
+            var=metrics.var(axis=-1),
+            std=metrics.std(axis=-1),
+            min=metrics.min(axis=-1),
+            max=metrics.max(axis=-1),
+            median=jnp.median(metrics, axis=-1),
+            has_nans=jnp.any(jnp.isnan(metrics), axis=-1)
+        )
 
 
 class PPOAgent(PPOAgentBase):

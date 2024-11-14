@@ -160,41 +160,33 @@ class AgentConfig(NamedTuple):
     restore_agent: bool = False
 
 
-@dataclass
+@struct.dataclass
 class MetricStats:
     """
     Dataclass summarizing statistics of a metric sample connected to the agent's performance (collected during either
-    training or evaluation).
+    training or evaluation). Post-processed metrics are provided upon instance initialization to support the use of
+    struct.dataclass, which is required for using jax.vmap.
     """
     """Metric per episode"""
     episode_metric: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample average"""
-    mean: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = field(init=False)
+    mean: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample variance"""
-    var: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = field(init=False)
+    var: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample standard deviation"""
-    std: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = field(init=False)
+    std: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample minimum"""
-    min: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = field(init=False)
+    min: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample maximum"""
-    max: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = field(init=False)
+    max: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample median"""
-    median: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]] = field(init=False)
+    median: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Whether the sample contains nan values"""
-    has_nans: Union[np.ndarray["size_metrics", bool], Bool[Array, "size_metrics"]] = field(init=False)
-
-    def process(self) -> None:
-        self.mean = self.episode_metric.mean(axis=-1)
-        self.var = self.episode_metric.var(axis=-1)
-        self.std = self.episode_metric.std(axis=-1)
-        self.min = self.episode_metric.min(axis=-1)
-        self.max = self.episode_metric.max(axis=-1)
-        self.median = jnp.median(self.episode_metric, axis=-1)
-        self.has_nans = jnp.any(jnp.isnan(self.episode_metric), axis=-1)
+    has_nans: Union[np.ndarray["size_metrics", bool], Bool[Array, "size_metrics"]]

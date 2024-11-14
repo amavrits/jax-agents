@@ -81,10 +81,9 @@ if __name__ == '__main__':
     agent.restore()
 
     """Continue training agent"""
-    # Define rng_continue separately, so that results are comparable to "cartpole_v1_ppo"
-    rng_continue = jax.random.PRNGKey(18)
+    # Use the same training rng, it is trivial when training with a restored agent.
     t0 = time.time()
-    runner, training_metrics = jax.block_until_ready(agent.train(rng_continue, hyperparams))
+    runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     print(f"time: {time.time() - t0:.2f} s")
 
     """ Post-process results"""
