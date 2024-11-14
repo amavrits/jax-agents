@@ -117,7 +117,10 @@ class Runner:
 class AgentConfig(NamedTuple):
     """Configuration of the DQN and DDQN agents, passed at initialization of instance."""
 
-    """Number of training steps (not episodes)"""
+    """
+    Number of training steps (not episodes).
+    In case of continuing training, this is the additional steps to be performed.
+    """
     n_steps: int
 
     """Size of batch collected from buffer for updating the policy network"""

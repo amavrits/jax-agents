@@ -56,6 +56,9 @@ class PPOAgentBase(ABC):
     critic_training: ClassVar[Optional[TrainState]] = None  # Critic training object.
     training_metrics: ClassVar[Optional[Dict]] = None  # Metrics collected during training.
     eval_during_training: ClassVar[bool] = False  # Whether the agent's performance is evaluated during training
+    # The maximum step reached in precious training. Zero by default for starting a new training. Will be set by
+    # restoring or passing a trained agent (from serial training or restoring)
+    step_previous_training: ClassVar[int] = 0
 
     def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfig) -> None:
         """
@@ -194,12 +197,16 @@ class PPOAgentBase(ABC):
         empty_actor_training = self._create_empty_trainstate(self.config.actor_network)
         empty_critic_training = self._create_empty_trainstate(self.config.critic_network)
 
+        # Get some state and env_state for restoring the checkpoint.
+        state, env_state = self.env.reset(jax.random.PRNGKey(1), self.env_params)
+
         empty_runner = Runner(
             actor_training=empty_actor_training,
             critic_training=empty_critic_training,
-            env_state=ckpt["runner"]["env_state"],
-            state=ckpt["runner"]["state"],
-            rng=ckpt["runner"]["rng"],
+            env_state=env_state,
+            state=state,
+            rng=jax.random.PRNGKey(1),  # Just a dummy PRNGKey for initializing the networks parameters.
+            # Hyperparams can be loaded as a dict. If training continues, new hyperparams will be provided.
             hyperparams=ckpt["runner"]["hyperparams"]
         )
 
@@ -210,7 +217,7 @@ class PPOAgentBase(ABC):
 
         ckpt = self.checkpoint_manager.restore(step, items=target_ckpt)
 
-        self.collect_training(ckpt["runner"], metrics)
+        self.collect_training(ckpt["runner"], metrics, step_previous_training=max(steps))
 
     def _init_optimizer(self, optimizer_params: OptimizerParams) -> optax.chain:
         """
@@ -819,7 +826,9 @@ class PPOAgentBase(ABC):
             save_args = orbax_utils.save_args_from_target(ckpt)
 
             self.checkpoint_manager.save(
-                i_training_step,
+                # Use maximum number of steps reached in previous training. Set to zero by default during agent
+                # initialization if a new training is executed.
+                i_training_step+self.step_previous_training,
                 ckpt,
                 save_kwargs={'save_args': save_args},
                 metrics=float(jnp.mean(metrics["episode_returns"]))
@@ -861,14 +870,25 @@ class PPOAgentBase(ABC):
         rng, *_rng = jax.random.split(rng, 4)
         actor_init_rng, critic_init_rng, runner_rng = _rng
 
-        actor_training = self._create_training(
-            actor_init_rng, self.config.actor_network, hyperparams.actor_optimizer_params
-        )
-        critic_training = self._create_training(
-            critic_init_rng, self.config.critic_network, hyperparams.critic_optimizer_params
-        )
+        """
+        Start new training or continue from previous training (passed serially or from restored checkpoint).
+        New hyperparameters can be used for continuing the training.
+        """
+        if not self.agent_trained:
 
-        update_runner = self._create_update_runner(runner_rng, actor_training, critic_training, hyperparams)
+            actor_training = self._create_training(
+                actor_init_rng, self.config.actor_network, hyperparams.actor_optimizer_params
+            )
+            critic_training = self._create_training(
+                critic_init_rng, self.config.critic_network, hyperparams.critic_optimizer_params
+            )
+
+            update_runner = self._create_update_runner(runner_rng, actor_training, critic_training, hyperparams)
+
+        else:
+
+            update_runner = self.training_runner
+            update_runner = update_runner.replace(hyperparams=hyperparams)  # Use newly provided hyperparameters.
 
         n_training_batches = self.config.n_steps // self.config.eval_frequency
 
@@ -887,6 +907,13 @@ class PPOAgentBase(ABC):
             {"episode_returns": jnp.take(metrics["episode_returns"], -1, axis=0)},
             self.config.n_steps
         )
+
+        # If training has been continued from a previous state, append the previously collected metrics.
+        if self.agent_trained:
+            metrics["episode_returns"] = jnp.concatenate((
+                self.training_metrics["episode_returns"],
+                metrics["episode_returns"]
+            ), axis=0)
 
         return runner, metrics
 
@@ -1087,15 +1114,25 @@ class PPOAgentBase(ABC):
             with open(os.path.join(self.config.checkpoint_dir, 'hyperparameters.txt'), "w") as f:
                 f.write(output_lst)
 
-    def collect_training(self, runner: Optional[Runner] = None, metrics: Optional[Dict] = None) -> None:
+    def collect_training(self, runner: Optional[Runner] = None, metrics: Optional[Dict] = None,
+                         step_previous_training: int = 0) -> None:
         """
-        Collects training of output (the final state of the runner after training and the collected metrics).
+        Collects training or restored checkpoint of output (the final state of the runner after training and the
+        collected metrics).
+        :param runner: The runner object, containing information about the current status of the actor's/
+        critic's training, the state of the environment and training hyperparameters. This is at the state reached at
+        the end of training.
+        :param metrics: Dictionary of evaluation metrics (return per environment evaluation)
+        :param step_previous_training: Maximum step reached during training.
+        :return:
         """
 
         self.agent_trained = True
+        self.step_previous_training = step_previous_training
         self.training_runner = runner
         self.training_metrics = metrics
-        self.eval_steps_in_training = jnp.arange(1, self.config.n_steps+1, self.config.eval_frequency)
+        n_evals = metrics["episode_returns"].shape[0]
+        self.eval_steps_in_training = jnp.arange(0, n_evals) * self.config.eval_frequency
         self._pp()
 
     def _pp(self) -> None:
