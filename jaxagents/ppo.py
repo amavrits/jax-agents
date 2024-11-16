@@ -8,7 +8,6 @@ Author: Antonis Mavritsakis
 
 import jax
 import jax.numpy as jnp
-from flax.nnx.nnx.transforms.transforms import grad_fn
 from jax import lax
 from jax_tqdm import scan_tqdm
 import distrax
