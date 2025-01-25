@@ -174,28 +174,12 @@ class PPOAgentBase(ABC):
         :return:
         """
 
-        steps = self.checkpoint_manager.all_steps()
+        try:
+            steps = self.checkpoint_manager.all_steps()
+        except:
+            raise Exception("The directory does not contain any valid checkpoints.")
 
-        # Collect history of metrics in training. Useful for continuing training.
-        metrics_lst = [None] * len(steps)
-        for i, step in enumerate(steps):
-            ckpt = self.checkpoint_manager.restore(step)
-            metrics_lst[i] = ckpt["episode_returns"][jnp.newaxis, :]
 
-        metrics_array = jnp.concatenate(metrics_lst, axis=0)
-        metrics = {"episode_returns": metrics_array}
-
-        if mode == "best":
-            step = self.checkpoint_manager.best_step()  # In case of multiple max performances, the last one is used.
-        elif mode == "last":
-            step = self.checkpoint_manager.latest_step()
-        else:
-            raise Exception("Unknown method for selecting a checkpoint.")
-
-        """
-        Create an empty target for restoring the checkpoint.
-        Some of the arguments come from restoring one of the ckpts.
-        """
 
         empty_actor_training = self._create_empty_trainstate(self.config.actor_network)
         empty_critic_training = self._create_empty_trainstate(self.config.critic_network)
@@ -210,17 +194,68 @@ class PPOAgentBase(ABC):
             state=state,
             rng=jax.random.split(jax.random.PRNGKey(1), self.config.batch_size),  # Just a dummy PRNGKey for initializing the networks parameters.
             # Hyperparams can be loaded as a dict. If training continues, new hyperparams will be provided.
-            hyperparams=ckpt["runner"]["hyperparams"]
+            hyperparams=HyperParameters(1, 1, 1, 1, 1, 1, 1)
         )
 
         target_ckpt = {
             "runner": empty_runner,
-            "episode_returns": jnp.zeros(metrics["episode_returns"].shape[1])
+            "episode_returns": jnp.zeros(16)
         }
 
-        ckpt = self.checkpoint_manager.restore(step, items=target_ckpt)
+        from orbax.checkpoint import RestoreArgs
+        restore_kwargs = {
+            "runner": RestoreArgs(),  # Explicitly tell Orbax this is a nested structure
+            "episode_returns": RestoreArgs(dtype=jnp.float32),  # Specify dtype if needed
+        }
 
-        self.collect_training(ckpt["runner"], metrics, previous_training_max_step=max(steps))
+        ckpt = self.checkpoint_manager.restore(0, items=target_ckpt, restore_kwargs=restore_kwargs)
+
+
+        # # Collect history of metrics in training. Useful for continuing training.
+        # metrics_lst = [None] * len(steps)
+        # for i, step in enumerate(steps):
+        #     ckpt = self.checkpoint_manager.restore(step, items=target_ckpt)
+        #     metrics_lst[i] = ckpt["episode_returns"][jnp.newaxis, :]
+        #
+        # metrics_array = jnp.concatenate(metrics_lst, axis=0)
+        # metrics = {"episode_returns": metrics_array}
+        #
+        # if mode == "best":
+        #     step = self.checkpoint_manager.best_step()  # In case of multiple max performances, the last one is used.
+        # elif mode == "last":
+        #     step = self.checkpoint_manager.latest_step()
+        # else:
+        #     raise Exception("Unknown method for selecting a checkpoint.")
+        #
+        # """
+        # Create an empty target for restoring the checkpoint.
+        # Some of the arguments come from restoring one of the ckpts.
+        # """
+        #
+        # empty_actor_training = self._create_empty_trainstate(self.config.actor_network)
+        # empty_critic_training = self._create_empty_trainstate(self.config.critic_network)
+        #
+        # # Get some state and env_state for restoring the checkpoint.
+        # state, env_state = self.env.reset(jax.random.PRNGKey(1), self.env_params)
+        #
+        # empty_runner = Runner(
+        #     actor_training=empty_actor_training,
+        #     critic_training=empty_critic_training,
+        #     env_state=env_state,
+        #     state=state,
+        #     rng=jax.random.split(jax.random.PRNGKey(1), self.config.batch_size),  # Just a dummy PRNGKey for initializing the networks parameters.
+        #     # Hyperparams can be loaded as a dict. If training continues, new hyperparams will be provided.
+        #     hyperparams=ckpt["runner"]["hyperparams"]
+        # )
+        #
+        # target_ckpt = {
+        #     "runner": empty_runner,
+        #     "episode_returns": jnp.zeros(metrics["episode_returns"].shape[1])
+        # }
+        #
+        # ckpt = self.checkpoint_manager.restore(step, items=target_ckpt)
+        #
+        # self.collect_training(ckpt["runner"], metrics, previous_training_max_step=max(steps))
 
     def _init_optimizer(self, optimizer_params: OptimizerParams) -> optax.chain:
         """
@@ -516,6 +551,7 @@ class PPOAgentBase(ABC):
         """
 
         rewards_t = traj_batch.reward.squeeze()
+        # In case of terminal next state, the value is zero.
         terminated_t = 1.0 - traj_batch.terminated.astype(jnp.float32).squeeze()
         discounts_t = (terminated_t * gamma).astype(jnp.float32)
 
@@ -925,6 +961,7 @@ class PPOAgentBase(ABC):
             actor_training = self._create_training(
                 actor_init_rng, self.config.actor_network, hyperparams.actor_optimizer_params
             )
+
             critic_training = self._create_training(
                 critic_init_rng, self.config.critic_network, hyperparams.critic_optimizer_params
             )
@@ -940,7 +977,7 @@ class PPOAgentBase(ABC):
         metrics_start = self._generate_metrics(runner=update_runner, update_step=0)
         self._checkpoint(update_runner, metrics_start, self.previous_training_max_step)
 
-        # Initialize agent updating functions, which can be avoided to be done within the training loops.
+        # Initialize agent updating functions, to avoid doing it repeatedly within the training loops.
         actor_grad_fn = jax.grad(self._actor_loss, has_aux=True, allow_int=True)
         self._actor_minibatch_fn = lambda x, y: self._actor_minibatch_update(x, y, actor_grad_fn)
 
@@ -948,10 +985,10 @@ class PPOAgentBase(ABC):
         self._critic_minibatch_fn = lambda x, y: self._critic_minibatch_update(x, y, critic_grad_fn)
 
         # Train, evaluate, checkpoint
-
         n_training_batches = self.config.n_steps // self.config.eval_frequency
         progressbar_desc = f'Training batch (training steps = batch x {self.config.eval_frequency})'
 
+        # Run training
         runner, metrics = lax.scan(
             scan_tqdm(n_training_batches, desc=progressbar_desc)(self._training_step),
             update_runner,
@@ -1259,7 +1296,9 @@ class PPOAgent(PPOAgentBase):
         :return: An array of returns.
         """
         rewards, values, next_state_values, terminated, gamma, gae_lambda = traj
+        # In case of terminal next state, the value is zero.
         d_t = rewards + (1 - terminated) * gamma * next_state_values - values  # Temporal difference residual at time t
+        # In case of terminal next state, the advantage is zero.
         advantage = d_t + gamma * gae_lambda * (1 - terminated) * advantage
         return advantage, advantage
 
@@ -1391,9 +1430,15 @@ class PPOAgent(PPOAgentBase):
         traj_minibatch = jax.tree_map(lambda x: jnp.take(x, minibatch_idx, axis=0), traj_batch)
         traj_minibatch = jax.tree_map(lambda x: x.reshape(-1, self.config.minibatch_size, *x.shape[1:]), traj_minibatch)
 
+
+        """
+        Critic loss input targets = Rewards-to-go
+        Shortcut with advantage and values.
+        """
+        #FIXME: use value (stable training) or next_value (still succeeds)?
         return (
             traj_minibatch.state,
-            traj_minibatch.advantage + traj_minibatch.next_value,
+            traj_minibatch.advantage + traj_minibatch.value,
             update_runner.hyperparams
         )
 
@@ -1433,7 +1478,9 @@ class PPOClipCriticAgent(PPOAgentBase):
         :return: An array of returns.
         """
         rewards, values, next_state_values, terminated, gamma, gae_lambda = traj
+        # In case of terminal next state, the value is zero.
         d_t = rewards + (1 - terminated) * gamma * next_state_values - values  # Temporal difference residual at time t
+        # In case of terminal next state, the advantage is zero.
         advantage = d_t + gamma * gae_lambda * (1 - terminated) * advantage
         return advantage, advantage
 

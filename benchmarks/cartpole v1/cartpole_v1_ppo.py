@@ -17,30 +17,33 @@ if __name__ == '__main__':
     env, env_params = gymnax.make("CartPole-v1")
 
     if sys.platform == "win32":
-        checkpoint_dir = 'C:\\Users\\Repositories\\jax-agents\\benchmarks\\cartpole v1\\checkpoints\\ppo'
+        checkpoint_dir = 'C:\\Users\\mavritsa\\Repositories\\jax-agents\\benchmarks\\cartpole v1\\checkpoints\\ppo'
     else:
-        checkpoint_dir = '/mnt/c/Users/Repositories/jax-agents/benchmarks/cartpole v1/checkpoints/ppo'
+        checkpoint_dir = '/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/cartpole v1/checkpoints/ppo'
 
     """Define configuration for agent training"""
     config = ppo.AgentConfig(
         actor_network=PGActorNN,
         critic_network=PGCriticNN,
         rollout_length=50,
-        n_steps=1_000,
+        n_steps=100,
         batch_size=16,
         minibatch_size=4,
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
-        eval_frequency=100,
+        eval_frequency=1,
         eval_rng=jax.random.PRNGKey(18),
-        checkpoint_dir=checkpoint_dir,
+        checkpoint_dir=None,
+        # restore_agent=True
         restore_agent=False
     )
 
     """Set up agent"""
     agent = ppo.PPOAgent(env, env_params, config)
     print(agent.__str__())
+
+    # agent.restore()
 
     """Define optimizer parameters and training hyperparameters"""
     hyperparams = ppo.HyperParameters(

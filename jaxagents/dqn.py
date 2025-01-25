@@ -854,7 +854,6 @@ class DQN_Agent(DQNAgentBase):
                   gamma: float) -> Float[Array, "batch_size"]:
         """
         Calculation of the target state-action (Q) value for the next state of an episode step for the DQN agent.
-        .. math::
             {Q}_{target} = {R}_{t+1} + \gamma max_{\alpha}[Q({S}_{t+1}, \alpha; {\theta}_{t}^{-}]
         :param params: Parameter of the policy network.
         :param target_params: Parameter of the target  network.
