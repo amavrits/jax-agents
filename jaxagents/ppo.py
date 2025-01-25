@@ -528,6 +528,13 @@ class PPOAgentBase(ABC):
         return traj_batch
 
     @partial(jax.jit, static_argnums=(0,))
+    def _add_returns(self, traj_batch: Transition, returns: Float[Array, 'state_size']) -> Transition:
+
+        traj_batch = traj_batch._replace(returns=returns)
+
+        return traj_batch
+
+    @partial(jax.jit, static_argnums=(0,))
     def _add_advantages(self, traj_batch: Transition, advantage: Float[Array, 'state_size']) -> Transition:
 
         traj_batch = traj_batch._replace(advantage=advantage)
@@ -582,7 +589,6 @@ class PPOAgentBase(ABC):
         episode termination (episodes may be truncated). Also, since the environment is not re-initialized per sampling
         step, trajectories do not start at the initial state.
         :param traj_batch: The batch of trajectories.
-        :param last_next_state_value: The value of the last next state in each trajectory.
         :param gamma: Discount factor
         :param gae_lambda: The GAE λ factor.
         :return: The returns over the episodes of the trajectory batch.
@@ -681,6 +687,15 @@ class PPOAgentBase(ABC):
 
         traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
         traj_batch = self._add_next_values(traj_batch, last_state, update_runner.critic_training)
+
+        last_next_state_value = jnp.take(traj_batch.next_value, -1 , axis=-1)
+        returns = self._returns(
+            traj_batch,
+            last_next_state_value,
+            update_runner.hyperparams.gamma,
+            update_runner.hyperparams.gae_lambda
+        )
+        traj_batch = self._add_returns(traj_batch, returns)
 
         advantages = self._advantages(traj_batch, update_runner.hyperparams.gamma, update_runner.hyperparams.gae_lambda)
         traj_batch = self._add_advantages(traj_batch, advantages)
@@ -1281,7 +1296,8 @@ class PPOAgent(PPOAgentBase):
         :return: An array of returns.
         """
         rewards, discounts, next_state_values, gae_lambda = traj
-        value = rewards + discounts * ((1 - gae_lambda) * next_state_values + gae_lambda * value)
+        # value = rewards + discounts * ((1 - gae_lambda) * next_state_values + gae_lambda * value)
+        value = rewards + discounts * next_state_values
         return value, value
 
     @partial(jax.jit, static_argnums=(0,))
@@ -1431,14 +1447,15 @@ class PPOAgent(PPOAgentBase):
         traj_minibatch = jax.tree_map(lambda x: x.reshape(-1, self.config.minibatch_size, *x.shape[1:]), traj_minibatch)
 
 
+        #FIXME: use value (stable training) or next_value (still succeeds) or returns?
         """
-        Critic loss input targets = Rewards-to-go
-        Shortcut with advantage and values.
+        Critic loss input targets = Returns
+        Shortcut with advantage and values? Or calculate and use actual returns?
         """
-        #FIXME: use value (stable training) or next_value (still succeeds)?
         return (
             traj_minibatch.state,
-            traj_minibatch.advantage + traj_minibatch.value,
+            # traj_minibatch.advantage + traj_minibatch.value,  #FIXME
+            traj_minibatch.returns,
             update_runner.hyperparams
         )
 

@@ -43,6 +43,9 @@ class Transition(NamedTuple):
     """Advantage of step"""
     advantage: Optional[Float[Array, "1"]] = None
 
+    """Return of step"""
+    returns: Optional[Float[Array, "1"]] = None
+
 
 class OptimizerParams(NamedTuple):
     """Parameters of the training optimizer"""
