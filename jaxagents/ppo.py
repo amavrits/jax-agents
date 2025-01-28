@@ -381,7 +381,7 @@ class PPOAgentBase(ABC):
     def _create_training(self, rng: PRNGKeyArray, network: Type[flax.linen.Module], optimizer_params: OptimizerParams)\
             -> TrainState:
         """
-         Creates a TrainState object for the actor of the critic.
+         Creates a TrainState object for the actor or the critic.
         :param rng: Random key for initialization.
         :param network: The actor or critic network.
         :param optimizer_params: A NamedTuple containing the parametrization of the optimizer.
@@ -499,7 +499,6 @@ class PPOAgentBase(ABC):
 
         return traj_batch
 
-    """Not used for PPO with GAE"""
     @partial(jax.jit, static_argnums=(0,))
     def _returns(self, traj_batch: Transition, last_next_state_value: Float[Array, "batch_size"], gamma: float,
                  gae_lambda: float) -> RETURNS_TYPE:
@@ -975,7 +974,6 @@ class PPOAgentBase(ABC):
 
         return runner, metrics
 
-    """Not used for PPO with GAE"""
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
     def _trajectory_returns(self, value: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
@@ -1232,7 +1230,6 @@ class PPOAgent(PPOAgentBase):
     See : https://spinningup.openai.com/en/latest/algorithms/ppo.html
     """
 
-    """Not used for PPO with GAE"""
     @partial(jax.jit, static_argnums=(0,))
     def _trajectory_returns(self, value: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
         """
@@ -1406,7 +1403,6 @@ class PPOClipCriticAgent(PPOAgentBase):
     See : https://spinningup.openai.com/en/latest/algorithms/ppo.html
     """
 
-    """Not used for PPO with GAE"""
     @partial(jax.jit, static_argnums=(0,))
     def _trajectory_returns(self, value: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
         """

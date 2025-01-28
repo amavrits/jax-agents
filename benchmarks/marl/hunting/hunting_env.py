@@ -7,6 +7,7 @@ from jaxtyping import Array, Int, Float
 from typing import Optional
 import chex
 from typing import Tuple
+from functools import partial
 import matplotlib.pyplot as plt
 
 
@@ -44,33 +45,34 @@ class Hunting(environment.Environment):
         return EnvParams()
 
     def get_obs(self, state: EnvState) -> STATE:
-        return jnp.array(state.positions, dtype=jnp.float32).squeeze()
+        return jnp.array(state.positions, dtype=jnp.float32).reshape(1, -1)
 
-    def reset(self, key: chex.PRNGKey, params: Optional[EnvParams] = None) -> Tuple[STATE, EnvState]:
+    def reset_env(self, key: chex.PRNGKey, env_params: Optional[EnvParams] = None) -> Tuple[STATE, EnvState]:
 
         self.time = 0.
 
-        n_dim = env_params.n_predators + env_params.n_prey
+        n_dim = 2  # FIXME: Make variable
 
         rng, *rngs = jax.random.split(key, 3)
         rng_x, rng_y = rngs
 
-        x_coords = jax.random.uniform(rng_x, minval=min(env_params.x_lims), maxval=max(env_params.x_lims), shape=(n_dim,))
-        y_coords = jax.random.uniform(rng_y, minval=min(env_params.y_lims), maxval=max(env_params.y_lims), shape=(n_dim,))
+        x_coords = jax.random.uniform(rng_x, minval=env_params.x_lims[0], maxval=env_params.x_lims[1], shape=(n_dim,))
+        y_coords = jax.random.uniform(rng_y, minval=env_params.y_lims[0], maxval=env_params.y_lims[1], shape=(n_dim,))
+
         state = jnp.stack((x_coords.T, y_coords.T), axis=-1)
 
         state = EnvState(positions=state)
 
         return self.get_obs(state), state
 
-    def step(self, key: chex.PRNGKey, state: STATE, action: ACTIONS, params: EnvParams)\
+    def step_env(self, key: chex.PRNGKey, state: EnvState, actions: ACTIONS, env_params: EnvParams)\
             -> Tuple[STATE, EnvState, REWARDS, bool, bool, dict]:
 
         self.time += env_params.dt
 
         velocities = jnp.stack((
-            jnp.repeat(env_params.prey_velocity, env_params.n_prey),
-            jnp.repeat(env_params.predator_velocity, env_params.n_predators)
+            jnp.repeat(env_params.prey_velocity, 1),  #FIXME
+            jnp.repeat(env_params.predator_velocity, 1)  #FIXME
         ), axis=0)
 
         cond_list = [actions==0, actions==1, actions==2, actions==3]
@@ -78,10 +80,10 @@ class Hunting(environment.Environment):
         directions_rad = jnp.select(cond_list, choice_list)
         directions = jnp.stack((jnp.cos(directions_rad), jnp.sin(directions_rad)), -1)
         displacement =  env_params.dt * velocities * directions
-        next_state = self.get_obs(state) + displacement
+        next_state = state.positions + displacement
         next_state = jnp.stack((
-            jnp.clip(jnp.take(next_state, 0, axis=1), min(env_params.x_lims), max(env_params.x_lims)),
-            jnp.clip(jnp.take(next_state, 1, axis=1), min(env_params.y_lims), max(env_params.y_lims))
+            jnp.clip(jnp.take(next_state, 0, axis=1), env_params.x_lims[0], env_params.x_lims[1]),
+            jnp.clip(jnp.take(next_state, 1, axis=1), env_params.y_lims[0], env_params.y_lims[1])
         ), axis=1)
 
         distance = jnp.linalg.norm((jnp.take(next_state, 0, axis=0)-jnp.take(next_state, 1, axis=0)))
@@ -93,7 +95,10 @@ class Hunting(environment.Environment):
 
         terminated = prey_caught
         truncated = self.time > env_params.max_time
-        info = {"truncated": truncated}
+        info = {
+            "truncated": truncated,
+            "rewards": rewards,
+        }
 
         next_state = EnvState(positions=next_state)
 
@@ -103,8 +108,9 @@ class Hunting(environment.Environment):
                 terminated.squeeze(),
                 info)
 
-
     def render(self, state: STATE, actions: ACTIONS, env_params: EnvParams) -> plt.Figure:
+
+        if state.shape[0] == 1: state = state.reshape(2, 2)
 
         xticks = jnp.round(jnp.linspace(min(env_params.x_lims), max(env_params.x_lims), 6), 1)
         yticks = jnp.round(jnp.linspace(min(env_params.y_lims), max(env_params.y_lims), 6), 1)
@@ -131,49 +137,47 @@ class Hunting(environment.Environment):
     def name(self) -> str:
         return "Hunting"
 
-    def num_actions(self, params: EnvParams) -> int:
+    def num_actions(self, env_params: EnvParams) -> int:
         return 4
 
-    def action_space(self, params: EnvParams) -> spaces.Discrete:
-        return spaces.Discrete(self.num_actions(EnvParams))
+    def action_space(self, env_params: EnvParams) -> spaces.Discrete:
+        return spaces.Discrete(self.num_actions(env_params))
 
 
 if __name__ == "__main__":
 
-    with jax.disable_jit(True):
+    env_params = EnvParams()
+    env = Hunting()
 
-        env_params = EnvParams()
-        env = Hunting()
+    rng = jax.random.PRNGKey(42)
+    rng, rng_reset = jax.random.split(rng, 2)
+    state, env_state = env.reset(rng_reset, env_params)
 
-        rng = jax.random.PRNGKey(42)
-        rng, rng_reset = jax.random.split(rng, 2)
-        state, env_state = env.reset(rng_reset, env_params)
+    figs = []
+    fig = env.render(state, jnp.zeros(2), env_params)
+    figs.append(fig)
 
-        figs = []
-        fig = env.render(state, jnp.zeros(2), env_params)
+    step = 0
+    done = False
+    state_log = []
+    action_log = []
+    reward_log = []
+
+    while not done:
+
+        rng, rng_action, rng_step = jax.random.split(rng, 3)
+        actions = jax.random.choice(rng_action, jnp.arange(env.num_actions(env_params)), shape=(env_params.n_prey+env_params.n_predators,))
+        next_state, next_env_state, rewards, terminated, info = env.step(rng_step, env_state, actions, env_params)
+        done = terminated or info["truncated"]
+        fig = env.render(next_state, actions, env_params)
         figs.append(fig)
+        step += 1
+        state = next_state
+        env_state = next_env_state
 
-        step = 0
-        done = False
-        state_log = []
-        action_log = []
-        reward_log = []
-
-        while not done:
-
-            rng, rng_action, rng_step = jax.random.split(rng, 3)
-            actions = jax.random.choice(rng_action, jnp.arange(env.num_actions(env_params)), shape=(env_params.n_prey+env_params.n_predators,))
-            next_state, next_env_state, rewards, terminated, info = env.step(rng_step, env_state, actions, env_params)
-            done = terminated or info["truncated"]
-            fig = env.render(next_state, actions, env_params)
-            figs.append(fig)
-            step += 1
-            state = next_state
-            env_state = next_env_state
-
-            state_log.append(state)
-            action_log.append(actions)
-            reward_log.append(rewards)
+        state_log.append(state)
+        action_log.append(actions)
+        reward_log.append(rewards)
 
     from matplotlib.backends.backend_pdf import PdfPages
     pp = PdfPages(r"figures/random_policy_render.pdf")

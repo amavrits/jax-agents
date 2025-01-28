@@ -5,7 +5,7 @@ from flax import struct
 from optax._src import base
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
-from typing import Dict, NamedTuple, Callable, Type, Union, Optional, Any
+from typing import Dict, NamedTuple, Callable, Type, Union, Optional, Any, Tuple, List
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 from dataclasses import dataclass, field
 import os
@@ -95,11 +95,11 @@ class Runner:
     and critic.
     """
 
-    """Training status (params, training step and optimizer) of the actor"""
-    actor_training: TrainState
+    """List of training statuses (params, training step and optimizer) of the actor"""
+    actor_trainings: List[TrainState]
 
-    """Training status (params, training step and optimizer) of the critic"""
-    critic_training: TrainState
+    """List of training statuses (params, training step and optimizer) of the critic"""
+    critic_trainings: List[TrainState]
 
     """State of the environment"""
     env_state: LogEnvState
@@ -114,8 +114,8 @@ class Runner:
     hyperparams: HyperParameters
 
 
-class AgentConfig(NamedTuple):
-    """Configuration of the PPO agents, passed at initialization of instance."""
+class IPPOConfig(NamedTuple):
+    """Configuration of the IPPO training algorithm agents, passed at initialization of instance."""
 
     """
     Number of training steps (not episodes).
@@ -132,12 +132,6 @@ class AgentConfig(NamedTuple):
     """Number of steps to be collected when sampling trajectories"""
     rollout_length: int
 
-    """Architecture of the actor network"""
-    actor_network: Type[flax.linen.Module]
-
-    """Architecture of the critic network"""
-    critic_network: Type[flax.linen.Module]
-
     """Epochs for actor training per update step"""
     actor_epochs: int
 
@@ -147,20 +141,13 @@ class AgentConfig(NamedTuple):
     """Optax optimizer to be used in training. Giving only the optimizer class allows for initializing within the 
     self.train method and eventually running multiple combinations of the optimizer parameters via jax.vmap.
     """
-    # optimizer: Callable[[Dict], Optional[base.GradientTransformation]]
-    optimizer: Callable[[Any], Optional[base.GradientTransformation]]
+    optimizers: Callable[[Any], Optional[base.GradientTransformation]]
 
     """Frequency of evaluating the agent in update steps."""
     eval_frequency: int = 1
 
     """PRNG key for evaluation of agent performance during training (if 'None' evaluation isn't performed)"""
     eval_rng: Optional[PRNGKeyArray] = None
-
-    """Absolute path for checkpointing"""
-    checkpoint_dir: Optional[Union[str, os.PathLike]] = None
-
-    """Whether an agent should be restored from training checkpoints, for continuing training or deploying."""
-    restore_agent: bool = False
 
 
 @struct.dataclass
