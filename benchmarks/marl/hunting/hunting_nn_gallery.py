@@ -68,7 +68,7 @@ class QRDDQN_NN(nn.Module):
         return q
 
 
-class PGActorNN(nn.Module):
+class PGActorNNDiscrete(nn.Module):
     config: dict
 
     @nn.compact
@@ -103,3 +103,24 @@ class PGCriticNN(nn.Module):
         critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(critic)
 
         return jnp.squeeze(critic, axis=-1)
+
+
+class PGActorNNContinuous(nn.Module):
+    config: dict
+
+    @nn.compact
+    def __call__(self, x):
+
+        activation = nn.tanh
+
+        actor = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
+        actor = activation(actor)
+        actor = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(actor)
+        actor = activation(actor)
+        actor = nn.Dense(2, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(actor)
+
+        # pi = distrax.Normal(loc=jnp.take(actor, 0), scale=jnp.exp(jnp.take(actor, 1)))
+        pi = distrax.Beta(alpha=1+jnp.exp(jnp.take(actor, 0)), beta=1+jnp.exp(jnp.take(actor, 1)))
+        # pi = distrax.Gamma(concentration=jnp.exp(jnp.take(actor, 0)), rate=jnp.exp(jnp.take(actor, 1)))
+
+        return pi

@@ -15,7 +15,7 @@ import distrax
 import optax
 from flax.core import FrozenDict
 
-from benchmarks.marl.hunting.hunting_nn_gallery import PGActorNN, PGCriticNN
+from benchmarks.marl.hunting.hunting_nn_gallery import PGActorNNDiscrete, PGCriticNN
 from jaxagents.agent_utils.ippo_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
@@ -67,7 +67,7 @@ class IPPOAgent:
     # restoring or passing a trained agent (from serial training or restoring)
     previous_training_max_step: ClassVar[int] = 0
 
-    def __init__(self, actor_network: Type[PGActorNN], critic_network: Type[PGCriticNN]) -> None:
+    def __init__(self, actor_network: Type[PGActorNNDiscrete], critic_network: Type[PGCriticNN]) -> None:
         """
         :param actor_network: Architecture of the actor network
         :param critic_network: Architecture of the critic network
@@ -867,13 +867,11 @@ class IPPO:
             )
             metric.update({
                 "episode_returns": sum_rewards,
-                # "episode_info": ,
             })
 
         else:
             metric.update({
                 "episode_returns": jnp.zeros([len(self.agents)]),
-                # "episode_info": ,
             })
 
         return metric
@@ -889,7 +887,8 @@ class IPPO:
         """
 
         _, _, _, terminated, info, _, _ = eval_runner
-        return jnp.logical_and(jnp.logical_not(terminated), jnp.logical_not(info["truncated"]))
+        # return jnp.logical_and(jnp.logical_not(terminated), jnp.logical_not(info["truncated"]))
+        return jnp.logical_not(terminated)
 
     @partial(jax.jit, static_argnums=(0,))
     def _eval_body(self, eval_runner: tuple) -> tuple:
@@ -926,7 +925,8 @@ class IPPO:
         rng_eval = jax.random.split(rng, n_episodes)
         rng, state, env_state = jax.vmap(self._reset)(rng_eval)
 
-        eval_runner = (env_state, state, actor_trainings, False, {"truncated": False}, jnp.zeros(len(self.agents)), rng)
+        # eval_runner = (env_state, state, actor_trainings, False, {"truncated": False}, jnp.zeros(len(self.agents)), rng)
+        eval_runner = (env_state, state, actor_trainings, False, {"episode_returns": jnp.zeros(len(self.agents))}, jnp.zeros(len(self.agents)), rng)
         eval_runners = jax.vmap(
             lambda t, u, v, w, x, y, z: (t, u, v, w, x, y, z),
             in_axes=(0, 0, None, None, None, None, 0)
@@ -1339,7 +1339,10 @@ class IPPO:
         """
 
         pis = self._pis(actor_trainings, state)
-        actions = jnp.asarray([jnp.argmax(pi.logits) for pi in pis])
+        # actions = jnp.asarray([jnp.argmax(pi.logits) for pi in pis])
+        # actions = jnp.asarray([jnp.where(pi.concentration>1, (pi.concentration - 1) / pi.rate, 0) for pi in pis])
+        # actions = jnp.asarray([pi.loc for pi in pis])
+        actions = jnp.asarray([(pi.alpha - 1) / (pi.alpha + pi.beta -2) for pi in pis])
         return actions
 
     def eval(self, rng: PRNGKeyArray, actor_trainings: List[TrainState], n_evals: int = 32) -> Float[Array, "n_evals"]:

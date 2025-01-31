@@ -1,22 +1,22 @@
 import jax
 import jax.numpy as jnp
 import optax
-from hunting_env import Hunting, EnvParams
+from hunting_env import HuntingDiscrete, EnvParams
 from jaxagents import ippo
-from hunting_nn_gallery import PGActorNN, PGCriticNN
+from hunting_nn_gallery import PGActorNNDiscrete, PGCriticNN
 import matplotlib.pyplot as plt
 
 
 if __name__ == "__main__":
 
     env_params = EnvParams(prey_velocity=2, predator_velocity=1)
-    env = Hunting()
+    env = HuntingDiscrete()
 
-    agents = (ippo.IPPOAgent(PGActorNN, PGCriticNN), ippo.IPPOAgent(PGActorNN, PGCriticNN))
+    agents = (ippo.IPPOAgent(PGActorNNDiscrete, PGCriticNN), ippo.IPPOAgent(PGActorNNDiscrete, PGCriticNN))
 
     config = ippo.IPPOConfig(
-        n_steps=1000,
-        batch_size=32,
+        n_steps=100,
+        batch_size=16,
         minibatch_size=4,
         rollout_length=100,
         actor_epochs=10,
@@ -43,6 +43,7 @@ if __name__ == "__main__":
     rng_train, rng_eval = jax.random.split(rng)
     runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
     # eval_metrics = ippo.eval(rng_eval, runner.actor_trainings, n_evals=16)
+    eval_metrics = ippo._eval_agent(rng_eval, runner.actor_trainings, 16)
 
     # returns_prey = training_metrics["episode_returns"][0]
     # returns_pred = training_metrics["episode_returns"][1]
@@ -74,7 +75,7 @@ if __name__ == "__main__":
         actions = ippo.policy(runner.actor_trainings, state)
         rng, rng_step = jax.random.split(rng)
         next_state, next_env_state, reward, terminated, info = env.step(rng_step, state_env, actions, env_params)
-        done = terminated
+        done = terminated or step > 250
         state = next_state
         state_env = next_env_state
         rewards.append(reward)
@@ -85,7 +86,7 @@ if __name__ == "__main__":
     rewards = np.asarray(rewards)
 
     from matplotlib.backends.backend_pdf import PdfPages
-    pp = PdfPages(r"figures/ippo_render.pdf")
+    pp = PdfPages(r"figures/ippo_discrete_render.pdf")
     [pp.savefig(fig) for fig in figs]
     pp.close()
 
@@ -103,7 +104,7 @@ if __name__ == "__main__":
         image_frames.append(img)
         plt.close(fig)
 
-    gif_path = r"figures/ippo_policy_{steps}.gif".format(steps=config.n_steps)
+    gif_path = r"figures/ippo_discrete_policy_{steps}.gif".format(steps=config.n_steps)
     image_frames[0].save(
         gif_path,
         save_all=True,
