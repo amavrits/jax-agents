@@ -15,10 +15,10 @@ if __name__ == "__main__":
     agents = (ippo.IPPOAgent(PGActorNNDiscrete, PGCriticNN), ippo.IPPOAgent(PGActorNNDiscrete, PGCriticNN))
 
     config = ippo.IPPOConfig(
-        n_steps=10_000,
-        batch_size=64,
-        minibatch_size=8,
-        rollout_length=102,
+        n_steps=100,
+        batch_size=16,
+        minibatch_size=4,
+        rollout_length=100,
         actor_epochs=10,
         critic_epochs=10,
         optimizers=[optax.adam]*len(agents),
@@ -43,7 +43,7 @@ if __name__ == "__main__":
     rng_train, rng_eval = jax.random.split(rng)
     runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
     # eval_metrics = ippo.eval(rng_eval, runner.actor_trainings, n_evals=16)
-    # eval_metrics = ippo._eval_agent(rng_eval, runner.actor_trainings, 16)
+    eval_metrics = ippo._eval_agent(rng_eval, runner.actor_trainings, 16)
 
     # returns_prey = training_metrics["episode_returns"][0]
     # returns_pred = training_metrics["episode_returns"][1]
@@ -64,7 +64,7 @@ if __name__ == "__main__":
     state, state_env = env.reset_env(rng, env_params)
 
     figs = []
-    fig = env.render(state_env, jnp.zeros(2), env_params)
+    fig = env.render(state, jnp.zeros(2), env_params)
     figs.append(fig)
 
     done = False
@@ -75,11 +75,11 @@ if __name__ == "__main__":
         actions = ippo.policy(runner.actor_trainings, state)
         rng, rng_step = jax.random.split(rng)
         next_state, next_env_state, reward, terminated, info = env.step(rng_step, state_env, actions, env_params)
-        done = terminated or info["truncated"] or step > 251
+        done = terminated or step > 250
         state = next_state
         state_env = next_env_state
         rewards.append(reward)
-        fig = env.render(next_env_state, actions, env_params)
+        fig = env.render(next_state, actions, env_params)
         figs.append(fig)
 
     import numpy as np

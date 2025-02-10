@@ -16,11 +16,11 @@ if __name__ == "__main__":
 
     config = ippo.IPPOConfig(
         n_steps=1_000,
-        batch_size=128,
+        batch_size=64,
         minibatch_size=8,
         rollout_length=int(env_params.max_time//env_params.dt),
-        actor_epochs=20,
-        critic_epochs=20,
+        actor_epochs=10,
+        critic_epochs=10,
         optimizers=[optax.adam]*len(agents),
         eval_frequency=1,
         eval_rng=jax.random.PRNGKey(18),

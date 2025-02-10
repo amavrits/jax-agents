@@ -10,6 +10,8 @@ from typing import Tuple
 from abc import abstractmethod
 from functools import partial
 import matplotlib.pyplot as plt
+from PIL import Image
+import io
 
 
 STATE = Float[Array, "n_predators+n_prey 2"]
@@ -40,65 +42,7 @@ class EnvParams:
     y_lims: Tuple[float, float] = (0., 1.)
 
 
-class HuntingBase(environment.Environment):
-
-    def __init__(self) -> None:
-        pass
-
-    @property
-    def default_params(self) -> EnvParams:
-        return EnvParams()
-
-    @abstractmethod
-    def get_obs(self, state: EnvState) -> STATE:
-        raise NotImplemented
-
-    @abstractmethod
-    def reset_env(self, key: chex.PRNGKey, env_params: Optional[EnvParams] = None) -> Tuple[STATE, EnvState]:
-        raise NotImplemented
-
-    @abstractmethod
-    def step_env(self, key: chex.PRNGKey, state: EnvState, actions: ACTIONS, env_params: EnvParams)\
-            -> Tuple[STATE, EnvState, REWARDS, bool, bool, dict]:
-        raise NotImplemented
-
-    def render(self, env_state: EnvState | EnvStateTime, actions: ACTIONS, env_params: EnvParams) -> plt.Figure:
-
-        positions = env_state.positions
-
-        xticks = jnp.round(jnp.linspace(min(env_params.x_lims), max(env_params.x_lims), 6), 1)
-        yticks = jnp.round(jnp.linspace(min(env_params.y_lims), max(env_params.y_lims), 6), 1)
-
-        fig, ax = plt.subplots(figsize=(6, 6))
-        ax.scatter(positions[0, 0], positions[0, 1], c="b", s=40, label="Prey")
-        ax.scatter(positions[1, 0], positions[1, 1], c="r", s=80, label="Predator")
-        pred_circle = plt.Circle((positions[1, 0], positions[1, 1]), env_params.predator_radius, color='r', alpha=0.3)
-        ax.add_patch(pred_circle)
-        ax.set_xlim(min(env_params.x_lims), max(env_params.x_lims))
-        ax.set_ylim(min(env_params.y_lims), max(env_params.y_lims))
-        ax.set_xticks(xticks, xticks)
-        ax.set_yticks(yticks, yticks)
-        ax.set_xlabel("X coordinate [m]", fontsize=12)
-        ax.set_ylabel("Y coordinate [m]", fontsize=12)
-        ax.legend(fontsize=10, loc='upper center', bbox_to_anchor=(0.5, 1.1), ncol=2, fancybox=True)
-        ax.grid()
-        ax.set_aspect('equal', adjustable='box')
-        plt.close()
-
-        return fig
-
-    @property
-    def name(self) -> str:
-        return "Hunting"
-
-    def num_actions(self, env_params: EnvParams) -> int:
-        return 4
-
-    def action_space(self, env_params: EnvParams) -> spaces.Discrete:
-        return spaces.Discrete(self.num_actions(env_params))
-
-
-class HuntingDiscrete(HuntingBase):
+class HuntingDiscrete(environment.Environment):
 
     def reset_env(self, key: chex.PRNGKey, env_params: Optional[EnvParams] = None) -> Tuple[STATE, EnvState]:
 
@@ -164,8 +108,65 @@ class HuntingDiscrete(HuntingBase):
                 terminated.squeeze(),
                 info)
 
+    def render(self, env_state: STATE, actions: ACTIONS, env_params: EnvParams) -> plt.Figure:
 
-class HuntingContinuous(HuntingBase):
+        # positions = env_state.positions.squeeze()
+        positions = env_state.squeeze()
+
+        xticks = jnp.round(jnp.linspace(min(env_params.x_lims), max(env_params.x_lims), 6), 1)
+        yticks = jnp.round(jnp.linspace(min(env_params.y_lims), max(env_params.y_lims), 6), 1)
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.scatter(positions[0, 0], positions[0, 1], c="b", s=40, label="Prey")
+        ax.scatter(positions[1, 0], positions[1, 1], c="r", s=80, label="Predator")
+        pred_circle = plt.Circle((positions[1, 0], positions[1, 1]), env_params.predator_radius, color='r', alpha=0.3)
+        ax.add_patch(pred_circle)
+        ax.set_xlim(min(env_params.x_lims), max(env_params.x_lims))
+        ax.set_ylim(min(env_params.y_lims), max(env_params.y_lims))
+        ax.set_xticks(xticks, xticks)
+        ax.set_yticks(yticks, yticks)
+        ax.set_xlabel("X coordinate [m]", fontsize=12)
+        ax.set_ylabel("Y coordinate [m]", fontsize=12)
+        ax.legend(fontsize=10, loc='upper center', bbox_to_anchor=(0.5, 1.1), ncol=2, fancybox=True)
+        ax.grid()
+        ax.set_aspect('equal', adjustable='box')
+        plt.close()
+
+        return fig
+
+    def animate(self, states: STATE, actions: ACTIONS, env_params: EnvParams, gif_path: str) -> None:
+
+        figs = list(map(lambda x: self.render(x, actions, env_params), states))
+
+        image_frames = []
+        for fig in figs:
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png')
+            buf.seek(0)
+            img = Image.open(buf)
+            image_frames.append(img)
+            plt.close(fig)
+
+        image_frames[0].save(
+            gif_path,
+            save_all=True,
+            append_images=image_frames[1:],
+            duration=50,
+            loop=0
+        )
+
+    @property
+    def name(self) -> str:
+        return "Hunting"
+
+    def num_actions(self, env_params: EnvParams) -> int:
+        return 4
+
+    def action_space(self, env_params: EnvParams) -> spaces.Discrete:
+        return spaces.Discrete(self.num_actions(env_params))
+
+
+class HuntingContinuous(environment.Environment):
 
     def reset_env(self, key: chex.PRNGKey, env_params: Optional[EnvParams] = None) -> Tuple[STATE, EnvState]:
 
@@ -184,7 +185,8 @@ class HuntingContinuous(HuntingBase):
         return self.get_obs(state), state
 
     def get_obs(self, state: EnvStateTime) -> STATE:
-        return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1)), dtype=jnp.float32)
+        # return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1)), dtype=jnp.float32)
+        return state.positions.reshape(1, -1)
 
     def step_env(self, key: chex.PRNGKey, state: EnvStateTime, actions: ACTIONS, env_params: EnvParams) \
             -> Tuple[STATE, EnvStateTime, REWARDS, bool, bool, dict]:
@@ -210,7 +212,8 @@ class HuntingContinuous(HuntingBase):
         prey_caught = jnp.less_equal(distance, env_params.predator_radius)
 
         next_time = state.time + env_params.dt
-        time_over = jnp.greater(next_time, env_params.max_time)
+        # time_over = jnp.greater(next_time, env_params.max_time)
+        time_over = False
         terminated = jnp.logical_or(prey_caught, time_over)
         truncated = time_over
 
@@ -233,6 +236,62 @@ class HuntingContinuous(HuntingBase):
                 rewards.squeeze(),
                 terminated.squeeze(),
                 info)
+
+    def render(self, env_state: STATE, actions: ACTIONS, env_params: EnvParams) -> plt.Figure:
+
+        positions = env_state.squeeze()
+
+        xticks = jnp.round(jnp.linspace(min(env_params.x_lims), max(env_params.x_lims), 6), 1)
+        yticks = jnp.round(jnp.linspace(min(env_params.y_lims), max(env_params.y_lims), 6), 1)
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.scatter(positions[0, 0], positions[0, 1], c="b", s=40, label="Prey")
+        ax.scatter(positions[1, 0], positions[1, 1], c="r", s=80, label="Predator")
+        pred_circle = plt.Circle((positions[1, 0], positions[1, 1]), env_params.predator_radius, color='r', alpha=0.3)
+        ax.add_patch(pred_circle)
+        ax.set_xlim(min(env_params.x_lims), max(env_params.x_lims))
+        ax.set_ylim(min(env_params.y_lims), max(env_params.y_lims))
+        ax.set_xticks(xticks, xticks)
+        ax.set_yticks(yticks, yticks)
+        ax.set_xlabel("X coordinate [m]", fontsize=12)
+        ax.set_ylabel("Y coordinate [m]", fontsize=12)
+        ax.legend(fontsize=10, loc='upper center', bbox_to_anchor=(0.5, 1.1), ncol=2, fancybox=True)
+        ax.grid()
+        ax.set_aspect('equal', adjustable='box')
+        plt.close()
+
+        return fig
+
+    def animate(self, states: STATE, actions: ACTIONS, env_params: EnvParams, gif_path: str) -> None:
+
+        figs = list(map(lambda x: self.render(x, actions, env_params), states))
+
+        image_frames = []
+        for fig in figs:
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png')
+            buf.seek(0)
+            img = Image.open(buf)
+            image_frames.append(img)
+            plt.close(fig)
+
+        image_frames[0].save(
+            gif_path,
+            save_all=True,
+            append_images=image_frames[1:],
+            duration=50,
+            loop=0
+        )
+
+    @property
+    def name(self) -> str:
+        return "Hunting"
+
+    def num_actions(self, env_params: EnvParams) -> int:
+        return 4
+
+    def action_space(self, env_params: EnvParams) -> spaces.Discrete:
+        return spaces.Discrete(self.num_actions(env_params))
 
 
 if __name__ == "__main__":

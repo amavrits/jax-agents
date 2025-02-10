@@ -1045,7 +1045,10 @@ class IPPO:
         :return: A tuple of the stochastic policy and the value of the state.
         """
 
-        pis = list(map(lambda x: x.apply_fn(x.params, state), actor_trainings))
+        pis = []
+        for (agent, actor_training) in zip(self.agents, actor_trainings):
+            pi = agent._pi(actor_training, state)
+            pis.append(pi)
 
         return pis
 
@@ -1060,8 +1063,42 @@ class IPPO:
         :return: A tuple of the stochastic policy and the value of the state.
         """
 
-        pis = list(map(lambda x: x.apply_fn(x.params, state), actor_trainings))
-        values = jnp.asarray(list(map(lambda x: x.apply_fn(x.params, state), critic_trainings))).squeeze()
+        # pis, values = [], []
+        # for (agent, actor_training, critic_training) in zip(self.agents, actor_trainings, critic_trainings):
+        #     pi, value = agent._pi_value(actor_training, critic_training, state)
+        #     pis.append(pi)
+        #     values.append(value)
+
+        # A = jax.tree_map(lambda x: jnp.array([x] * 5), actor_training)
+        #
+        # A = tuple(actor_trainings)
+        # # A_batched = jax.tree_map(lambda x: jnp.expand_dims(x, axis=0), A)
+        # A_batched = jax.tree_map(lambda *x: jnp.stack(x), (actor_trainings[0], actor_trainings[1]))
+        #
+        # # pis, values = jax.vmap(lambda y: agent._pi_value(y, critic_training, state))(A_batched)
+        # pis = jax.vmap(lambda x: x.apply_fn(x.params, state))(A)
+        # pis = jax.vmap(lambda x: x.apply_fn(x.params, state))(A_batched)
+        # pis = jax.vmap(lambda x: x.apply_fn(x.params, state), in_axes=(tuple([actor_training])))(A)
+        # AA = pis.sample(seed=jax.random.PRNGKey(42))
+
+        # params_list = [train_state.params for train_state in actor_trainings]
+        # apply_fn_list = [train_state.apply_fn for train_state in actor_trainings]
+        # def mapped_apply(params, apply_fn):
+        #     return apply_fn(params, state)
+        # pis = list(map(mapped_apply, params_list, apply_fn_list))
+
+        # params_list, apply_fn_list = jax.tree_map(lambda x: (x.params, x.apply_fn), tuple(actor_trainings))
+
+        # pis = jax.vmap(lambda x, y: x(y, state))(
+        #     (actor_trainings[0].apply_fn, actor_trainings[1].apply_fn),
+        #     (actor_trainings[0].params, actor_trainings[1].params),
+        # )
+
+        def f(a, aa):
+            apply_fn, params = aa.apply_fn, aa.params
+            return a, apply_fn(params, state)
+
+        A, AA = lax.scan(f, (), tuple(actor_trainings), 2)
 
         return pis, values
 
@@ -1074,10 +1111,12 @@ class IPPO:
         :return: A random key after action selection and the selected action from the stochastic policy.
         """
 
-        rng, *keys = jax.random.split(rng, len(self.agents)+1)
-        actions = jnp.asarray(list(map(lambda x, y: x.sample(seed=y), pis, keys)))
-
-        return rng, actions
+        actions = []
+        for pi in pis:
+            rng, rng_action_sample = jax.random.split(rng)
+            action = pi.sample(seed=rng_action_sample)
+            actions.append(action)
+        return rng, jnp.asarray(actions)
 
     @partial(jax.jit, static_argnums=(0,))
     def _make_transition(self,
@@ -1128,7 +1167,7 @@ class IPPO:
 
         rng, actions = self._select_actions(rng, pis)
 
-        log_prob = jnp.asarray(list(map(lambda x, y: x.log_prob(y), pis, actions)))
+        log_prob = jnp.asarray([pi.log_prob(action) for (pi, action) in zip(pis, actions)])
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, actions)
 
@@ -1231,13 +1270,10 @@ class IPPO:
 
         traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
 
-        last_state_value = jnp.asarray(list(map(
-            lambda z: jax.vmap(
-                lambda x, y: jax.lax.stop_gradient(z.apply_fn(x, y)),
-                in_axes=(None, 0)
-            )(z.params, last_state),
-            update_runner.critic_trainings)
-        ))
+        last_state_value = jnp.asarray([
+            jax.vmap(lambda x, y: jax.lax.stop_gradient(critic_training.apply_fn(x, y)), in_axes=(None, 0))(critic_training.params, last_state)
+            for critic_training in update_runner.critic_trainings
+        ])
         last_state_value = jnp.transpose(last_state_value, (1, 2, 0))
 
         """Remove first entry so that the next state values per step are in sync with the state rewards."""
@@ -1303,17 +1339,17 @@ class IPPO:
         last_env_state, last_state, _, _, rng = rollout_runners
         traj_batch = self._process_trajectory(update_runner, traj_batch, last_state)
 
-        actor_trainings = list(map(
-            lambda x, y, z: x._actor_update(update_runner, y, traj_batch, self.config.batch_size,
-                                         self.config.minibatch_size, self.config.actor_epochs, z),
-            self.agents, update_runner.actor_trainings, range(len(self.agents))
-        ))
+        actor_trainings = [
+            agent._actor_update(update_runner, actor_training, traj_batch, self.config.batch_size,
+                                self.config.minibatch_size, self.config.actor_epochs, i)
+            for i, (agent, actor_training) in enumerate(zip(self.agents, update_runner.actor_trainings))
+        ]
 
-        critic_trainings = list(map(
-            lambda x, y, z: x._critic_update(update_runner, y, traj_batch, self.config.batch_size,
-                                             self.config.minibatch_size, self.config.critic_epochs, z),
-            self.agents, update_runner.critic_trainings, range(len(self.agents))
-        ))
+        critic_trainings = [
+            agent._critic_update(update_runner, critic_training, traj_batch, self.config.batch_size,
+                                self.config.minibatch_size, self.config.critic_epochs, i)
+            for i, (agent, critic_training) in enumerate(zip(self.agents, update_runner.critic_trainings))
+        ]
 
         """Update runner as a dataclass."""
         update_runner = update_runner.replace(
@@ -1335,8 +1371,10 @@ class IPPO:
         """
 
         pis = self._pis(actor_trainings, state)
-        # actions = jnp.asarray(list(map(lambda x: jnp.argmax(x.logits), pis)))
-        actions = jnp.asarray(list(map(lambda x: (x.alpha - 1) / (x.alpha + x.beta -2), pis)))
+        # actions = jnp.asarray([jnp.argmax(pi.logits) for pi in pis])
+        # actions = jnp.asarray([jnp.where(pi.concentration>1, (pi.concentration - 1) / pi.rate, 0) for pi in pis])
+        # actions = jnp.asarray([pi.loc for pi in pis])
+        actions = jnp.asarray([(pi.alpha - 1) / (pi.alpha + pi.beta -2) for pi in pis])
         return actions
 
     def eval(self, rng: PRNGKeyArray, actor_trainings: List[TrainState], n_evals: int = 32) -> Float[Array, "n_evals"]:

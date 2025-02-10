@@ -95,11 +95,11 @@ class Runner:
     and critic.
     """
 
-    """List of training statuses (params, training step and optimizer) of the actor"""
-    actor_trainings: List[TrainState]
+    """Training status (params, training step and optimizer) of the actor"""
+    actor_training: List[TrainState]
 
-    """List of training statuses (params, training step and optimizer) of the critic"""
-    critic_trainings: List[TrainState]
+    """Training status (params, training step and optimizer) of the critic"""
+    critic_training: List[TrainState]
 
     """State of the environment"""
     env_state: LogEnvState
@@ -112,6 +112,33 @@ class Runner:
 
     """Training hyperparameters"""
     hyperparams: HyperParameters
+
+
+# @struct.dataclass
+# class Runner:
+#     """
+#     Object for running, passes training status, environment state and hyperparameters between policy update steps.
+#     The runner is directed to have batch_size environment (states) and PRNG's but only a single TrainState per the actor
+#     and critic.
+#     """
+#
+#     """List of training statuses (params, training step and optimizer) of the actor"""
+#     actor_trainings: List[TrainState]
+#
+#     """List of training statuses (params, training step and optimizer) of the critic"""
+#     critic_trainings: List[TrainState]
+#
+#     """State of the environment"""
+#     env_state: LogEnvState
+#
+#     """State of the environment in array"""
+#     state: Float[Array, "state_size"]
+#
+#     """Random key, required for reproducibility of results and control of randomness"""
+#     rng: PRNGKeyArray
+#
+#     """Training hyperparameters"""
+#     hyperparams: HyperParameters
 
 
 class IPPOConfig(NamedTuple):
@@ -138,10 +165,16 @@ class IPPOConfig(NamedTuple):
     """Epochs for critic training per update step"""
     critic_epochs: int
 
+    """Architecture of the actor network"""
+    actor_network: Type[flax.linen.Module]
+
+    """Architecture of the critic network"""
+    critic_network: Type[flax.linen.Module]
+
     """Optax optimizer to be used in training. Giving only the optimizer class allows for initializing within the 
     self.train method and eventually running multiple combinations of the optimizer parameters via jax.vmap.
     """
-    optimizers: Callable[[Any], Optional[base.GradientTransformation]]
+    optimizer: Callable[[Any], Optional[base.GradientTransformation]]
 
     """Frequency of evaluating the agent in update steps."""
     eval_frequency: int = 1
