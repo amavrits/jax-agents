@@ -18,26 +18,28 @@ class HuntingIPPO(IPPO):
     @partial(jax.jit, static_argnums=(0,))
     def _entropy(self, actor_training: TrainState, state: STATE_TYPE)-> Float[Array, "n_agents"]:
         params = actor_training.apply_fn(actor_training.params, state)
-        # pis = distrax.Normal(loc=jnp.take(params, 0, axis=-1), scale=jnp.take(params, 1, axis=-1))
         # pis = distrax.Normal(loc=jnp.take(params, 0, axis=-1), scale=jnp.exp(jnp.take(params, 1, axis=-1)))
-        pis = distrax.Beta(alpha=jnp.take(params, 0, axis=-1), beta=jnp.take(params, 1, axis=-1))
+        pis = distrax.Normal(loc=jnp.take(params, 0, axis=-1), scale=3.)
         return pis.entropy()
 
     @partial(jax.jit, static_argnums=(0,))
     def _log_prob(self, actor_training: TrainState, state: STATE_TYPE, actions: Int[Array, "n_agents"])\
             -> Float[Array, "n_agents"]:
         params = actor_training.apply_fn(actor_training.params, state)
-        # log_probs = distrax.Normal(loc=jnp.take(params, 0, axis=-1), scale=jnp.take(params, 1, axis=-1)).log_prob(actions)
-        # log_probs = distrax.Normal(loc=jnp.take(params, 0, axis=-1), scale=jnp.exp(jnp.take(params, 1, axis=-1))).log_prob(actions)
-        log_probs = distrax.Beta(alpha=jnp.take(params, 0, axis=-1), beta=jnp.take(params, 1, axis=-1)).log_prob(actions)
+        # actions_base = jnp.arctanh(2*actions-1)
+        # actions_base = jnp.arctanh(actions)
+        # log_probs = distrax.Normal(loc=jnp.take(params, 0, axis=-1), scale=jnp.exp(jnp.take(params, 1, axis=-1))).log_prob(actions_base)
+        log_probs = distrax.Normal(loc=jnp.take(params, 0, axis=-1), scale=3.).log_prob(actions)
         return log_probs
 
     @partial(jax.jit, static_argnums=(0,))
     def _mode(self, actor_training: TrainState, state: STATE_TYPE) -> Float[Array, "n_agents"]:
         params = actor_training.apply_fn(jax.lax.stop_gradient(actor_training.params), state)
-        # actions = jnp.take(params, 0, axis=-1)
-        actions = (jnp.take(params, 0, axis=-1) - 1) / (jnp.take(params, 0, axis=-1) + jnp.take(params, 1, axis=-1) - 2)
-        return actions
+        actions_base = jnp.take(params, 0, axis=-1)
+        # actions = 0.5 * (1 + jax.nn.tanh(actions_base))
+        # actions = jax.nn.tanh(actions_base)
+        # actions = (jnp.take(params, 0, axis=-1) - 1) / (jnp.take(params, 0, axis=-1) + jnp.take(params, 1, axis=-1) - 2)
+        return actions_base
 
     @partial(jax.jit, static_argnums=(0,))
     def _sample_actions(self, rng: PRNGKeyArray, actor_training: TrainState, state: STATE_TYPE)\
@@ -55,16 +57,29 @@ class HuntingIPPO(IPPO):
 
         params = actor_training.apply_fn(actor_training.params, state)
 
-        actions = jnp.stack((
-            # distrax.Normal(loc=jnp.take(jnp.take(params, 0, axis=0), 0, axis=-1), scale=jnp.take(jnp.take(params, 0, axis=0), 1, axis=-1)).sample(seed=rng_actors[0]),
-            # distrax.Normal(loc=jnp.take(jnp.take(params, 0, axis=0), 0, axis=-1), scale=jnp.exp(jnp.take(jnp.take(params, 0, axis=0), 1, axis=-1))).sample(seed=rng_actors[0]),
-            distrax.Beta(alpha=jnp.take(jnp.take(params, 0, axis=0), 0, axis=-1), beta=jnp.take(jnp.take(params, 0, axis=0), 1, axis=-1)).sample(seed=rng_actors[0]),
-            # distrax.Normal(loc=jnp.take(jnp.take(params, 1, axis=0), 0, axis=-1), scale=jnp.take(jnp.take(params, 1, axis=0), 1, axis=-1)).sample(seed=rng_actors[1]),
-            # distrax.Normal(loc=jnp.take(jnp.take(params, 1, axis=0), 0, axis=-1), scale=jnp.exp(jnp.take(jnp.take(params, 1, axis=0), 1, axis=-1))).sample(seed=rng_actors[1]),
-            distrax.Beta(alpha=jnp.take(jnp.take(params, 1, axis=0), 0, axis=-1), beta=jnp.take(jnp.take(params, 1, axis=0), 1, axis=-1)).sample(seed=rng_actors[1]),
-        ))
+        # params = jnp.exp(params)
 
-        return actions
+        # actions_base = jnp.stack((
+        #     distrax.Normal(
+        #         loc=jnp.take(jnp.take(params, 0, axis=0), 0, axis=-1),
+        #         scale=jnp.take(jnp.take(params, 0, axis=0), 1, axis=-1)
+        #     ).sample(seed=rng_actors[0]),
+        #     distrax.Normal(
+        #         loc=jnp.take(jnp.take(params, 1, axis=0), 0, axis=-1),
+        #         scale=jnp.take(jnp.take(params, 1, axis=0), 1, axis=-1)
+        #     ).sample(seed=rng_actors[1]),
+        # ))
+
+        actions_base = distrax.Normal(
+            loc=jnp.take(params, 0, axis=-1),
+            # scale=jnp.exp(jnp.take(params, 1, axis=-1))
+            scale=3.
+            ).sample(seed=rng_actors[0])
+
+        # actions = 0.5 * (1 + jax.nn.tanh(actions_base))
+        # actions = jax.nn.tanh(actions_base)
+
+        return actions_base
 
 
 def plot_training(training_metrics, path):
@@ -91,11 +106,11 @@ if __name__ == "__main__":
 
     config = IPPOConfig(
         n_steps=1_000,
-        batch_size=64,
-        minibatch_size=8,
-        rollout_length=102,
-        actor_epochs=20,
-        critic_epochs=20,
+        batch_size=256,
+        minibatch_size=16,
+        rollout_length=201,
+        actor_epochs=50,
+        critic_epochs=50,
         actor_network=PGActorNNContinuousMA,
         critic_network=PGCriticNNMA,
         optimizer=optax.adam,
@@ -105,12 +120,12 @@ if __name__ == "__main__":
 
     hyperparams = HyperParameters(
         gamma=0.99,
-        eps_clip=0.2,
+        eps_clip=0.05,
         kl_threshold=1e-5,
         gae_lambda=0.97,
-        ent_coeff=0.0,
+        ent_coeff=0.001,
         vf_coeff=1.0,
-        actor_optimizer_params=OptimizerParams(learning_rate=3e-4, eps=1e-3, grad_clip=1),
+        actor_optimizer_params=OptimizerParams(learning_rate=1e-3, eps=1e-3, grad_clip=1),
         critic_optimizer_params=OptimizerParams(learning_rate=1e-3, eps=1e-3, grad_clip=1)
     )
 
@@ -122,18 +137,19 @@ if __name__ == "__main__":
     # with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
     # eval_metrics = jax.block_until_ready(ippo.eval(rng_eval, runner.actor_training, n_evals=16))
 
-
     def f(runner, i):
         rng, actor_training, state, state_env = runner
+        params = actor_training.apply_fn(actor_training.params, state)
         actions = ippo.policy(actor_training, state)
         rng, rng_step = jax.random.split(rng)
         next_state, next_env_state, reward, terminated, info = env.step(rng_step, state_env, actions, env_params)
         runner = rng, actor_training, next_state, next_env_state
         m = {
             "step": i,
-            "state": state.reshape(-1, 2, 2),
+            "params": params,
+            "state": state_env.positions.reshape(-1, 2, 2),
             "actions": actions,
-            "next_state": next_state.reshape(-1, 2, 2),
+            "next_state": next_env_state.positions.reshape(-1, 2, 2),
             "reward": reward,
             "terminated": terminated,
         }
@@ -141,13 +157,15 @@ if __name__ == "__main__":
 
     rng = jax.random.PRNGKey(43)
     state, state_env = env.reset(rng, env_params)
-    runner = rng, runner.actor_training, state, state_env
-    _, m = jax.lax.scan(scan_tqdm(100)(f), runner, jnp.arange(100))
-    m = {key: np.asarray(val) for (key, val) in m.items()}
+    eval_runner = rng, runner.actor_training, state, state_env
+    eval_runner, metrics = jax.lax.scan(scan_tqdm(300)(f), eval_runner, jnp.arange(300))
+    metrics = {key: np.asarray(val) for (key, val) in metrics.items()}
+    actions = metrics["actions"]
+    params = metrics["params"].squeeze()
 
     # training_plot_path = r"figures/ippo_continuous_policy_training_{steps}.png".format(steps=config.n_steps)
     # plot_training(training_metrics, training_plot_path)
 
     gif_path = r"figures/ippo_continuous_policy_{steps}.gif".format(steps=config.n_steps)
-    env.animate(m["state"], [None, None], env_params, gif_path)
+    env.animate(metrics["state"], [None, None], env_params, gif_path)
 

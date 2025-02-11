@@ -185,15 +185,16 @@ class HuntingContinuous(environment.Environment):
         return self.get_obs(state), state
 
     def get_obs(self, state: EnvStateTime) -> STATE:
-        # return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1)), dtype=jnp.float32)
-        return state.positions.reshape(1, -1)
+        return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1)), dtype=jnp.float32)
+        # return state.positions.reshape(1, -1)
 
     def step_env(self, key: chex.PRNGKey, state: EnvStateTime, actions: ACTIONS, env_params: EnvParams) \
             -> Tuple[STATE, EnvStateTime, REWARDS, bool, bool, dict]:
 
         # self.time += env_params.dt
 
-        actions *= 2 * jnp.pi
+        # actions *= jnp.pi
+        actions = jnp.clip(actions, -jnp.pi, +jnp.pi)
 
         velocities = jnp.stack((
             jnp.repeat(env_params.prey_velocity, 1),  # FIXME
@@ -212,14 +213,15 @@ class HuntingContinuous(environment.Environment):
         prey_caught = jnp.less_equal(distance, env_params.predator_radius)
 
         next_time = state.time + env_params.dt
-        # time_over = jnp.greater(next_time, env_params.max_time)
-        time_over = False
+        time_over = jnp.greater(next_time, env_params.max_time)
+        # time_over = False
         terminated = jnp.logical_or(prey_caught, time_over)
         truncated = time_over
 
         reward_prey = jnp.where(jnp.greater(distance, env_params.predator_radius), distance, -env_params.caught_reward)
         reward_predator = -reward_prey
         rewards = jnp.stack((reward_prey, reward_predator), axis=-1).squeeze()
+        # rewards = jnp.stack((jnp.clip(reward_prey, , None), reward_predator), axis=-1).squeeze()
 
         rewards_time_over = jnp.asarray([env_params.caught_reward, -env_params.caught_reward]).squeeze()
         rewards = jnp.where(time_over, rewards_time_over, rewards)

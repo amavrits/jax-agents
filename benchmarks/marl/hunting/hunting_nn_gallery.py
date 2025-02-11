@@ -162,11 +162,7 @@ class PGActorNNContinuousMA(nn.Module):
         actor = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(actor)
         actor = activation(actor)
         actor = nn.Dense(n_actors*2, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(actor)
-
-        actor = jnp.stack((
-            jnp.take(actor, jnp.asarray([0, 1])),
-            nn.relu(jnp.take(actor, jnp.asarray([2, 3])))
-        ), axis=0)
+        # actor = nn.relu(actor)
 
         return actor.reshape(n_actors, 2)
 
