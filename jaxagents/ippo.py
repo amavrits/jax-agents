@@ -77,7 +77,7 @@ class IPPOBase(ABC):
         self.n_actors = env.n_actors
         self.config = config
         self.eval_during_training = eval_during_training
-        # self._init_checkpointer()  # FIXME
+        self._init_checkpointer()
         self._init_env(env, env_params)
 
     def __str__(self) -> str:
@@ -104,6 +104,132 @@ class IPPOBase(ABC):
         # self.env = LogWrapper(env)
         self.env = env
         self.env_params = env_params
+
+    def _init_checkpointer(self) -> None:
+        """
+        Sets whether checkpointing should be performed, decided by whether a checkpoint directory has been provided. If
+        so, sets the checkpoint manager using orbax.
+        :return:
+        """
+
+        self.checkpointing = self.config.checkpoint_dir is not None
+
+        if self.checkpointing:
+
+            if not self.config.restore_agent:
+
+                dir_exists = os.path.exists(self.config.checkpoint_dir)
+                if not dir_exists:
+                    os.mkdir(self.config.checkpoint_dir)
+
+                dir_files = [
+                    file for file in os.listdir(self.config.checkpoint_dir)
+                    if os.path.isdir(os.path.join(self.config.checkpoint_dir, file))
+                ]
+                if len(dir_files) > 0:
+                    for file in dir_files:
+                        file_path = os.path.join(self.config.checkpoint_dir, file)
+                        shutil.rmtree(file_path)
+
+                # Log training configuration
+                with open(os.path.join(self.config.checkpoint_dir, 'training_configuration.txt'), "w") as f:
+                    f.write(self.__str__())
+
+            orbax_checkpointer = orbax.checkpoint.Checkpointer(orbax.checkpoint.PyTreeCheckpointHandler())
+
+            options = orbax.checkpoint.CheckpointManagerOptions(
+                create=True,
+                best_fn=jnp.max,  # The checkpoint with the maximum metric is selected.
+                step_prefix='training step',
+            )
+
+            self.checkpoint_manager = orbax.checkpoint.CheckpointManager(
+                self.config.checkpoint_dir,
+                orbax_checkpointer,
+                options
+            )
+
+        else:
+
+            self.checkpoint_manager = None
+
+    def _create_empty_trainstate(self, network) -> TrainState:
+        """
+        Creates an empty TrainState object for restoring checkpoints.
+        :param network: The actor or critic network.
+        :return:
+        """
+
+        rng = jax.random.PRNGKey(1)  # Just a dummy PRNGKey for initializing the networks parameters.
+        network, params = self._init_network(rng, network)
+
+        optimizer_params = OptimizerParams()  # Use the default values of the OptimizerParams object.
+        tx = self._init_optimizer(optimizer_params)
+
+        empty_training = TrainState.create(apply_fn=network.apply, params=params, tx=tx)
+
+        return empty_training
+
+    def restore(self, mode: str = "best", metric: str = "sum_rewards"):
+        """
+        Restores a checkpoint (best or latest) and collects the history of metrics as assessed during training. Then,
+        post-processes the restored checkpoint.
+        :param mode: Determines whether the best performing or latest checkpoint should be restored.
+        :return:
+        """
+
+        steps = self.checkpoint_manager.all_steps()
+
+        # Collect history of metrics in training. Useful for continuing training.
+        metrics_lst = [None] * len(steps)
+        for i, step in enumerate(steps):
+            ckpt = self.checkpoint_manager.restore(step)
+            metrics_lst[i] = ckpt[metric][jnp.newaxis, :]
+
+        metrics_array = jnp.concatenate(metrics_lst, axis=0)
+        metrics = {
+            "episode_returns": metrics_array
+        }
+
+        if mode == "best":
+            step = self.checkpoint_manager.best_step()  # In case of multiple max performances, the last one is used.
+        elif mode == "last":
+            step = self.checkpoint_manager.latest_step()
+        else:
+            raise Exception("Unknown method for selecting a checkpoint.")
+
+        """
+        Create an empty target for restoring the checkpoint.
+        Some of the arguments come from restoring one of the ckpts.
+        """
+
+        empty_actor_training = self._create_empty_trainstate(self.config.actor_network)
+        empty_critic_training = self._create_empty_trainstate(self.config.critic_network)
+
+        # Get some state and env_state for restoring the checkpoint.
+        state, env_state = self.env.reset(jax.random.PRNGKey(1), self.env_params)
+
+        empty_runner = Runner(
+            actor_training=empty_actor_training,
+            critic_training=empty_critic_training,
+            env_state=env_state,
+            state=state,
+            rng=jax.random.split(jax.random.PRNGKey(1), self.config.batch_size),  # Just a dummy PRNGKey for initializing the networks parameters.
+            # Hyperparams can be loaded as a dict. If training continues, new hyperparams will be provided.
+            hyperparams=ckpt["runner"]["hyperparams"]
+        )
+
+        target_ckpt = {
+            "runner": empty_runner,
+            "terminated": jnp.zeros(metrics["terminated"].shape[1]),
+            "truncated": jnp.zeros(metrics["truncated"].shape[1]),
+            "final_rewards": jnp.zeros(metrics["final_rewards"].shape[1]),
+            "sum_rewards": jnp.zeros(metrics["sum_rewards"].shape[1]),
+        }
+
+        ckpt = self.checkpoint_manager.restore(step, items=target_ckpt)
+
+        self.collect_training(ckpt["runner"], metrics, previous_training_max_step=max(steps))
 
     def _init_optimizer(self, optimizer_params: OptimizerParams) -> optax.chain:
         """
@@ -250,19 +376,11 @@ class IPPOBase(ABC):
 
         metric = {}
         if self.eval_during_training:
-            sum_rewards = self._eval_agent(
+            metric = self._eval_agent(
                 self.config.eval_rng,
                 runner.actor_training,
                 self.config.batch_size
             )
-            metric.update({
-                "episode_returns": sum_rewards,
-            })
-
-        else:
-            metric.update({
-                "episode_returns": jnp.zeros(2),
-            })
 
         return metric
 
@@ -726,6 +844,58 @@ class IPPOBase(ABC):
         return update_runner
 
     @partial(jax.jit, static_argnums=(0,))
+    def _checkpoint(self, update_runner: Runner, metrics: dict, i_training_step: Union[int, Int[Array, "1"]]) -> None:
+        """
+        Wraps the base checkpointing method in a Python callback.
+        :param update_runner: The runner object, containing information about the current status of the actor's/
+        critic's training, the state of the environment and training hyperparameters.
+        :param metrics: Dictionary of evaluation metrics (return per environment evaluation)
+        :param i_training_step: Training step
+        :return:
+        """
+
+        jax.experimental.io_callback(self._checkpoint_base, None, update_runner, metrics, i_training_step)
+
+    def _checkpoint_base(self, update_runner: Runner, metrics: dict, i_training_step: Union[int, Int[Array, "1"]])\
+            -> None:
+        """
+        Implements checkpointing, to be wrapped in a Python callback. Checkpoints the following:
+        - The training runner object.
+        - Returns of the evaluation episodes
+        The average return over the evaluated episodes is used as the checkpoint metric.
+        :param update_runner: The runner object, containing information about the current status of the actor's/
+        critic's training, the state of the environment and training hyperparameters.
+        :param metrics: Dictionary of evaluation metrics (return per episode evaluation)
+        :param i_training_step: Training step
+        :return:
+        """
+
+        if self.checkpointing:
+
+            ckpt = {
+                "runner": update_runner,
+                "terminated": metrics["terminated"],
+                "truncated": metrics["truncated"],
+                "final_rewards": metrics["final_rewards"],
+                "sum_rewards": metrics["sum_rewards"]
+            }
+
+            save_args = orbax_utils.save_args_from_target(ckpt)
+
+            self.checkpoint_manager.save(
+                # Use maximum number of steps reached in previous training. Set to zero by default during agent
+                # initialization if a new training is executed. In case of continuing training, the checkpoint of step
+                # zero replaces the last checkpoint of the previous training. The two checkpoints are the same.
+                i_training_step+self.previous_training_max_step,
+                ckpt,
+                save_kwargs={'save_args': save_args},
+                metrics=(
+                    float(jnp.mean(metrics["final_rewards"])),
+                    float(jnp.mean(metrics["sum_rewards"])),
+                )
+            )
+
+    @partial(jax.jit, static_argnums=(0,))
     def _training_step(self, update_runner: Runner, i_training_batch: int) -> Tuple[Runner, dict]:
         """
         Performs trainings steps to update the agent per training batch.
@@ -744,7 +914,7 @@ class IPPOBase(ABC):
 
         i_training_step = self.config.eval_frequency * (i_training_batch + 1)
         i_training_step = jnp.minimum(i_training_step, self.config.n_steps)
-        # self._checkpoint(update_runner, metrics, i_training_step)
+        self._checkpoint(update_runner, metrics, i_training_step)
 
         return update_runner, metrics
 
@@ -771,8 +941,8 @@ class IPPOBase(ABC):
         update_runner = self._create_update_runner(runner_rng, actor_training, critic_training, hyperparams)
 
         # Checkpoint initial state
-        # metrics_start = self._generate_metrics(runner=update_runner, update_step=0)
-        # self._checkpoint(update_runner, metrics_start, self.previous_training_max_step)
+        metrics_start = self._generate_metrics(runner=update_runner, update_step=0)
+        self._checkpoint(update_runner, metrics_start, self.previous_training_max_step)
 
         # Initialize agent updating functions, which can be avoided to be done within the training loops.
         actor_grad_fn = jax.grad(self._actor_loss, has_aux=True, allow_int=True)
@@ -792,11 +962,24 @@ class IPPOBase(ABC):
             n_training_batches
         )
 
-        # metrics["episode_returns"] = jnp.concatenate((
-        #     metrics_start["episode_returns"][jnp.newaxis, :],
-        #     metrics["episode_returns"]
-        # ), axis=0)
-        # metrics = {}
+        metrics = {
+            "final_rewards": jnp.concatenate((
+                metrics_start["final_rewards"][jnp.newaxis, :],
+                metrics["final_rewards"]
+            ), axis=0),
+            "sum_rewards": jnp.concatenate((
+                metrics_start["sum_rewards"][jnp.newaxis, :],
+                metrics["sum_rewards"]
+            ), axis=0),
+            "terminated": jnp.concatenate((
+                metrics_start["terminated"][jnp.newaxis, :],
+                metrics["terminated"]
+            ), axis=0),
+            "truncated": jnp.concatenate((
+                metrics_start["truncated"][jnp.newaxis, :],
+                metrics["truncated"]
+            ), axis=0)
+        }
 
         return runner, metrics
 
@@ -921,15 +1104,15 @@ class IPPOBase(ABC):
     @partial(jax.jit, static_argnums=(0,))
     def _eval_cond(self, eval_runner: tuple) -> Bool[Array, "1"]:
         """
-        Checks whether the episode is termianted, meansing that the 'lax.while_loop' can stop.
+        Checks whether the episode is terminated, meaning that the 'lax.while_loop' can stop.
         :param eval_runner: A tuple containing information about the environment state, the actor and critic training
         states, whether the episode is terminated (for checking the condition in 'lax.while_loop'), the sum of rewards
         over the episode and a random key.
         :return: Whether the episode is terminated, which means that the while loop must stop.
         """
 
-        _, _, _, terminated, _, _ = eval_runner
-        return jnp.logical_not(terminated)
+        _, _, _, terminated, truncated, _, _, _ = eval_runner
+        return jnp.logical_and(jnp.logical_not(terminated), jnp.logical_not(truncated))
 
     @partial(jax.jit, static_argnums=(0,))
     def _eval_body(self, eval_runner: tuple) -> tuple:
@@ -941,19 +1124,20 @@ class IPPOBase(ABC):
         :return: The updated eval_runner tuple.
         """
 
-        env_state, state, actor_training, terminated, sum_rewards, rng = eval_runner
+        env_state, state, actor_training, terminated, truncated, reward, sum_rewards, rng = eval_runner
 
         actions = self.policy(actor_training, state)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, actions)
+        truncated = info["truncated"]
 
         sum_rewards += reward
 
-        eval_runner = (next_env_state, next_state, actor_training, terminated, sum_rewards, rng)
+        eval_runner = (next_env_state, next_state, actor_training, terminated, truncated, reward, sum_rewards, rng)
 
         return eval_runner
 
-    def _eval_agent(self, rng: PRNGKeyArray, actor_training: TrainState, n_episodes: int = 1) -> Float[Array, "batch_size"]:
+    def _eval_agent(self, rng: PRNGKeyArray, actor_training: TrainState, n_episodes: int = 1) -> dict:
         """
         Evaluates the agents for n_episodes complete episodes using 'lax.while_loop'.
         :param rng: A random key used for evaluating the agent.
@@ -966,18 +1150,30 @@ class IPPOBase(ABC):
         rng_eval = jax.random.split(rng, n_episodes)
         rng, state, env_state = jax.vmap(self._reset)(rng_eval)
 
-        # eval_runner = (env_state, state, actor_training, False, {"truncated": False}, jnp.zeros(len(self.agents)), rng)
-        eval_runner = (env_state, state, actor_training, False, jnp.zeros(2), rng)
+        eval_runner = (
+            env_state,
+            state,
+            actor_training,
+            jnp.zeros(1, dtype=jnp.bool).squeeze(),
+            jnp.zeros(1, dtype=jnp.bool).squeeze(),
+            jnp.zeros(self.n_actors),
+            jnp.zeros(self.n_actors),
+            rng
+        )
         eval_runners = jax.vmap(
-            lambda u, v, w, x, y, z: (u, v, w, x, y, z),
-            in_axes=(0, 0, None, None, None, 0)
+            lambda s, t, u, v, w, x, y, z: (s, t, u, v, w, x, y, z),
+            in_axes=(0, 0, None, None, None, None, None, 0)
         )(*eval_runner)
 
         eval_runner = jax.vmap(lambda x: lax.while_loop(self._eval_cond, self._eval_body, x))(eval_runners)
+        _, _, _, terminated, truncated, final_rewards, sum_rewards, _ = eval_runner
 
-        _, _, _, _, sum_rewards, _ = eval_runner
-
-        return sum_rewards
+        return {
+            "terminated": terminated,
+            "truncated": truncated,
+            "final_rewards": final_rewards,
+            "sum_rewards": sum_rewards
+        }
 
     def eval(self, rng: PRNGKeyArray, actor_training: List[TrainState], n_evals: int = 32) -> Float[Array, "n_evals"]:
         """

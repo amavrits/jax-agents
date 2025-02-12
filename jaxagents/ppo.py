@@ -1133,7 +1133,7 @@ class PPOAgentBase(ABC):
     @partial(jax.jit, static_argnums=(0,))
     def _eval_cond(self, eval_runner: tuple) -> Bool[Array, "1"]:
         """
-        Checks whether the episode is termianted, meansing that the 'lax.while_loop' can stop.
+        Checks whether the episode is terminated, meaning that the 'lax.while_loop' can stop.
         :param eval_runner: A tuple containing information about the environment state, the actor and critic training
         states, whether the episode is terminated (for checking the condition in 'lax.while_loop'), the sum of rewards
         over the episode and a random key.

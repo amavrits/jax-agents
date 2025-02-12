@@ -84,8 +84,8 @@ class HuntingBase(environment.Environment):
     def _distance(self, positions: POSITIONS) -> Float[Array, "1"]:
         return jnp.linalg.norm((jnp.take(positions, 0, axis=0) - jnp.take(positions, 1, axis=0)))
 
-    def _reward(self, distance: Float[Array, "1"], prey_caught: Bool[Array, "1"], timeover: Bool[Array, "1"],
-                env_params: EnvParams) -> REWARDS:
+    def _reward(self, time: Float[Array, "1"], distance: Float[Array, "1"], prey_caught: Bool[Array, "1"],
+                timeover: Bool[Array, "1"], env_params: EnvParams) -> REWARDS:
 
         reward_prey = jnp.where(prey_caught, -env_params.caught_reward, distance)
         reward_predator = -reward_prey
@@ -111,13 +111,14 @@ class HuntingBase(environment.Environment):
         distance = self._distance(next_positions)
 
         prey_caught = jnp.less_equal(distance, env_params.predator_radius)
-        timeover = jnp.logical_and(jnp.greater(time, env_params.max_time), self.allow_timeover)
+        truncated = jnp.greater(time, env_params.max_time)  # Truncation = timeover
+        timeover = jnp.logical_and(truncated, self.allow_timeover)  # Terminate when timeover.
         terminated = jnp.logical_or(prey_caught, timeover)
 
-        rewards = self._reward(distance, prey_caught, timeover, env_params)
+        rewards = self._reward(next_time, distance, prey_caught, timeover, env_params)
 
         info = {
-            "truncated": timeover,
+            "truncated": truncated.squeeze(),
             "rewards": rewards,
         }
 
@@ -131,9 +132,14 @@ class HuntingBase(environment.Environment):
     def _directions(self, actions: ACTIONS) -> DIRECTIONS:
         raise NotImplementedError
 
-    def render(self, env_state: STATE, actions: ACTIONS, env_params: EnvParams) -> plt.Figure:
+    def render(self, positions: POSITIONS, actions: ACTIONS, env_params: EnvParams) -> plt.Figure:
 
-        positions = env_state.squeeze()
+        positions = positions.squeeze()
+        actions = actions.squeeze()
+        directions = self._directions(actions)
+        length = 0.05
+        dx = length * jnp.take(directions, 0, axis=-1)
+        dy = length * jnp.take(directions, 1, axis=-1)
 
         xticks = jnp.round(jnp.linspace(min(env_params.x_lims), max(env_params.x_lims), 6), 1)
         yticks = jnp.round(jnp.linspace(min(env_params.y_lims), max(env_params.y_lims), 6), 1)
@@ -141,6 +147,8 @@ class HuntingBase(environment.Environment):
         fig, ax = plt.subplots(figsize=(6, 6))
         ax.scatter(positions[0, 0], positions[0, 1], c="b", s=40, label="Prey")
         ax.scatter(positions[1, 0], positions[1, 1], c="r", s=80, label="Predator")
+        ax.arrow(positions[0, 0], positions[0, 1], dx[0], dy[0], color="b", linewidth=1)
+        ax.arrow(positions[1, 0], positions[1, 1], dx[1], dy[1], color="r", linewidth=1)
         pred_circle = plt.Circle((positions[1, 0], positions[1, 1]), env_params.predator_radius, color='r', alpha=0.3)
         ax.add_patch(pred_circle)
         ax.set_xlim(min(env_params.x_lims), max(env_params.x_lims))
@@ -156,9 +164,9 @@ class HuntingBase(environment.Environment):
 
         return fig
 
-    def animate(self, states: STATE, actions: ACTIONS, env_params: EnvParams, gif_path: str) -> None:
+    def animate(self, positions: POSITIONS, actions: ACTIONS, env_params: EnvParams, gif_path: str) -> None:
 
-        figs = list(map(lambda x: self.render(x, actions, env_params), states))
+        figs = list(map(lambda x, y: self.render(x, y, env_params), positions, actions))
 
         image_frames = []
         for fig in figs:
@@ -222,21 +230,24 @@ if __name__ == "__main__":
         runner = rng, next_state, next_env_state
         metrics = {
             "step": i,
-            "state": state_env.positions.reshape(-1, 2, 2),
+            "positions": state_env.positions.reshape(-1, 2, 2),
             "actions": actions,
-            "next_state": next_env_state.positions.reshape(-1, 2, 2),
+            "next_positions": next_env_state.positions.reshape(-1, 2, 2),
             "reward": reward,
             "terminated": terminated,
         }
         return runner, metrics
 
-    n_eval_steps = 100
+    n_eval_steps = 300
     rng = jax.random.PRNGKey(43)
     state, state_env = env.reset(rng, env_params)
-    eval_runner = rng, state, state_env
-    eval_runner, metrics = jax.lax.scan(scan_tqdm(n_eval_steps)(f), eval_runner, jnp.arange(n_eval_steps))
-    metrics = {key: np.asarray(val) for (key, val) in metrics.items()}
+    render_runner = rng, state, state_env
+    render_runner, render_metrics = jax.lax.scan(scan_tqdm(n_eval_steps)(f), render_runner, jnp.arange(n_eval_steps))
+    render_metrics = {key: np.asarray(val) for (key, val) in render_metrics.items()}
 
-    gif_path = r"figures/random_discrete_policy.gif" if discrete else r"figures/random_continuous_policy.gif"
-    env.animate(metrics["state"], [None, None], env_params, gif_path)
+    if discrete:
+        gif_path = r"figures/discrete/random_discrete_policy.gif"
+    else:
+        gif_path = r"figures/continuous/random_continuous_policy.gif"
+    env.animate(render_metrics["positions"], render_metrics["actions"], env_params, gif_path)
 

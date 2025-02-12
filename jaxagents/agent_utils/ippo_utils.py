@@ -114,33 +114,6 @@ class Runner:
     hyperparams: HyperParameters
 
 
-# @struct.dataclass
-# class Runner:
-#     """
-#     Object for running, passes training status, environment state and hyperparameters between policy update steps.
-#     The runner is directed to have batch_size environment (states) and PRNG's but only a single TrainState per the actor
-#     and critic.
-#     """
-#
-#     """List of training statuses (params, training step and optimizer) of the actor"""
-#     actor_trainings: List[TrainState]
-#
-#     """List of training statuses (params, training step and optimizer) of the critic"""
-#     critic_trainings: List[TrainState]
-#
-#     """State of the environment"""
-#     env_state: LogEnvState
-#
-#     """State of the environment in array"""
-#     state: Float[Array, "state_size"]
-#
-#     """Random key, required for reproducibility of results and control of randomness"""
-#     rng: PRNGKeyArray
-#
-#     """Training hyperparameters"""
-#     hyperparams: HyperParameters
-
-
 class IPPOConfig(NamedTuple):
     """Configuration of the IPPO training algorithm agents, passed at initialization of instance."""
 
@@ -181,6 +154,12 @@ class IPPOConfig(NamedTuple):
 
     """PRNG key for evaluation of agent performance during training (if 'None' evaluation isn't performed)"""
     eval_rng: Optional[PRNGKeyArray] = None
+
+    """Absolute path for checkpointing"""
+    checkpoint_dir: Optional[Union[str, os.PathLike]] = None
+
+    """Whether an agent should be restored from training checkpoints, for continuing training or deploying."""
+    restore_agent: bool = False
 
 
 @struct.dataclass
