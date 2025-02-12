@@ -1,129 +1,131 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
+import distrax
 from hunting_env import HuntingContinuous, EnvParams
-from jaxagents import ippo
-from hunting_nn_gallery import PGActorNNContinuous, PGCriticNN
+from jaxagents.ippo import IPPO, IPPOConfig, HyperParameters, OptimizerParams, TrainState, STATE_TYPE
+from jaxtyping import Array, Float, Int, PRNGKeyArray
+from typing import List, Tuple
+from hunting_gallery import PGActorContinuous, PGCritic
+from jax_tqdm import scan_tqdm
+from functools import partial
 import matplotlib.pyplot as plt
+
+
+class HuntingIPPO(IPPO):
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _entropy(self, actor_training: TrainState, state: STATE_TYPE)-> Float[Array, "n_actors"]:
+        mus = actor_training.apply_fn(actor_training.params, state).squeeze()
+        # pis = distrax.Normal(loc=mus, scale=jnp.exp(-0.5))
+        pis = distrax.Normal(loc=mus, scale=1)
+        return pis.entropy()
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _log_prob(self, actor_training: TrainState, state: STATE_TYPE, actions: Int[Array, "n_actors"])\
+            -> Float[Array, "n_actors"]:
+        mus = actor_training.apply_fn(actor_training.params, state).squeeze()
+        # log_probs = distrax.Normal(loc=mus, scale=jnp.exp(-0.5)).log_prob(actions)
+        log_probs = distrax.Normal(loc=mus, scale=1).log_prob(actions)
+        return log_probs
+
+    @partial(jax.jit, static_argnums=(0,))
+    def policy(self, actor_training: TrainState, state: STATE_TYPE) -> Float[Array, "n_actors"]:
+        mus = actor_training.apply_fn(actor_training.params, state).squeeze()
+        return mus
+
+    @partial(jax.jit, static_argnums=(0,))
+    def _sample_actions(self, rng: PRNGKeyArray, actor_training: TrainState, state: STATE_TYPE)\
+        -> Tuple[PRNGKeyArray, List[Int[Array, "1"]]]:
+        mus = actor_training.apply_fn(actor_training.params, state).squeeze()
+        # Use fixed std, OpenAI: https://github.com/openai/spinningup/blob/master/spinup/algos/pytorch/ppo/core.py#L84
+        # actions = distrax.Normal(loc=mus, scale=jnp.exp(-0.5)).sample(seed=rng)
+        actions = distrax.Normal(loc=mus, scale=1).sample(seed=rng)
+        return actions
+
+
+def plot_training(training_metrics, path):
+    returns_prey = training_metrics["episode_returns"][0]
+    returns_pred = training_metrics["episode_returns"][1]
+    steps = jnp.arange(1, returns_pred.size+1)
+    fig, ax = plt.subplots()
+    ax2 = ax.twinx()
+    ax.plot(steps, returns_prey.mean(1), c="b")
+    ax.fill_between(steps, returns_prey.min(1), returns_prey.max(1), color="b")
+    ax2.plot(steps, returns_pred.mean(1), c="r")
+    ax2.fill_between(steps, returns_pred.min(1), returns_pred.max(1), color="r")
+    ax.set_xlabel("Training steps", fontsize=12)
+    ax.set_ylabel("Prey returns", fontsize=12)
+    ax2.set_ylabel("Predator returns", fontsize=12)
+    plt.close()
+    fig.savefig(path)
 
 
 if __name__ == "__main__":
 
-    env_params = EnvParams(max_time=1., prey_velocity=2., predator_velocity=2.)
+    env_params = EnvParams(prey_velocity=2, predator_velocity=1)
     env = HuntingContinuous()
 
-    agents = (ippo.IPPOAgent(PGActorNNContinuous, PGCriticNN), ippo.IPPOAgent(PGActorNNContinuous, PGCriticNN))
-
-    config = ippo.IPPOConfig(
+    config = IPPOConfig(
         n_steps=1_000,
-        batch_size=64,
-        minibatch_size=8,
-        rollout_length=int(env_params.max_time//env_params.dt),
-        actor_epochs=10,
-        critic_epochs=10,
-        optimizers=[optax.adam]*len(agents),
-        eval_frequency=1,
+        batch_size=256,
+        minibatch_size=16,
+        rollout_length=100,
+        actor_epochs=50,
+        critic_epochs=50,
+        actor_network=PGActorContinuous,
+        critic_network=PGCritic,
+        optimizer=optax.adam,
+        eval_frequency=100,
         eval_rng=jax.random.PRNGKey(18),
     )
 
-    hyperparams = ippo.HyperParameters(
+    hyperparams = HyperParameters(
         gamma=0.99,
         eps_clip=0.05,
         kl_threshold=1e-5,
         gae_lambda=0.97,
-        ent_coeff=0.05,
+        ent_coeff=0.001,
         vf_coeff=1.0,
-        actor_optimizer_params=ippo.OptimizerParams(learning_rate=1e-5),
-        critic_optimizer_params=ippo.OptimizerParams(learning_rate=1e-5)
+        actor_optimizer_params=OptimizerParams(learning_rate=1e-3, eps=1e-3, grad_clip=1),
+        critic_optimizer_params=OptimizerParams(learning_rate=1e-3, eps=1e-3, grad_clip=1)
     )
 
-    ippo = ippo.IPPO(env, env_params, agents, config, eval_during_training=False)
+    ippo = HuntingIPPO(env, env_params, config, eval_during_training=False)
 
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
     runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
-    # with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
+    # eval_metrics = jax.block_until_ready(ippo.eval(rng_eval, runner.actor_training, n_evals=16))
 
-    # eval_metrics = ippo.eval(rng_eval, runner.actor_trainings, n_evals=16)
-    # eval_metrics = ippo._eval_agent(rng_eval, runner.actor_trainings, 16)
-
-    # returns_prey = training_metrics["episode_returns"][0]
-    # returns_pred = training_metrics["episode_returns"][1]
-    # steps = jnp.arange(1, returns_pred.size+1)
-    # fig, ax = plt.subplots()
-    # ax2 = ax.twinx()
-    # ax.plot(steps, returns_prey.mean(1), c="b")
-    # ax.fill_between(steps, returns_prey.min(1), returns_prey.max(1), color="b")
-    # ax2.plot(steps, returns_pred.mean(1), c="r")
-    # ax2.fill_between(steps, returns_pred.min(1), returns_pred.max(1), color="r")
-    # ax.set_xlabel("Training steps", fontsize=12)
-    # ax.set_ylabel("Prey returns", fontsize=12)
-    # ax2.set_ylabel("Predator returns", fontsize=12)
-    # plt.close()
-    # fig.savefig(r"figures/ippo_training.png")
-
-
-
-    rng = jax.random.PRNGKey(43)
-    state, state_env = env.reset_env(rng, env_params)
-
-    figs = []
-    fig = env.render(state_env, jnp.zeros(2), env_params)
-    figs.append(fig)
-
-    done = False
-    rewards = []
-    step = 0
-    position_log = []
-    action_log = []
-    reward_log = []
-    while not done:
-        step += 1
-        actions = ippo.policy(runner.actor_trainings, state)
+    def f(runner, i):
+        rng, actor_training, state, state_env = runner
+        actions = ippo.policy(actor_training, state)
         rng, rng_step = jax.random.split(rng)
         next_state, next_env_state, reward, terminated, info = env.step(rng_step, state_env, actions, env_params)
-        done = terminated
-        state = next_state
-        state_env = next_env_state
+        runner = rng, actor_training, next_state, next_env_state
+        metrics = {
+            "step": i,
+            "time": state_env.time,
+            "state": state_env.positions.reshape(-1, 2, 2),
+            "actions": actions,
+            "next_state": next_env_state.positions.reshape(-1, 2, 2),
+            "reward": reward,
+            "terminated": terminated,
+        }
+        return runner, metrics
 
-        rewards.append(reward)
-        fig = env.render(next_env_state, actions, env_params)
-        position_log.append(state_env.positions.flatten())
-        action_log.append(actions)
-        reward_log.append(reward)
-        figs.append(fig)
+    n_eval_steps = 300
+    rng = jax.random.PRNGKey(43)
+    state, state_env = env.reset(rng, env_params)
+    eval_runner = rng, runner.actor_training, state, state_env
+    eval_runner, metrics = jax.lax.scan(scan_tqdm(n_eval_steps)(f), eval_runner, jnp.arange(n_eval_steps))
+    metrics = {key: np.asarray(val) for (key, val) in metrics.items()}
 
-    import numpy as np
-    position_log = np.asarray(position_log)
-    action_log = np.asarray(action_log) * 360
-    reward_log = np.asarray(reward_log)
-    A = np.c_[action_log, reward_log]
+    # training_plot_path = r"figures/ippo_continuous_policy_training_{steps}.png".format(steps=config.n_steps)
+    # plot_training(training_metrics, training_plot_path)
 
-    from matplotlib.backends.backend_pdf import PdfPages
-    pp = PdfPages(r"figures/ippo_continuous_render.pdf")
-    [pp.savefig(fig) for fig in figs]
-    pp.close()
-
-
-    from PIL import Image
-    import io
-
-    image_frames = []
-    for fig in figs:
-        buf = io.BytesIO()
-        fig.savefig(buf, format='png')
-        buf.seek(0)
-        img = Image.open(buf)
-        image_frames.append(img)
-        plt.close(fig)
-
-    gif_path = r"figures/ippo_continuous_policy_{steps}.gif".format(steps=config.n_steps)
-    image_frames[0].save(
-        gif_path,
-        save_all=True,
-        append_images=image_frames[1:],
-        duration=50,  # Duration for each frame (in milliseconds)
-        loop=0  # Loop 0 means infinite loop
-    )
-
+    gif_path = r"figures/ippo_continuous_policy_{steps}steps.gif".format(steps=config.n_steps)
+    env.animate(metrics["state"], [None, None], env_params, gif_path)
 
