@@ -17,30 +17,31 @@ class HuntingIPPO(IPPO):
 
     @partial(jax.jit, static_argnums=(0,))
     def _entropy(self, actor_training: TrainState, state: STATE_TYPE)-> Float[Array, "n_actors"]:
-        params = actor_training.apply_fn(actor_training.params, state)
-        pis = distrax.Normal(loc=params, scale=jnp.exp(-0.5))
+        mus = actor_training.apply_fn(actor_training.params, state).squeeze()
+        # pis = distrax.Normal(loc=mus, scale=jnp.exp(-0.5))
+        pis = distrax.Normal(loc=mus, scale=1)
         return pis.entropy()
 
     @partial(jax.jit, static_argnums=(0,))
     def _log_prob(self, actor_training: TrainState, state: STATE_TYPE, actions: Int[Array, "n_actors"])\
             -> Float[Array, "n_actors"]:
-        params = actor_training.apply_fn(actor_training.params, state)
-        log_probs = distrax.Normal(loc=params, scale=jnp.exp(-0.5)).log_prob(actions)
+        mus = actor_training.apply_fn(actor_training.params, state).squeeze()
+        # log_probs = distrax.Normal(loc=mus, scale=jnp.exp(-0.5)).log_prob(actions)
+        log_probs = distrax.Normal(loc=mus, scale=1).log_prob(actions)
         return log_probs
 
     @partial(jax.jit, static_argnums=(0,))
     def policy(self, actor_training: TrainState, state: STATE_TYPE) -> Float[Array, "n_actors"]:
-        actions_mode = actor_training.apply_fn(jax.lax.stop_gradient(actor_training.params), state)
-        return actions_mode
+        mus = actor_training.apply_fn(actor_training.params, state).squeeze()
+        return mus
 
     @partial(jax.jit, static_argnums=(0,))
     def _sample_actions(self, rng: PRNGKeyArray, actor_training: TrainState, state: STATE_TYPE)\
         -> Tuple[PRNGKeyArray, List[Int[Array, "1"]]]:
-        n_actors = 2
-        rng, *rng_actors = jax.random.split(rng, n_actors+1)
-        params = actor_training.apply_fn(actor_training.params, state)
+        mus = actor_training.apply_fn(actor_training.params, state).squeeze()
         # Use fixed std, OpenAI: https://github.com/openai/spinningup/blob/master/spinup/algos/pytorch/ppo/core.py#L84
-        actions = distrax.Normal(loc=params, scale=jnp.exp(-0.5)).sample(seed=rng_actors[0])
+        # actions = distrax.Normal(loc=mus, scale=jnp.exp(-0.5)).sample(seed=rng)
+        actions = distrax.Normal(loc=mus, scale=1).sample(seed=rng)
         return actions
 
 
@@ -100,25 +101,23 @@ if __name__ == "__main__":
 
     def f(runner, i):
         rng, actor_training, state, state_env = runner
-        params = actor_training.apply_fn(actor_training.params, state)
         actions = ippo.policy(actor_training, state)
         rng, rng_step = jax.random.split(rng)
         next_state, next_env_state, reward, terminated, info = env.step(rng_step, state_env, actions, env_params)
         runner = rng, actor_training, next_state, next_env_state
-        m = {
+        metrics = {
             "step": i,
-            "time": state.time,
-            "params": params,
+            "time": state_env.time,
             "state": state_env.positions.reshape(-1, 2, 2),
             "actions": actions,
             "next_state": next_env_state.positions.reshape(-1, 2, 2),
             "reward": reward,
             "terminated": terminated,
         }
-        return runner, m
+        return runner, metrics
 
-    n_eval_steps = 100
-    rng = jax.random.PRNGKey(18)
+    n_eval_steps = 300
+    rng = jax.random.PRNGKey(43)
     state, state_env = env.reset(rng, env_params)
     eval_runner = rng, runner.actor_training, state, state_env
     eval_runner, metrics = jax.lax.scan(scan_tqdm(n_eval_steps)(f), eval_runner, jnp.arange(n_eval_steps))

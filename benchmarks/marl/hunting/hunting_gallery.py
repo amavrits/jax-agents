@@ -48,7 +48,6 @@ class PGCritic(nn.Module):
     def __call__(self, x):
 
         n_critics = 2
-
         activation = nn.tanh
 
         critics = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)

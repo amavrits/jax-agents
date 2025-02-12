@@ -104,14 +104,14 @@ class HuntingBase(environment.Environment):
         velocities = jnp.expand_dims(jnp.asarray([env_params.prey_velocity, env_params.predator_velocity]), axis=-1)
 
         time, positions = state.time, state.positions
-        next_time = state.time + env_params.dt
+        next_time = time + env_params.dt
         next_positions = self.update_positions(positions, directions, velocities, env_params)
         next_state = EnvState(time=next_time, positions=next_positions)
 
         distance = self._distance(next_positions)
 
         prey_caught = jnp.less_equal(distance, env_params.predator_radius)
-        timeover = jnp.greater(time, env_params.max_time) if self.allow_timeover else False
+        timeover = jnp.logical_and(jnp.greater(time, env_params.max_time), self.allow_timeover)
         terminated = jnp.logical_or(prey_caught, timeover)
 
         rewards = self._reward(distance, prey_caught, timeover, env_params)
@@ -182,21 +182,22 @@ class HuntingBase(environment.Environment):
         return "Hunting"
 
 
-
 class HuntingDiscrete(HuntingBase):
     
     def _directions(self, actions: ACTIONS) -> DIRECTIONS:
         cond_list = [actions == 0, actions == 1, actions == 2, actions == 3]
         choice_list = [0, jnp.pi / 2, jnp.pi, 3 / 2 * jnp.pi]
         directions_rad = jnp.select(cond_list, choice_list)
-        directions = jnp.stack((jnp.cos(directions_rad), jnp.sin(directions_rad)), -1)
+        directions = jnp.stack((jnp.cos(directions_rad), jnp.sin(directions_rad)), axis=-1)
         return directions
 
 
 class HuntingContinuous(HuntingBase):
 
     def _directions(self, actions: ACTIONS) -> DIRECTIONS:
-        return jnp.clip(actions, -jnp.pi, +jnp.pi)
+        actions_clip = jnp.clip(actions, -jnp.pi, +jnp.pi)
+        directions = jnp.stack((jnp.cos(actions_clip), jnp.sin(actions_clip)), axis=-1)
+        return directions
 
 
 if __name__ == "__main__":
@@ -204,19 +205,22 @@ if __name__ == "__main__":
     import numpy as np
     from jax_tqdm import scan_tqdm
 
-    discrete = False
+    discrete = True
+    # discrete = False
 
-    env_params = EnvParams()
-
+    env_params = EnvParams(prey_velocity=2, predator_velocity=1)
     env = HuntingDiscrete() if discrete else HuntingContinuous()
 
     def f(runner, i):
         rng, state, state_env = runner
         rng, rng_action, rng_step = jax.random.split(rng, 3)
-        actions = jax.random.normal(rng_action, shape=(env_params.n_prey+env_params.n_predators,))
+        if discrete:
+            actions = jax.random.choice(rng_action, jnp.arange(4), shape=(env.n_actors,))
+        else:
+            actions = jax.random.uniform(rng_action, minval=-1., maxval=+1., shape=(env.n_actors,))
         next_state, next_env_state, reward, terminated, info = env.step(rng_step, state_env, actions, env_params)
         runner = rng, next_state, next_env_state
-        m = {
+        metrics = {
             "step": i,
             "state": state_env.positions.reshape(-1, 2, 2),
             "actions": actions,
@@ -224,7 +228,7 @@ if __name__ == "__main__":
             "reward": reward,
             "terminated": terminated,
         }
-        return runner, m
+        return runner, metrics
 
     n_eval_steps = 100
     rng = jax.random.PRNGKey(43)

@@ -467,12 +467,10 @@ class IPPOBase(ABC):
 
         env_state, state, actor_training, critic_training, rng = step_runner
 
-        # pis, values = self._pis_values(actor_training, critic_training, state)
-
         rng, rng_action = jax.random.split(rng)
-        actions = self._sample_actions(rng_action, actor_training, state)  # FIXME
+        actions = self._sample_actions(rng_action, actor_training, state)
 
-        values = critic_training.apply_fn(critic_training.params, state)  # FIXME
+        values = critic_training.apply_fn(critic_training.params, state)
 
         log_prob = self._log_prob(actor_training, state, actions)
 
@@ -712,17 +710,6 @@ class IPPOBase(ABC):
         rollout_runners, traj_batch = jax.vmap(scan_rollout_fn)(rollout_runners)
         last_env_state, last_state, _, _, rng = rollout_runners
         traj_batch = self._process_trajectory(update_runner, traj_batch, last_state)
-
-        # actor_training = list(map(
-        #     lambda x, y, z: x._actor_update(update_runner, traj_batch),
-        #     self.agents, update_runner.actor_training, range(len(self.agents))
-        # ))
-        #
-        # critic_training = list(map(
-        #     lambda x, y, z: x._critic_update(update_runner, traj_batch, self.config.batch_size,
-        #                                      self.config.minibatch_size, self.config.critic_epochs, z),
-        #     self.agents, update_runner.critic_training, range(len(self.agents))
-        # ))
 
         actor_training = self._actor_update(update_runner, traj_batch)
         critic_training = self._critic_update(update_runner, traj_batch)

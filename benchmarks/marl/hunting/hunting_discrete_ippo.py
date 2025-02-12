@@ -47,9 +47,7 @@ class HuntingIPPO(IPPO):
         :return: A random key after action selection and the selected action from the stochastic policy.
         """
 
-        n_actors = 2
-
-        rng, *rng_actors = jax.random.split(rng, n_actors+1)
+        rng_actors = jax.random.split(rng, self.n_actors)
 
         logits = actor_training.apply_fn(actor_training.params, state)
 
@@ -122,9 +120,9 @@ if __name__ == "__main__":
         rng, rng_step = jax.random.split(rng)
         next_state, next_env_state, reward, terminated, info = env.step(rng_step, state_env, actions, env_params)
         runner = rng, actor_training, next_state, next_env_state
-        m = {
+        metrics = {
             "step": i,
-            "time": state.time,
+            "time": state_env.time,
             "params": params,
             "state": state_env.positions.reshape(-1, 2, 2),
             "actions": actions,
@@ -132,9 +130,9 @@ if __name__ == "__main__":
             "reward": reward,
             "terminated": terminated,
         }
-        return runner, m
+        return runner, metrics
 
-    n_eval_steps = 100
+    n_eval_steps = 300
     rng = jax.random.PRNGKey(43)
     state, state_env = env.reset(rng, env_params)
     eval_runner = rng, runner.actor_training, state, state_env
