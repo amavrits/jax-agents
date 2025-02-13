@@ -76,12 +76,12 @@ if __name__ == "__main__":
     env = HuntingContinuous(allow_timeover=True)
 
     if sys.platform == "win32":
-        checkpoint_dir = 'C:\\Users\\Repositories\\jax-agents\\benchmarks\\marl\\hunting\\checkpoints\\ippo\\continuous'
+        checkpoint_dir = "C:\\Users\\mavritsa\\Repositories\\jax-agents\\benchmarks\\marl\\hunting\\checkpoints\\ippo\\continuous"
     else:
-        checkpoint_dir = '/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting/checkpoints/ippo/continuous'
+        checkpoint_dir = "/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting/checkpoints/ippo/continuous"
 
     config = IPPOConfig(
-        n_steps=1_000,
+        n_steps=40,
         batch_size=256,
         minibatch_size=16,
         rollout_length=100,
@@ -107,7 +107,7 @@ if __name__ == "__main__":
         critic_optimizer_params=OptimizerParams(learning_rate=1e-3, eps=1e-3, grad_clip=1)
     )
 
-    ippo = HuntingIPPO(env, env_params, config, eval_during_training=True)
+    ippo = HuntingIPPO(env, env_params, config, eval_during_training=True, best_fn = lambda x: jnp.max(x[0]))
 
     ippo.restore()
 

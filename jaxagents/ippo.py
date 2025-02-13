@@ -63,21 +63,25 @@ class IPPOBase(ABC):
     critic_training: ClassVar[Optional[TrainState]] = None  # Critic training object.
     training_metrics: ClassVar[Optional[Dict]] = None  # Metrics collected during training.
     eval_during_training: ClassVar[bool] = False  # Whether the agent's performance is evaluated during training
+    best_fn: ClassVar[Callable[[tuple], [float]]] = jnp.max  # Function for determining the best performing checkpoint.
     # The maximum step reached in precious training. Zero by default for starting a new training. Will be set by
     # restoring or passing a trained agent (from serial training or restoring)
     previous_training_max_step: ClassVar[int] = 0
 
-    def __init__(self, env: Environment, env_params: EnvParams, config: IPPOConfig, eval_during_training: bool = True):
+    def __init__(self, env: Environment, env_params: EnvParams, config: IPPOConfig, eval_during_training: bool = True,
+                 best_fn: Callable[[tuple], [float]] = jnp.max) -> None:
+
         """
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
         :param env_params: A dataclass named "EnvParams" containing the parametrization of the environment.
         :param config: The configuration of the agent as and AgentConfig object (from vpf_utils).
+        :param eval_during_training: Whether evaluation should be performed during training.
+        :param best_fn: The function that should be used in determining the best performing checkpoint.
         """
-
         self.n_actors = env.n_actors
         self.config = config
         self.eval_during_training = eval_during_training
-        self._init_checkpointer()
+        self._init_checkpointer(best_fn)
         self._init_env(env, env_params)
 
     def __str__(self) -> str:
@@ -105,10 +109,11 @@ class IPPOBase(ABC):
         self.env = env
         self.env_params = env_params
 
-    def _init_checkpointer(self) -> None:
+    def _init_checkpointer(self, best_fn: Callable[[tuple], [float]] = jnp.max) -> None:
         """
         Sets whether checkpointing should be performed, decided by whether a checkpoint directory has been provided. If
         so, sets the checkpoint manager using orbax.
+        :param best_fn: The function that should be used in determining the best performing checkpoint.
         :return:
         """
 
@@ -139,8 +144,9 @@ class IPPOBase(ABC):
 
             options = orbax.checkpoint.CheckpointManagerOptions(
                 create=True,
-                best_fn=jnp.max,  # The checkpoint with the maximum metric is selected.
-                step_prefix='training step',
+                # best_fn=jnp.max,  # The checkpoint with the maximum metric is selected.  -> Depreciated
+                best_fn=best_fn,  # The checkpoint with the maximum metric is selected.
+                step_prefix='trainingstep',
             )
 
             self.checkpoint_manager = orbax.checkpoint.CheckpointManager(
@@ -170,7 +176,7 @@ class IPPOBase(ABC):
 
         return empty_training
 
-    def restore(self, mode: str = "best", metric: str = "sum_rewards"):
+    def restore(self, mode: str = "best"):
         """
         Restores a checkpoint (best or latest) and collects the history of metrics as assessed during training. Then,
         post-processes the restored checkpoint.
@@ -180,16 +186,17 @@ class IPPOBase(ABC):
 
         steps = self.checkpoint_manager.all_steps()
 
+        # Log keys in checkpoints
+        ckpt = self.checkpoint_manager.restore(steps[0])
+        ckpt_keys = [key for key in list(ckpt.keys()) if key != "runner"]
+
         # Collect history of metrics in training. Useful for continuing training.
-        metrics_lst = [None] * len(steps)
+        metrics = {key: [None] * len(steps) for key in ckpt_keys}
         for i, step in enumerate(steps):
             ckpt = self.checkpoint_manager.restore(step)
-            metrics_lst[i] = ckpt[metric][jnp.newaxis, :]
-
-        metrics_array = jnp.concatenate(metrics_lst, axis=0)
-        metrics = {
-            "episode_returns": metrics_array
-        }
+            for key in ckpt_keys:
+                metrics[key][i] = ckpt[key][jnp.newaxis, :]
+        metrics = {key: jnp.concatenate(val, axis=0) for (key, val) in metrics.items()}
 
         if mode == "best":
             step = self.checkpoint_manager.best_step()  # In case of multiple max performances, the last one is used.
@@ -612,45 +619,6 @@ class IPPOBase(ABC):
         :param last_state: The state at the end of every trajectory in the batch.
         :return: A batch of trajectories that includes an estimate of values and advantages.
         """
-
-        # traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
-
-        # critic_training = update_runner.critic_training
-        # last_state_value = jax.lax.stop_gradient(critic_training.apply_fn(critic_training.params, last_state))
-        # last_state_value = jnp.expand_dims(last_state_value, axis=1)
-        #
-        # """Remove first entry so that the next state values per step are in sync with the state rewards."""
-        # next_values_t = jnp.concatenate([traj_batch.value.squeeze(), last_state_value], axis=1)[:, 1:, :]
-        #
-        # traj_batch = traj_batch._replace(next_value=next_values_t)
-
-        # gamma, gae_lambda = update_runner.hyperparams.gamma, update_runner.hyperparams.gae_lambda
-        # rewards_t = traj_batch.reward.squeeze()
-        # values_t = traj_batch.value.squeeze()
-        # terminated_t = jnp.expand_dims(traj_batch.terminated, axis=-1)
-        # next_state_values_t = traj_batch.next_value.squeeze()
-        # gamma_t = jnp.ones_like(terminated_t) * gamma
-        # gae_lambda_t = jnp.ones_like(terminated_t) * gae_lambda
-        #
-        # rewards_t, values_t, next_state_values_t, terminated_t, gamma_t, gae_lambda_t = jax.tree_util.tree_map(
-        #     lambda x: jnp.swapaxes(x, 0, 1),
-        #     (rewards_t, values_t, next_state_values_t, terminated_t, gamma_t, gae_lambda_t)
-        # )
-        #
-        # traj_runner = (rewards_t, values_t, next_state_values_t, terminated_t, gamma_t, gae_lambda_t)
-        # """
-        # TODO:
-        # Advantage of last step is taken from the critic, in contrast to traditional approaches, where the rollout
-        # ends with episode termination and the advantage is zero. Training is still successful and the influence of this
-        # implementation choice is negligible.
-        # """
-        # n_actors = last_state_value.shape[-1]
-        # end_advantage = jnp.zeros((self.config.batch_size, n_actors))
-        # _, advantages = jax.lax.scan(self._trajectory_advantages, end_advantage, traj_runner, reverse=True)
-        #
-        # advantages = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), advantages)
-        #
-        # traj_batch = traj_batch._replace(advantage=advantages)
 
         traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
         traj_batch = self._add_next_values(traj_batch, last_state, update_runner.critic_training)
@@ -1186,6 +1154,72 @@ class IPPOBase(ABC):
         eval_metrics = self._eval_agent(rng, actor_training, n_evals)
 
         return eval_metrics
+
+    """ METHODS FOR POST-PROCESSING """
+
+    def log_hyperparams(self, hyperparams: HyperParameters) -> None:
+        """
+        Logs training hyperparameters in a text file. To be used outside training.
+        :param hyperparams: An instance of HyperParameters for training.
+        :return:
+        """
+
+        output_lst = [field + ': ' + str(getattr(hyperparams, field)) for field in hyperparams._fields]
+        output_lst = ['Hyperparameters:'] + output_lst
+        output_lst = '\n'.join(output_lst)
+
+        if self.checkpointing:
+            with open(os.path.join(self.config.checkpoint_dir, 'hyperparameters.txt'), "w") as f:
+                f.write(output_lst)
+
+    def collect_training(self, runner: Optional[Runner] = None, metrics: Optional[Dict] = None,
+                         previous_training_max_step: int = 0) -> None:
+        """
+        Collects training or restored checkpoint of output (the final state of the runner after training and the
+        collected metrics).
+        :param runner: The runner object, containing information about the current status of the actor's/
+        critic's training, the state of the environment and training hyperparameters. This is at the state reached at
+        the end of training.
+        :param metrics: Dictionary of evaluation metrics (return per environment evaluation)
+        :param previous_training_max_step: Maximum step reached during training.
+        :return:
+        """
+
+        self.agent_trained = True
+        self.previous_training_max_step = previous_training_max_step
+        self.training_runner = runner
+        self.training_metrics = metrics
+        n_evals = list(metrics.values())[0].shape[0]
+        self.eval_steps_in_training = jnp.arange(n_evals) * self.config.eval_frequency
+        self._pp()
+
+    def _pp(self) -> None:
+        """
+        Post-processes the training results, which includes:
+            - Setting the policy actor and critic TrainStates of a Runner object (e.g. last in training of restored).
+        :return:
+        """
+
+        self.actor_training = self.training_runner.actor_training
+        self.critic_training = self.training_runner.critic_training
+
+    def summarize(self, metrics: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]) -> MetricStats:
+        """
+        Summarizes collection of per-episode metrics.
+        :param metrics: Metric per episode.
+        :return: Summary of metric per episode.
+        """
+
+        return MetricStats(
+            episode_metric=metrics,
+            mean=metrics.mean(axis=-1),
+            var=metrics.var(axis=-1),
+            std=metrics.std(axis=-1),
+            min=metrics.min(axis=-1),
+            max=metrics.max(axis=-1),
+            median=jnp.median(metrics, axis=-1),
+            has_nans=jnp.any(jnp.isnan(metrics), axis=-1)
+        )
 
 
 class IPPO(IPPOBase):
