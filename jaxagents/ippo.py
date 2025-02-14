@@ -63,25 +63,23 @@ class IPPOBase(ABC):
     critic_training: ClassVar[Optional[TrainState]] = None  # Critic training object.
     training_metrics: ClassVar[Optional[Dict]] = None  # Metrics collected during training.
     eval_during_training: ClassVar[bool] = False  # Whether the agent's performance is evaluated during training
-    best_fn: ClassVar[Callable[[tuple], [float]]] = jnp.max  # Function for determining the best performing checkpoint.
     # The maximum step reached in precious training. Zero by default for starting a new training. Will be set by
     # restoring or passing a trained agent (from serial training or restoring)
     previous_training_max_step: ClassVar[int] = 0
 
-    def __init__(self, env: Environment, env_params: EnvParams, config: IPPOConfig, eval_during_training: bool = True,
-                 best_fn: Callable[[tuple], [float]] = jnp.max) -> None:
+    def __init__(self, env: Environment, env_params: EnvParams, config: IPPOConfig, eval_during_training: bool = True)\
+            -> None:
 
         """
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
         :param env_params: A dataclass named "EnvParams" containing the parametrization of the environment.
         :param config: The configuration of the agent as and AgentConfig object (from vpf_utils).
         :param eval_during_training: Whether evaluation should be performed during training.
-        :param best_fn: The function that should be used in determining the best performing checkpoint.
         """
         self.n_actors = env.n_actors
         self.config = config
         self.eval_during_training = eval_during_training
-        self._init_checkpointer(best_fn)
+        self._init_checkpointer()
         self._init_env(env, env_params)
 
     def __str__(self) -> str:
@@ -109,11 +107,10 @@ class IPPOBase(ABC):
         self.env = env
         self.env_params = env_params
 
-    def _init_checkpointer(self, best_fn: Callable[[tuple], [float]] = jnp.max) -> None:
+    def _init_checkpointer(self) -> None:
         """
         Sets whether checkpointing should be performed, decided by whether a checkpoint directory has been provided. If
         so, sets the checkpoint manager using orbax.
-        :param best_fn: The function that should be used in determining the best performing checkpoint.
         :return:
         """
 
@@ -144,8 +141,6 @@ class IPPOBase(ABC):
 
             options = orbax.checkpoint.CheckpointManagerOptions(
                 create=True,
-                # best_fn=jnp.max,  # The checkpoint with the maximum metric is selected.  -> Depreciated
-                best_fn=best_fn,  # The checkpoint with the maximum metric is selected.
                 step_prefix='trainingstep',
             )
 
@@ -176,11 +171,12 @@ class IPPOBase(ABC):
 
         return empty_training
 
-    def restore(self, mode: str = "best"):
+    def restore(self, mode: str = "best", best_fn: Optional[Callable[[dict], [int]]] = None) -> None:
         """
         Restores a checkpoint (best or latest) and collects the history of metrics as assessed during training. Then,
         post-processes the restored checkpoint.
         :param mode: Determines whether the best performing or latest checkpoint should be restored.
+        :param best_fn: The function that should be used in determining the best performing checkpoint.
         :return:
         """
 
@@ -199,7 +195,10 @@ class IPPOBase(ABC):
         metrics = {key: jnp.concatenate(val, axis=0) for (key, val) in metrics.items()}
 
         if mode == "best":
-            step = self.checkpoint_manager.best_step()  # In case of multiple max performances, the last one is used.
+            if best_fn is not None:
+                step = steps[best_fn(metrics)]
+            else:
+                raise Exception("Function for determining best checkpoint not provided")
         elif mode == "last":
             step = self.checkpoint_manager.latest_step()
         else:
@@ -373,12 +372,12 @@ class IPPOBase(ABC):
     def _generate_metrics(self, runner: Runner, update_step: int) -> Dict:
         """
         Generates metrics for on-policy learning. The agent performance during training is evaluated by running
-        batch_size episodes (until termination). The selected metric is the sum of rewards collected dring the episode.
-        If the user selects not to generate metrics (leading to faster training), an empty dictinary is returned.
+        n_evals episodes (until termination). If the user selects not to generate metrics (leading to faster training),
+        an empty dictionary is returned.
         :param runner: The update runner object, containing information about the current status of the actor's/critic's
         training, the state of the environment and training hyperparameters.
         :param update_step: The number of the update step.
-        :return: A dictionary of the sum of rewards collected over 'batch_size' episodes, or empty dictionary.
+        :return: A dictionary of the sum of rewards collected over 'n_evals' episodes, or empty dictionary.
         """
 
         metric = {}
@@ -386,7 +385,7 @@ class IPPOBase(ABC):
             metric = self._eval_agent(
                 self.config.eval_rng,
                 runner.actor_training,
-                self.config.batch_size
+                self.config.n_evals
             )
 
         return metric
@@ -848,6 +847,8 @@ class IPPOBase(ABC):
                 "sum_rewards": metrics["sum_rewards"]
             }
 
+            # ckpt = {"runner": update_runner}.update(metrics)
+
             save_args = orbax_utils.save_args_from_target(ckpt)
 
             self.checkpoint_manager.save(
@@ -857,10 +858,11 @@ class IPPOBase(ABC):
                 i_training_step+self.previous_training_max_step,
                 ckpt,
                 save_kwargs={'save_args': save_args},
-                metrics=(
-                    float(jnp.mean(metrics["final_rewards"])),
-                    float(jnp.mean(metrics["sum_rewards"])),
-                )
+                # metrics=(
+                #     float(jnp.mean(metrics["final_rewards"])),
+                #     float(jnp.mean(metrics["sum_rewards"])),
+                # )
+                # metrics=metrics
             )
 
     @partial(jax.jit, static_argnums=(0,))
@@ -931,22 +933,8 @@ class IPPOBase(ABC):
         )
 
         metrics = {
-            "final_rewards": jnp.concatenate((
-                metrics_start["final_rewards"][jnp.newaxis, :],
-                metrics["final_rewards"]
-            ), axis=0),
-            "sum_rewards": jnp.concatenate((
-                metrics_start["sum_rewards"][jnp.newaxis, :],
-                metrics["sum_rewards"]
-            ), axis=0),
-            "terminated": jnp.concatenate((
-                metrics_start["terminated"][jnp.newaxis, :],
-                metrics["terminated"]
-            ), axis=0),
-            "truncated": jnp.concatenate((
-                metrics_start["truncated"][jnp.newaxis, :],
-                metrics["truncated"]
-            ), axis=0)
+            key: jnp.concatenate((metrics_start[key][jnp.newaxis, :], metrics[key]), axis=0)
+            for key in metrics.keys()
         }
 
         return runner, metrics
@@ -1136,12 +1124,26 @@ class IPPOBase(ABC):
         eval_runner = jax.vmap(lambda x: lax.while_loop(self._eval_cond, self._eval_body, x))(eval_runners)
         _, _, _, terminated, truncated, final_rewards, sum_rewards, _ = eval_runner
 
-        return {
+        return self._eval_metrics(terminated, truncated, final_rewards, sum_rewards)
+
+    def _eval_metrics(self, terminated: Bool[Array, "1"], truncated: Bool[Array, "1"],
+                      final_rewards: Float[Array, "n_actors"], sum_rewards: Float[Array, "n_actors"]) -> dict:
+        """
+        Evaluate the metrics.
+        :param terminated: Whether the episode finished by termination.
+        :param truncated: Whether the episode finished by truncation.
+        :param final_rewards: The rewards collected in the final step of the episode.
+        :param sum_rewards: The sum of rewards collected during the episode.
+        :return: Dictionary combining the input arguments and the case-specific special metrics.
+        """
+        metrics = {
             "terminated": terminated,
             "truncated": truncated,
             "final_rewards": final_rewards,
             "sum_rewards": sum_rewards
         }
+
+        return metrics
 
     def eval(self, rng: PRNGKeyArray, actor_training: List[TrainState], n_evals: int = 32) -> Float[Array, "n_evals"]:
         """

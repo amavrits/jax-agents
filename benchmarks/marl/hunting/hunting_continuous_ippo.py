@@ -8,7 +8,7 @@ import optax
 import distrax
 from hunting_env import HuntingContinuous, EnvParams
 from jaxagents.ippo import IPPO, IPPOConfig, HyperParameters, OptimizerParams, TrainState, STATE_TYPE
-from jaxtyping import Array, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, Int, PRNGKeyArray, Bool
 from typing import List, Tuple
 from hunting_gallery import PGActorContinuous, PGCritic
 from jax_tqdm import scan_tqdm
@@ -45,6 +45,11 @@ class HuntingIPPO(IPPO):
         return actions
 
 
+def best_predator_win(x):
+    pred_win_ratio = jnp.mean(jnp.equal(jnp.take(x["final_rewards"], 1, axis=-1), 10), axis=-1)
+    return jnp.argmax(pred_win_ratio).item()
+
+
 def plot_training(training_metrics, eval_frequency, env_params, path):
     rewards_prey = training_metrics["final_rewards"][..., 0]
     rewards_pred = training_metrics["final_rewards"][..., 1]
@@ -73,7 +78,7 @@ def plot_training(training_metrics, eval_frequency, env_params, path):
 if __name__ == "__main__":
 
     env_params = EnvParams(prey_velocity=2, predator_velocity=1)
-    env = HuntingContinuous(allow_timeover=True)
+    env = HuntingContinuous(allow_timeover=False)
 
     if sys.platform == "win32":
         checkpoint_dir = "C:\\Users\\mavritsa\\Repositories\\jax-agents\\benchmarks\\marl\\hunting\\checkpoints\\ippo\\continuous"
@@ -81,7 +86,7 @@ if __name__ == "__main__":
         checkpoint_dir = "/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting/checkpoints/ippo/continuous"
 
     config = IPPOConfig(
-        n_steps=40,
+        n_steps=1_000,
         batch_size=256,
         minibatch_size=16,
         rollout_length=100,
@@ -92,8 +97,9 @@ if __name__ == "__main__":
         optimizer=optax.adam,
         eval_frequency=20,
         eval_rng=jax.random.PRNGKey(18),
-        checkpoint_dir=checkpoint_dir,
-        restore_agent=True
+        n_evals=100,
+        # checkpoint_dir=checkpoint_dir,
+        # restore_agent=True
     )
 
     hyperparams = HyperParameters(
@@ -107,42 +113,42 @@ if __name__ == "__main__":
         critic_optimizer_params=OptimizerParams(learning_rate=1e-3, eps=1e-3, grad_clip=1)
     )
 
-    ippo = HuntingIPPO(env, env_params, config, eval_during_training=True, best_fn = lambda x: jnp.max(x[0]))
+    ippo = HuntingIPPO(env, env_params, config, eval_during_training=True)
 
-    ippo.restore()
+    # ippo.restore(mode="best", best_fn=best_predator_win)
 
-    # rng = jax.random.PRNGKey(42)
-    # rng_train, rng_eval = jax.random.split(rng)
-    # runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
-    # eval_metrics = jax.block_until_ready(ippo.eval(rng_eval, runner.actor_training, n_evals=16))
-    #
-    # def f(runner, i):
-    #     rng, actor_training, state, state_env = runner
-    #     actions = ippo.policy(actor_training, state)
-    #     rng, rng_step = jax.random.split(rng)
-    #     next_state, next_env_state, reward, terminated, info = env.step(rng_step, state_env, actions, env_params)
-    #     runner = rng, actor_training, next_state, next_env_state
-    #     metrics = {
-    #         "step": i,
-    #         "time": state_env.time,
-    #         "positions": state_env.positions.reshape(-1, 2, 2),
-    #         "actions": actions,
-    #         "next_positions": next_env_state.positions.reshape(-1, 2, 2),
-    #         "reward": reward,
-    #         "terminated": terminated,
-    #     }
-    #     return runner, metrics
-    #
-    # n_eval_steps = 100
-    # rng = jax.random.PRNGKey(43)
-    # state, state_env = env.reset(rng, env_params)
-    # render_runner = rng, runner.actor_training, state, state_env
-    # render_runner, render_metrics = jax.lax.scan(scan_tqdm(n_eval_steps)(f), render_runner, jnp.arange(n_eval_steps))
-    # render_metrics = {key: np.asarray(val) for (key, val) in render_metrics.items()}
-    #
-    # training_plot_path = r"figures/continuous/ippo_continuous_policy_training_{steps}steps.png".format(steps=config.n_steps)
-    # plot_training(training_metrics, config.eval_frequency, env_params, training_plot_path)
-    #
-    # gif_path = r"figures/continuous/ippo_continuous_policy_{steps}steps.gif".format(steps=config.n_steps)
-    # env.animate(render_metrics["positions"], render_metrics["actions"], env_params, gif_path)
+    rng = jax.random.PRNGKey(42)
+    rng_train, rng_eval = jax.random.split(rng)
+    runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
+    eval_metrics = jax.block_until_ready(ippo.eval(rng_eval, runner.actor_training, n_evals=16))
+
+    def f(runner, i):
+        rng, actor_training, state, state_env = runner
+        actions = ippo.policy(actor_training, state)
+        rng, rng_step = jax.random.split(rng)
+        next_state, next_env_state, reward, terminated, info = env.step(rng_step, state_env, actions, env_params)
+        runner = rng, actor_training, next_state, next_env_state
+        metrics = {
+            "step": i,
+            "time": state_env.time,
+            "positions": state_env.positions.reshape(-1, 2, 2),
+            "actions": actions,
+            "next_positions": next_env_state.positions.reshape(-1, 2, 2),
+            "reward": reward,
+            "terminated": terminated,
+        }
+        return runner, metrics
+
+    n_eval_steps = 100
+    rng = jax.random.PRNGKey(43)
+    state, state_env = env.reset(rng, env_params)
+    render_runner = rng, runner.actor_training, state, state_env
+    render_runner, render_metrics = jax.lax.scan(scan_tqdm(n_eval_steps)(f), render_runner, jnp.arange(n_eval_steps))
+    render_metrics = {key: np.asarray(val) for (key, val) in render_metrics.items()}
+
+    training_plot_path = r"figures/continuous/ippo_continuous_policy_training_{steps}steps.png".format(steps=config.n_steps)
+    plot_training(training_metrics, config.eval_frequency, env_params, training_plot_path)
+
+    gif_path = r"figures/continuous/ippo_continuous_policy_{steps}steps.gif".format(steps=config.n_steps)
+    env.animate(render_metrics["positions"], render_metrics["actions"], env_params, gif_path)
 
