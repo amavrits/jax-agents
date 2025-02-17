@@ -441,7 +441,7 @@ class IPPOBase(ABC):
                          critic_training: TrainState) -> Transition:
 
         last_state_value_vmap = jax.vmap(critic_training.apply_fn, in_axes=(None, 0))
-        last_state_value = last_state_value_vmap(jax.lax.stop_gradient(critic_training.params), last_state)
+        last_state_value = last_state_value_vmap(lax.stop_gradient(critic_training.params), last_state)
         last_state_value = jnp.expand_dims(last_state_value, axis=1)
 
         """Remove first entry so that the next state values per step are in sync with the state rewards."""
@@ -493,7 +493,7 @@ class IPPOBase(ABC):
 
         traj_runner = (rewards_t, discounts_t, next_state_values_t, gae_lambda)
         end_value = jnp.take(next_state_values_t, -1, axis=0)  # Start from end of trajectory and work in reverse.
-        _, returns = jax.lax.scan(self._trajectory_returns, end_value, traj_runner, reverse=True)
+        _, returns = lax.scan(self._trajectory_returns, end_value, traj_runner, reverse=True)
 
         returns = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), returns)
 
@@ -594,9 +594,9 @@ class IPPOBase(ABC):
         rng, rng_action = jax.random.split(rng)
         actions = self._sample_actions(rng_action, actor_training, state)
 
-        values = critic_training.apply_fn(critic_training.params, state)
+        values = critic_training.apply_fn(lax.stop_gradient(critic_training.params), state)
 
-        log_prob = self._log_prob(actor_training, state, actions)
+        log_prob = self._log_prob(actor_training, lax.stop_gradient(actor_training.params), state, actions)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, actions)
 
@@ -1031,8 +1031,8 @@ class IPPOBase(ABC):
         raise NotImplemented
 
     @abstractmethod
-    def _log_prob(self, actor_training: TrainState, state: STATE_TYPE, actions: Int[Array, "n_actors"])\
-            -> Float[Array, "n_actors"]:
+    def _log_prob(self, actor_training: TrainState, params: Union[dict, FrozenDict], state: STATE_TYPE,
+                  actions: Int[Array, "n_actors"]) -> Float[Array, "n_actors"]:
         raise NotImplemented
 
     @abstractmethod
@@ -1281,10 +1281,8 @@ class IPPO(IPPOBase):
         """ Standardize GAE, greatly improves behaviour"""
         advantage = (advantage - advantage.mean(axis=0)) / (advantage.std(axis=0) + 1e-8)
 
-        # actor_policy_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
-        # actor_policy = actor_policy_vmap(training.params, state)
-        log_prob_vmap = jax.vmap(jax.vmap(self._log_prob, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))
-        log_prob = log_prob_vmap(training, state, actions)
+        log_prob_vmap = jax.vmap(jax.vmap(self._log_prob, in_axes=(None, None, 0, 0)), in_axes=(None, None, 0, 0))
+        log_prob = log_prob_vmap(training, training.params, state, actions)
         log_policy_ratio = log_prob - log_prob_old
         policy_ratio = jnp.exp(log_policy_ratio)
         kl = jnp.sum(-log_policy_ratio)
@@ -1318,7 +1316,6 @@ class IPPO(IPPOBase):
         :return: The critic loss.
         """
 
-        # value = training.apply_fn(training.params, state)
         value_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
         value = value_vmap(training.params, state)
         residuals = value - targets

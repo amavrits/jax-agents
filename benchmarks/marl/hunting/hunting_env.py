@@ -10,6 +10,8 @@ from typing import Tuple
 from abc import abstractmethod
 from functools import partial
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
+
 from PIL import Image
 import io
 
@@ -36,10 +38,12 @@ class EnvParams:
     predator_velocity: float = 1.
     predator_radius: float = .1
     max_time: float = 1.
-    dt: float = 1e-2
-    caught_reward: float = 10.
-    x_lims: Tuple[float, float] = (0., 1.)
-    y_lims: Tuple[float, float] = (0., 1.)
+    dt: float = .01
+    caught_reward: float = 1.
+    # x_lims: Tuple[float, float] = (0., 1.)
+    # y_lims: Tuple[float, float] = (0., 1.)
+    x_lims: Tuple[float, float] = (0., .5)
+    y_lims: Tuple[float, float] = (0., .5)
 
 
 class HuntingBase(environment.Environment):
@@ -50,6 +54,7 @@ class HuntingBase(environment.Environment):
 
     def get_obs(self, state: EnvState) -> STATE:
         return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1)), dtype=jnp.float32)
+        # return state.positions.reshape(1, -1)
 
     def reset_env(self, key: chex.PRNGKey, env_params: Optional[EnvParams] = None) -> Tuple[STATE, EnvState]:
 
@@ -67,6 +72,10 @@ class HuntingBase(environment.Environment):
 
         return self.get_obs(state), state
 
+    @abstractmethod
+    def _adjust_bnds(self, positions: POSITIONS, env_params: EnvParams):
+        raise NotImplementedError
+
     def update_positions(self, positions:POSITIONS, directions: DIRECTIONS, velocities: VELOCITIES,
                          env_params: EnvParams) -> POSITIONS:
 
@@ -74,10 +83,7 @@ class HuntingBase(environment.Environment):
 
         next_positions = positions + displacement
 
-        next_positions = jnp.stack((
-            jnp.clip(jnp.take(next_positions, 0, axis=1), env_params.x_lims[0], env_params.x_lims[1]),
-            jnp.clip(jnp.take(next_positions, 1, axis=1), env_params.y_lims[0], env_params.y_lims[1])
-        ), axis=1)
+        next_positions = self._adjust_bnds(next_positions, env_params)
 
         return next_positions
 
@@ -88,11 +94,12 @@ class HuntingBase(environment.Environment):
                 timeover: Bool[Array, "1"], env_params: EnvParams) -> REWARDS:
 
         reward_prey = jnp.where(prey_caught, -env_params.caught_reward, distance)
-        reward_predator = -reward_prey
+        reward_predator = jnp.where(prey_caught, env_params.caught_reward, -distance)
         rewards = jnp.stack((reward_prey, reward_predator), axis=-1).squeeze()
+        # rewards = jnp.stack((distance, -distance), axis=-1).squeeze()
 
-        rewards_time_over = jnp.asarray([env_params.caught_reward, -env_params.caught_reward]).squeeze()
-        rewards = jnp.where(timeover, rewards_time_over, rewards)
+        # rewards_time_over = jnp.asarray([env_params.caught_reward, -env_params.caught_reward]).squeeze()
+        # rewards = jnp.where(timeover, rewards_time_over, rewards)
 
         return rewards
 
@@ -132,10 +139,11 @@ class HuntingBase(environment.Environment):
     def _directions(self, actions: ACTIONS) -> DIRECTIONS:
         raise NotImplementedError
 
-    def render(self, positions: POSITIONS, actions: ACTIONS, env_params: EnvParams) -> plt.Figure:
+    def render(self, positions: POSITIONS, actions: ACTIONS, values: REWARDS, env_params: EnvParams) -> plt.Figure:
 
         positions = positions.squeeze()
         actions = actions.squeeze()
+        values = values.squeeze()
         directions = self._directions(actions)
         length = 0.05
         dx = length * jnp.take(directions, 0, axis=-1)
@@ -149,6 +157,8 @@ class HuntingBase(environment.Environment):
         ax.scatter(positions[1, 0], positions[1, 1], c="r", s=80, label="Predator")
         ax.arrow(positions[0, 0], positions[0, 1], dx[0], dy[0], color="b", linewidth=1)
         ax.arrow(positions[1, 0], positions[1, 1], dx[1], dy[1], color="r", linewidth=1)
+        ax.annotate("${V}_{s}$"+"={value:.2f}".format(value=values[0]), (positions[0, 0], positions[0, 1]+0.01), color="b")
+        ax.annotate("${V}_{s}$"+"={value:.2f}".format(value=values[1]), (positions[1, 0], positions[1, 1]+0.01), color="r")
         pred_circle = plt.Circle((positions[1, 0], positions[1, 1]), env_params.predator_radius, color='r', alpha=0.3)
         ax.add_patch(pred_circle)
         ax.set_xlim(min(env_params.x_lims), max(env_params.x_lims))
@@ -164,9 +174,10 @@ class HuntingBase(environment.Environment):
 
         return fig
 
-    def animate(self, positions: POSITIONS, actions: ACTIONS, env_params: EnvParams, gif_path: str) -> None:
+    def animate(self, positions: POSITIONS, actions: ACTIONS, values: REWARDS, env_params: EnvParams, gif_path: str,
+                export_pdf: bool = False) -> None:
 
-        figs = list(map(lambda x, y: self.render(x, y, env_params), positions, actions))
+        figs = list(map(lambda x, y, z: self.render(x, y, z, env_params), positions, actions, values))
 
         image_frames = []
         for fig in figs:
@@ -185,6 +196,12 @@ class HuntingBase(environment.Environment):
             loop=0
         )
 
+        if export_pdf:
+            pdf_path = gif_path[:-3]+"pdf"
+            pp = PdfPages(pdf_path)
+            [pp.savefig(fig) for fig in figs]
+            pp.close()
+
     @property
     def name(self) -> str:
         return "Hunting"
@@ -199,6 +216,13 @@ class HuntingDiscrete(HuntingBase):
         directions = jnp.stack((jnp.cos(directions_rad), jnp.sin(directions_rad)), axis=-1)
         return directions
 
+    def _adjust_bnds(self, positions: POSITIONS, env_params: EnvParams):
+        positions = jnp.stack((
+            jnp.clip(jnp.take(positions, 0, axis=1), env_params.x_lims[0], env_params.x_lims[1]),
+            jnp.clip(jnp.take(positions, 1, axis=1), env_params.y_lims[0], env_params.y_lims[1])
+        ), axis=1)
+        return positions
+
 
 class HuntingContinuous(HuntingBase):
 
@@ -206,6 +230,13 @@ class HuntingContinuous(HuntingBase):
         actions_clip = jnp.clip(actions, -jnp.pi, +jnp.pi)
         directions = jnp.stack((jnp.cos(actions_clip), jnp.sin(actions_clip)), axis=-1)
         return directions
+
+    def _adjust_bnds(self, positions: POSITIONS, env_params: EnvParams):
+        positions = jnp.stack((
+            jnp.clip(jnp.take(positions, 0, axis=1), env_params.x_lims[0], env_params.x_lims[1]),
+            jnp.clip(jnp.take(positions, 1, axis=1), env_params.y_lims[0], env_params.y_lims[1])
+        ), axis=1)
+        return positions
 
 
 if __name__ == "__main__":

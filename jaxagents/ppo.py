@@ -479,9 +479,8 @@ class PPOAgentBase(ABC):
     def _add_next_values(self, traj_batch: Transition, last_state: Float[Array, 'state_size'],
                          critic_training: TrainState) -> Transition:
 
-        # last_state_value = critic_training.apply_fn(jax.lax.stop_gradient(critic_training.params), last_state)
         last_state_value_vmap = jax.vmap(critic_training.apply_fn, in_axes=(None, 0))
-        last_state_value = last_state_value_vmap(jax.lax.stop_gradient(critic_training.params), last_state)
+        last_state_value = last_state_value_vmap(lax.stop_gradient(critic_training.params), last_state)
 
         """Remove first entry so that the next state values per step are in sync with the state rewards."""
         next_values_t = jnp.concatenate(
@@ -531,7 +530,7 @@ class PPOAgentBase(ABC):
 
         traj_runner = (rewards_t, discounts_t, next_state_values_t, gae_lambda)
         end_value = jnp.take(next_state_values_t, -1, axis=0)  # Start from end of trajectory and work in reverse.
-        _, returns = jax.lax.scan(self._trajectory_returns, end_value, traj_runner, reverse=True)
+        _, returns = lax.scan(self._trajectory_returns, end_value, traj_runner, reverse=True)
 
         returns = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), returns)
 
