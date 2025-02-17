@@ -109,7 +109,7 @@ def export_csv(render_metrics, csv_path):
 if __name__ == "__main__":
 
     env_params = EnvParams(prey_velocity=1., predator_velocity=1.)
-    env = HuntingContinuous(allow_timeover=False)
+    env = HuntingContinuous()
 
     if sys.platform == "win32":
         checkpoint_dir = "C:\\Users\\mavritsa\\Repositories\\jax-agents\\benchmarks\\marl\\hunting\\checkpoints\\ippo\\continuous"
@@ -120,23 +120,23 @@ if __name__ == "__main__":
         n_steps=1_000,
         batch_size=128,
         minibatch_size=16,
-        rollout_length=300,
-        actor_epochs=30,
-        critic_epochs=30,
+        rollout_length=500,
+        actor_epochs=10,
+        critic_epochs=10,
         actor_network=PGActorContinuous,
         critic_network=PGCritic,
         optimizer=optax.adam,
         eval_frequency=100,
         eval_rng=jax.random.PRNGKey(18),
         n_evals=100,
-        checkpoint_dir=checkpoint_dir,
-        restore_agent=False,
+        # checkpoint_dir=checkpoint_dir,
+        # restore_agent=False,
         # restore_agent=True,
     )
 
     hyperparams = HyperParameters(
         gamma=0.99,
-        eps_clip=0.1,
+        eps_clip=0.10,
         kl_threshold=1e-5,
         gae_lambda=0.97,
         ent_coeff=0.01,
@@ -152,6 +152,7 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
     runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
+    # with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
     eval_metrics = jax.block_until_ready(ippo.eval(rng_eval, runner.actor_training, n_evals=16))
 
     training_plot_path = r"figures/continuous/ippo_continuous_policy_training_{steps}steps.png".format(steps=config.n_steps)
@@ -167,9 +168,9 @@ if __name__ == "__main__":
         metrics = {
             "step": i,
             "time": state_env.time,
-            "positions": state_env.positions.reshape(-1, 2, 2),
+            "positions": state_env.positions,
             "actions": actions,
-            "next_positions": next_env_state.positions.reshape(-1, 2, 2),
+            "next_positions": next_env_state.positions,
             "reward": reward,
             "terminated": terminated,
             "values": values,
@@ -185,6 +186,7 @@ if __name__ == "__main__":
 
     csv_path = r"figures/continuous/details.csv"
     export_csv(render_metrics, csv_path)
+    print("Exported csv")
 
     gif_path = r"figures/continuous/ippo_continuous_policy_{steps}steps.gif".format(steps=config.n_steps)
     env.animate(render_metrics["positions"], render_metrics["actions"], render_metrics["values"], env_params, gif_path, export_pdf=True)

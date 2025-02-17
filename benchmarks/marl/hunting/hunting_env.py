@@ -28,6 +28,7 @@ REWARDS = Float[Array, "n_predators+n_prey"]
 class EnvState:
     time: jnp.float32
     positions: STATE
+    distance: jnp.float32
 
 
 @struct.dataclass
@@ -39,7 +40,7 @@ class EnvParams:
     predator_radius: float = .1
     max_time: float = 1.
     dt: float = .01
-    caught_reward: float = 1.
+    caught_reward: float = 10.
     # x_lims: Tuple[float, float] = (0., 1.)
     # y_lims: Tuple[float, float] = (0., 1.)
     x_lims: Tuple[float, float] = (0., .5)
@@ -48,27 +49,26 @@ class EnvParams:
 
 class HuntingBase(environment.Environment):
 
-    def __init__(self, allow_timeover: bool = False):
+    def __init__(self):
         self.n_actors = 2
-        self.allow_timeover = allow_timeover
 
     def get_obs(self, state: EnvState) -> STATE:
-        return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1)), dtype=jnp.float32)
-        # return state.positions.reshape(1, -1)
+        # return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1)), dtype=jnp.float32)
+        return state.positions.flatten()
 
     def reset_env(self, key: chex.PRNGKey, env_params: Optional[EnvParams] = None) -> Tuple[STATE, EnvState]:
-
-        n_dim = 2  # FIXME: Make variable
 
         rng, *rngs = jax.random.split(key, 3)
         rng_x, rng_y = rngs
 
-        x_coords = jax.random.uniform(rng_x, minval=env_params.x_lims[0], maxval=env_params.x_lims[1], shape=(n_dim,))
-        y_coords = jax.random.uniform(rng_y, minval=env_params.y_lims[0], maxval=env_params.y_lims[1], shape=(n_dim,))
+        x_coords = jax.random.uniform(rng_x, minval=env_params.x_lims[0], maxval=env_params.x_lims[1], shape=(self.n_actors,))
+        y_coords = jax.random.uniform(rng_y, minval=env_params.y_lims[0], maxval=env_params.y_lims[1], shape=(self.n_actors,))
 
-        state = jnp.stack((x_coords.T, y_coords.T), axis=-1)
+        positions = jnp.stack((x_coords.T, y_coords.T), axis=-1)
 
-        state = EnvState(time=jnp.zeros(1), positions=state)
+        distance = self._distance(positions)
+
+        state = EnvState(time=jnp.zeros(1), positions=positions, distance=distance)
 
         return self.get_obs(state), state
 
@@ -88,18 +88,17 @@ class HuntingBase(environment.Environment):
         return next_positions
 
     def _distance(self, positions: POSITIONS) -> Float[Array, "1"]:
-        return jnp.linalg.norm((jnp.take(positions, 0, axis=0) - jnp.take(positions, 1, axis=0)))
+        return jnp.linalg.norm(jnp.diff(positions, axis=0))
 
     def _reward(self, time: Float[Array, "1"], distance: Float[Array, "1"], prey_caught: Bool[Array, "1"],
-                timeover: Bool[Array, "1"], env_params: EnvParams) -> REWARDS:
+                env_params: EnvParams) -> REWARDS:
 
-        reward_prey = jnp.where(prey_caught, -env_params.caught_reward, distance)
-        reward_predator = jnp.where(prey_caught, env_params.caught_reward, -distance)
+        # reward_prey = jnp.where(prey_caught, -env_params.caught_reward, distance)
+        # reward_predator = jnp.where(prey_caught, env_params.caught_reward, -distance)
+        reward_prey = jnp.where(prey_caught, -env_params.caught_reward, 0)
+        reward_predator = jnp.where(prey_caught, env_params.caught_reward, -0)
         rewards = jnp.stack((reward_prey, reward_predator), axis=-1).squeeze()
         # rewards = jnp.stack((distance, -distance), axis=-1).squeeze()
-
-        # rewards_time_over = jnp.asarray([env_params.caught_reward, -env_params.caught_reward]).squeeze()
-        # rewards = jnp.where(timeover, rewards_time_over, rewards)
 
         return rewards
 
@@ -110,19 +109,17 @@ class HuntingBase(environment.Environment):
 
         velocities = jnp.expand_dims(jnp.asarray([env_params.prey_velocity, env_params.predator_velocity]), axis=-1)
 
-        time, positions = state.time, state.positions
+        time, positions, distance = state.time, state.positions, state.distance
         next_time = time + env_params.dt
         next_positions = self.update_positions(positions, directions, velocities, env_params)
-        next_state = EnvState(time=next_time, positions=next_positions)
+        next_distance = self._distance(next_positions)
+        next_state = EnvState(time=next_time, positions=next_positions, distance=next_distance)
 
-        distance = self._distance(next_positions)
+        prey_caught = jnp.less_equal(next_distance, env_params.predator_radius)
+        truncated = jnp.greater(time, env_params.max_time)  # Truncation = time over
+        terminated = prey_caught
 
-        prey_caught = jnp.less_equal(distance, env_params.predator_radius)
-        truncated = jnp.greater(time, env_params.max_time)  # Truncation = timeover
-        timeover = jnp.logical_and(truncated, self.allow_timeover)  # Terminate when timeover.
-        terminated = jnp.logical_or(prey_caught, timeover)
-
-        rewards = self._reward(next_time, distance, prey_caught, timeover, env_params)
+        rewards = self._reward(next_time, distance, prey_caught, env_params)
 
         info = {
             "truncated": truncated.squeeze(),
@@ -206,6 +203,11 @@ class HuntingBase(environment.Environment):
     def name(self) -> str:
         return "Hunting"
 
+    def simple_strategy(self, env_state: EnvState, env_params: EnvParams) -> ACTIONS:
+        positions = env_state.positions
+        positions_diff = jnp.diff(positions, axis=0)
+        angle = jnp.atan(jnp.take())
+        return jnp.asarray([angle.squeeze(), angle.squeeze()])
 
 class HuntingDiscrete(HuntingBase):
     
