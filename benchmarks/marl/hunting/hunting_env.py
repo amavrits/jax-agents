@@ -37,14 +37,14 @@ class EnvParams:
     n_predators: int = 1
     prey_velocity: float = 1.
     predator_velocity: float = 1.
-    predator_radius: float = .1
+    predator_radius: float = .2
     max_time: float = 1.
     dt: float = .01
     caught_reward: float = 10.
-    # x_lims: Tuple[float, float] = (0., 1.)
-    # y_lims: Tuple[float, float] = (0., 1.)
-    x_lims: Tuple[float, float] = (0., .5)
-    y_lims: Tuple[float, float] = (0., .5)
+    x_lims: Tuple[float, float] = (0., 1.)
+    y_lims: Tuple[float, float] = (0., 1.)
+    # x_lims: Tuple[float, float] = (0., .5)
+    # y_lims: Tuple[float, float] = (0., .5)
 
 
 class HuntingBase(environment.Environment):
@@ -54,7 +54,8 @@ class HuntingBase(environment.Environment):
 
     def get_obs(self, state: EnvState) -> STATE:
         # return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1)), dtype=jnp.float32)
-        return state.positions.flatten()
+        return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1), jnp.expand_dims(state.distance, axis=(0, -1))), dtype=jnp.float32)
+        # return state.positions.flatten()
 
     def reset_env(self, key: chex.PRNGKey, env_params: Optional[EnvParams] = None) -> Tuple[STATE, EnvState]:
 
@@ -90,17 +91,9 @@ class HuntingBase(environment.Environment):
     def _distance(self, positions: POSITIONS) -> Float[Array, "1"]:
         return jnp.linalg.norm(jnp.diff(positions, axis=0))
 
-    def _reward(self, time: Float[Array, "1"], distance: Float[Array, "1"], prey_caught: Bool[Array, "1"],
-                env_params: EnvParams) -> REWARDS:
-
-        # reward_prey = jnp.where(prey_caught, -env_params.caught_reward, distance)
-        # reward_predator = jnp.where(prey_caught, env_params.caught_reward, -distance)
-        reward_prey = jnp.where(prey_caught, -env_params.caught_reward, 0)
-        reward_predator = jnp.where(prey_caught, env_params.caught_reward, -0)
-        rewards = jnp.stack((reward_prey, reward_predator), axis=-1).squeeze()
-        # rewards = jnp.stack((distance, -distance), axis=-1).squeeze()
-
-        return rewards
+    # def _reward(self, time: Float[Array, "1"], distance: Float[Array, "1"], prey_caught: Bool[Array, "1"],
+    #             env_params: EnvParams) -> REWARDS:
+    #     return rewards
 
     def step_env(self, key: chex.PRNGKey, state: EnvState, actions: ACTIONS, env_params: EnvParams) \
             -> Tuple[STATE, EnvState, REWARDS, bool, bool, dict]:
@@ -117,9 +110,22 @@ class HuntingBase(environment.Environment):
 
         prey_caught = jnp.less_equal(next_distance, env_params.predator_radius)
         truncated = jnp.greater(time, env_params.max_time)  # Truncation = time over
-        terminated = prey_caught
+        # terminated = prey_caught
+        terminated = jnp.logical_or(prey_caught, truncated)
 
-        rewards = self._reward(next_time, distance, prey_caught, env_params)
+        # movement = jnp.linalg.norm(next_positions-positions, axis=-1)
+        # eff_velocity = movement / env_params.dt
+        # Avoid numerical inaccuracy of velocity --> stuck when effective velocity is 95% of maximum
+        # stuck = jnp.less(eff_velocity.squeeze(), velocities.squeeze()*0.95)
+
+        reward_prey = jnp.where(prey_caught, -env_params.caught_reward, 1)
+        reward_predator = jnp.where(prey_caught, env_params.caught_reward, -1)
+        rewards = jnp.stack((reward_prey, reward_predator), axis=-1).squeeze()
+
+        # moving_rewards = jnp.asarray([1, -1])
+        # stuck_rewards = - 2 * jnp.ones(self.n_actors)
+        # caught_rewards = jnp.asarray([-1, 1]) * env_params.caught_reward
+        # rewards = moving_rewards * (1 - stuck) * (1 - prey_caught) + stuck_rewards * stuck + caught_rewards * prey_caught
 
         info = {
             "truncated": truncated.squeeze(),
@@ -142,7 +148,7 @@ class HuntingBase(environment.Environment):
         actions = actions.squeeze()
         values = values.squeeze()
         directions = self._directions(actions)
-        length = 0.05
+        length = max(env_params.x_lims) / 10
         dx = length * jnp.take(directions, 0, axis=-1)
         dy = length * jnp.take(directions, 1, axis=-1)
 

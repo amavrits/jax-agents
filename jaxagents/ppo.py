@@ -1389,7 +1389,7 @@ class PPOAgent(PPOAgentBase):
 
         return (
             traj_minibatch.state,
-            traj_minibatch.advantage + traj_minibatch.next_value,
+            traj_minibatch.advantage + traj_minibatch.value,
             update_runner.hyperparams
         )
 
@@ -1544,7 +1544,7 @@ class PPOClipCriticAgent(PPOAgentBase):
         return (
             traj_batch.state,
             traj_batch.value,
-            traj_batch.advantage + traj_batch.next_value,
+            traj_batch.advantage + traj_batch.value,
             update_runner.hyperparams
         )
 

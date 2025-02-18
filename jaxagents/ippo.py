@@ -500,22 +500,6 @@ class IPPOBase(ABC):
         return returns
 
     @partial(jax.jit, static_argnums=(0,))
-    def _trajectory_advantages(self, advantage: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
-        """
-        Calculates the GAE per episode step over a batch of trajectories.
-        :param advantage: The GAE advantages of the steps in the trajectory according to the critic (including the one
-        of the last state). In the beginning of the method, 'advantage' is the advantage of the state in the next step
-        in the trajectory (not the reverse iteration), and after calculation it is the advantage of the examined state
-        in each step.
-        :param traj: The trajectory batch.
-        :return: An array of returns.
-        """
-        rewards, values, next_state_values, terminated, gamma, gae_lambda = traj
-        d_t = rewards + (1 - terminated) * gamma * next_state_values - values  # Temporal difference residual at time t
-        advantage = d_t + gamma * gae_lambda * (1 - terminated) * advantage
-        return advantage, advantage
-
-    @partial(jax.jit, static_argnums=(0,))
     def _advantages(self, traj_batch: Transition, gamma: float, gae_lambda: float) -> RETURNS_TYPE:
         """
         Calculates the advantage of every step in the trajectory batch. To do so, it identifies episodes in the
@@ -526,7 +510,7 @@ class IPPOBase(ABC):
         :param last_next_state_value: The value of the last next state in each trajectory.
         :param gamma: Discount factor
         :param gae_lambda: The GAE λ factor.
-        :return: The returns over the episodes of the trajectory batch.
+        :return: The advantages over the episodes of the trajectory batch.
         """
 
         rewards_t = traj_batch.reward.squeeze()
@@ -1388,7 +1372,7 @@ class IPPO(IPPOBase):
 
         return (
             traj_minibatch.state,
-            traj_minibatch.advantage + traj_minibatch.next_value,
+            traj_minibatch.advantage + traj_minibatch.value,
             update_runner.hyperparams
         )
 

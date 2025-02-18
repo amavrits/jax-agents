@@ -118,11 +118,11 @@ if __name__ == "__main__":
 
     config = IPPOConfig(
         n_steps=1_000,
-        batch_size=128,
+        batch_size=256,
         minibatch_size=16,
         rollout_length=500,
         actor_epochs=10,
-        critic_epochs=10,
+        critic_epochs=30,
         actor_network=PGActorContinuous,
         critic_network=PGCritic,
         optimizer=optax.adam,
@@ -139,10 +139,10 @@ if __name__ == "__main__":
         eps_clip=0.10,
         kl_threshold=1e-5,
         gae_lambda=0.97,
-        ent_coeff=0.01,
+        ent_coeff=0.2,
         vf_coeff=1.0,
         actor_optimizer_params=OptimizerParams(learning_rate=3e-4, eps=1e-5, grad_clip=1),
-        critic_optimizer_params=OptimizerParams(learning_rate=1e-4, eps=1e-5, grad_clip=1)
+        critic_optimizer_params=OptimizerParams(learning_rate=5e-5, eps=1e-5, grad_clip=1)
     )
 
     ippo = HuntingIPPO(env, env_params, config, eval_during_training=True)
