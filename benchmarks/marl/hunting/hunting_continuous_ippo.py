@@ -117,7 +117,7 @@ if __name__ == "__main__":
         checkpoint_dir = "/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting/checkpoints/ippo/continuous"
 
     config = IPPOConfig(
-        n_steps=1_000,
+        n_steps=5_000,
         batch_size=256,
         minibatch_size=16,
         rollout_length=500,
@@ -136,7 +136,7 @@ if __name__ == "__main__":
 
     hyperparams = HyperParameters(
         gamma=0.99,
-        eps_clip=0.10,
+        eps_clip=0.20,
         kl_threshold=1e-5,
         gae_lambda=0.97,
         ent_coeff=0.2,
@@ -152,7 +152,6 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
     runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
-    # with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
     eval_metrics = jax.block_until_ready(ippo.eval(rng_eval, runner.actor_training, n_evals=16))
 
     training_plot_path = r"figures/continuous/ippo_continuous_policy_training_{steps}steps.png".format(steps=config.n_steps)
@@ -189,5 +188,6 @@ if __name__ == "__main__":
     print("Exported csv")
 
     gif_path = r"figures/continuous/ippo_continuous_policy_{steps}steps.gif".format(steps=config.n_steps)
-    env.animate(render_metrics["positions"], render_metrics["actions"], render_metrics["values"], env_params, gif_path, export_pdf=True)
+    env.animate(render_metrics["time"].squeeze(), render_metrics["positions"], render_metrics["actions"],
+                render_metrics["values"], env_params, gif_path, export_pdf=True)
 

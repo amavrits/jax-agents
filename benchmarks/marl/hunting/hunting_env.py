@@ -43,8 +43,6 @@ class EnvParams:
     caught_reward: float = 10.
     x_lims: Tuple[float, float] = (0., 1.)
     y_lims: Tuple[float, float] = (0., 1.)
-    # x_lims: Tuple[float, float] = (0., .5)
-    # y_lims: Tuple[float, float] = (0., .5)
 
 
 class HuntingBase(environment.Environment):
@@ -53,8 +51,8 @@ class HuntingBase(environment.Environment):
         self.n_actors = 2
 
     def get_obs(self, state: EnvState) -> STATE:
-        # return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1)), dtype=jnp.float32)
-        return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1), jnp.expand_dims(state.distance, axis=(0, -1))), dtype=jnp.float32)
+        return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1)), dtype=jnp.float32)
+        # return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1), jnp.expand_dims(state.distance, axis=(0, -1))), dtype=jnp.float32)
         # return state.positions.flatten()
 
     def reset_env(self, key: chex.PRNGKey, env_params: Optional[EnvParams] = None) -> Tuple[STATE, EnvState]:
@@ -142,7 +140,8 @@ class HuntingBase(environment.Environment):
     def _directions(self, actions: ACTIONS) -> DIRECTIONS:
         raise NotImplementedError
 
-    def render(self, positions: POSITIONS, actions: ACTIONS, values: REWARDS, env_params: EnvParams) -> plt.Figure:
+    def render(self, time: Float[Array, "1"], positions: POSITIONS, actions: ACTIONS, values: REWARDS,
+               env_params: EnvParams) -> plt.Figure:
 
         positions = positions.squeeze()
         actions = actions.squeeze()
@@ -156,6 +155,7 @@ class HuntingBase(environment.Environment):
         yticks = jnp.round(jnp.linspace(min(env_params.y_lims), max(env_params.y_lims), 6), 1)
 
         fig, ax = plt.subplots(figsize=(6, 6))
+        fig.suptitle("Time={t:.2f}sec".format(t=time), fontsize=14)
         ax.scatter(positions[0, 0], positions[0, 1], c="b", s=40, label="Prey")
         ax.scatter(positions[1, 0], positions[1, 1], c="r", s=80, label="Predator")
         ax.arrow(positions[0, 0], positions[0, 1], dx[0], dy[0], color="b", linewidth=1)
@@ -177,10 +177,10 @@ class HuntingBase(environment.Environment):
 
         return fig
 
-    def animate(self, positions: POSITIONS, actions: ACTIONS, values: REWARDS, env_params: EnvParams, gif_path: str,
-                export_pdf: bool = False) -> None:
+    def animate(self, times: Float[Array, "n_steps"], positions: POSITIONS, actions: ACTIONS, values: REWARDS,
+                env_params: EnvParams, gif_path: str, export_pdf: bool = False) -> None:
 
-        figs = list(map(lambda x, y, z: self.render(x, y, z, env_params), positions, actions, values))
+        figs = list(map(lambda w, x, y, z: self.render(w, x, y, z, env_params), times, positions, actions, values))
 
         image_frames = []
         for fig in figs:
