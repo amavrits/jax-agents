@@ -5,8 +5,8 @@ import numpy as np
 import optax
 import distrax
 from hunting_env import HuntingContinuous, EnvParams
-from jaxagents.ippo import IPPO, IPPOConfig, HyperParameters, OptimizerParams, TrainState, STATE_TYPE
-from jaxtyping import Array, Float, Int, PRNGKeyArray, Bool
+from benchmarks.marl.hunting_rnn.ippo_rnn import IPPO, IPPOConfig, HyperParameters, OptimizerParams, TrainState, STATE_TYPE
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 from typing import List, Tuple
 from agent_gallery import PGActorContinuous, PGCritic
 from jax_tqdm import scan_tqdm
@@ -18,32 +18,30 @@ import pandas as pd
 class HuntingIPPO(IPPO):
 
     @partial(jax.jit, static_argnums=(0,))
-    def _entropy(self, actor_training: TrainState, state: STATE_TYPE)-> Float[Array, "n_actors"]:
-        mus = actor_training.apply_fn(actor_training.params, state).squeeze()
-        pis = distrax.Normal(loc=mus, scale=jnp.exp(-0.5))
+    def _entropy(self, actor_training: TrainState, state: STATE_TYPE, h)-> Float[Array, "n_actors"]:
+        mus, _ = actor_training.apply_fn(actor_training.params, state, h)
+        pis = distrax.Normal(loc=mus.squeeze(), scale=jnp.exp(-0.5))
         return pis.entropy()
 
     @partial(jax.jit, static_argnums=(0, 4,))
-    def _log_prob(self, actor_training: TrainState, params: dict, state: STATE_TYPE, actions: Int[Array, "n_actors"])\
+    def _log_prob(self, actor_training: TrainState, params: dict, state: STATE_TYPE, actions: Int[Array, "n_actors"], h)\
             -> Float[Array, "n_actors"]:
-        mus = actor_training.apply_fn(params, state).squeeze()
-        log_probs = distrax.Normal(loc=mus, scale=jnp.exp(-0.5)).log_prob(actions)
-        # log_probs = distrax.ClippedNormal(loc=mus, scale=jnp.exp(-0.5), minimum=-jnp.pi, maximum=jnp.pi).log_prob(actions)
+        mus, _ = actor_training.apply_fn(params, state, h)
+        log_probs = distrax.Normal(loc=mus.squeeze(), scale=jnp.exp(-0.5)).log_prob(actions)
         return log_probs
 
     @partial(jax.jit, static_argnums=(0,))
-    def policy(self, actor_training: TrainState, state: STATE_TYPE) -> Float[Array, "n_actors"]:
-        mus = actor_training.apply_fn(actor_training.params, state).squeeze()
-        return mus
+    def policy(self, actor_training: TrainState, state: STATE_TYPE, h) -> Float[Array, "n_actors"]:
+        mus, h = actor_training.apply_fn(actor_training.params, state, h)
+        return mus.squeeze(), h.squeeze()
 
     @partial(jax.jit, static_argnums=(0,))
-    def _sample_actions(self, rng: PRNGKeyArray, actor_training: TrainState, state: STATE_TYPE)\
+    def _sample_actions(self, rng: PRNGKeyArray, actor_training: TrainState, state: STATE_TYPE, h)\
         -> Tuple[PRNGKeyArray, List[Int[Array, "1"]]]:
-        mus = actor_training.apply_fn(jax.lax.stop_gradient(actor_training.params), state).squeeze()
+        mus, h = actor_training.apply_fn(jax.lax.stop_gradient(actor_training.params), state, h)
         # Use fixed std, OpenAI: https://github.com/openai/spinningup/blob/master/spinup/algos/pytorch/ppo/core.py#L84
         actions = distrax.Normal(loc=mus, scale=jnp.exp(-0.5)).sample(seed=rng)
-        # actions = distrax.ClippedNormal(loc=mus, scale=jnp.exp(-0.5), minimum=-jnp.pi, maximum=jnp.pi).sample(seed=rng)
-        return actions
+        return actions.squeeze(), h.squeeze()
 
 
 def best_predator_win(x):
@@ -108,7 +106,7 @@ def export_csv(render_metrics, csv_path):
 
 if __name__ == "__main__":
 
-    env_params = EnvParams(prey_velocity=10., predator_velocity=1.)
+    env_params = EnvParams(prey_velocity=5., predator_velocity=1.)
     env = HuntingContinuous()
 
     if sys.platform == "win32":
@@ -117,7 +115,9 @@ if __name__ == "__main__":
         checkpoint_dir = "/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting/checkpoints/ippo/continuous"
 
     config = IPPOConfig(
-        n_steps=1_000,
+        n_steps=2_000,
+        seq_length=20,
+        hidden_size=8,
         batch_size=256,
         minibatch_size=16,
         rollout_length=500,
@@ -139,9 +139,9 @@ if __name__ == "__main__":
         eps_clip=0.20,
         kl_threshold=1e-5,
         gae_lambda=0.97,
-        ent_coeff=0.5,
+        ent_coeff=0.005,
         vf_coeff=1.0,
-        actor_optimizer_params=OptimizerParams(learning_rate=3e-4, eps=1e-5, grad_clip=1),
+        actor_optimizer_params=OptimizerParams(learning_rate=3e-5, eps=1e-5, grad_clip=1),
         critic_optimizer_params=OptimizerParams(learning_rate=5e-5, eps=1e-5, grad_clip=1)
     )
 
@@ -156,28 +156,34 @@ if __name__ == "__main__":
     plot_training(training_metrics, config.eval_frequency, env_params, training_plot_path)
 
     def f(runner, i):
-        rng, actor_training, critic_training, state, state_env = runner
-        actions = ippo.policy(actor_training, state)
-        values = critic_training.apply_fn(critic_training.params, state)
+        rng, actor_training, critic_training, state, state_env, actor_hidden_state, critic_hidden_state = runner
+        state = jnp.expand_dims(state, axis=0)
+        actions, actor_hidden_state = ippo.policy(actor_training, state, actor_hidden_state)
+        value, critic_hidden_state = critic_training.apply_fn(critic_training.params, state, critic_hidden_state)
         rng, rng_step = jax.random.split(rng)
         next_state, next_env_state, reward, terminated, info = env.step(rng_step, state_env, actions, env_params)
-        runner = rng, actor_training, critic_training, next_state, next_env_state
+        next_state = jnp.vstack((state.squeeze(), next_state))
+        next_state = jnp.take(next_state, jnp.arange(1, config.seq_length+1), axis=0)
+        runner = rng, actor_training, critic_training, next_state, next_env_state, actor_hidden_state, critic_hidden_state
         metrics = {
             "step": i,
-            "time": state_env.time,
-            "positions": state_env.positions,
+            "time": state_env.time.squeeze(),
+            "positions": state_env.positions.reshape(-1, 2, 2),
             "actions": actions,
-            "next_positions": next_env_state.positions,
+            "next_positions": next_env_state.positions.reshape(-1, 2, 2),
             "reward": reward,
+            "values": value,
             "terminated": terminated,
-            "values": values,
         }
         return runner, metrics
 
-    n_eval_steps = 500
+    n_eval_steps = 300
     rng = jax.random.PRNGKey(43)
     state, state_env = env.reset(rng, env_params)
-    render_runner = rng, runner.actor_training, runner.critic_training, state, state_env
+    actor_hidden_state = jnp.zeros(config.hidden_size)
+    critic_hidden_state = jnp.zeros(config.hidden_size)
+    state = jnp.repeat(state, config.seq_length, axis=0)
+    render_runner = rng, runner.actor_training, runner.critic_training, state, state_env, actor_hidden_state, critic_hidden_state
     render_runner, render_metrics = jax.lax.scan(scan_tqdm(n_eval_steps)(f), render_runner, jnp.arange(n_eval_steps))
     render_metrics = {key: np.asarray(val) for (key, val) in render_metrics.items()}
 

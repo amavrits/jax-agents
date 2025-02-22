@@ -7,17 +7,14 @@ Author: Antonis Mavritsakis
 """
 
 import jax
-import jax.numpy as jnp
 from jax import lax
 from jax_tqdm import scan_tqdm
-from flax import linen as nn
-import distrax
 import optax
 from flax.core import FrozenDict
 
-from jaxagents.agent_utils.ippo_utils import *
+from benchmarks.marl.hunting_rnn.ippo_rnn_utils import *
 from gymnax.environments.environment import Environment, EnvParams
-from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
+from gymnax.wrappers.purerl import LogEnvState
 from flax.training.train_state import TrainState
 from flax.training import orbax_utils
 import orbax
@@ -295,8 +292,11 @@ class IPPOBase(ABC):
 
         _, dummy_state, _ = self._reset(dummy_reset_rng)
         init_x = jnp.zeros((1, dummy_state.size))
+        init_x = jnp.expand_dims(init_x, axis=1)  # FIXME
+        init_x = jnp.repeat(init_x, self.config.seq_length, axis=1)
+        init_h = jnp.zeros(self.config.hidden_size)
 
-        params = network.init(network_init_rng, init_x)
+        params = network.init(network_init_rng, init_x, init_h)
 
         return network, params
 
@@ -346,7 +346,9 @@ class IPPOBase(ABC):
                          reward: Float[Array, "n_actors"],
                          next_state: STATE_TYPE,
                          terminated: Bool[Array, "1"],
-                         info: Dict) -> Transition:
+                         info: Dict,
+                         actor_hidden_state,
+                         critic_hidden_state) -> Transition:
         """
         Creates a transition object based on the input and output of an episode step.
         :param state: The current state of the episode step in array format.
@@ -361,7 +363,7 @@ class IPPOBase(ABC):
                  the executed action, the collected reward, episode termination and optional additional information.
         """
 
-        transition = Transition(state.squeeze(), actions, value, log_prob, reward, next_state, terminated, info)
+        transition = Transition(state.squeeze(), actions, value, log_prob, reward, next_state, terminated, info, actor_hidden_state, critic_hidden_state)
         transition = jax.tree_util.tree_map(lambda x: jnp.expand_dims(x, axis=0), transition)
 
         return transition
@@ -428,17 +430,17 @@ class IPPOBase(ABC):
             env_state=env_state,
             state=state,
             rng=runner_rngs,
-            hyperparams=hyperparams
+            hyperparams=hyperparams,
         )
 
         return update_runner
 
     @partial(jax.jit, static_argnums=(0,))
     def _add_next_values(self, traj_batch: Transition, last_state: Float[Array, 'state_size'],
-                         critic_training: TrainState) -> Transition:
+                         critic_training: TrainState, critic_hidden_state) -> Transition:
 
-        last_state_value_vmap = jax.vmap(critic_training.apply_fn, in_axes=(None, 0))
-        last_state_value = last_state_value_vmap(lax.stop_gradient(critic_training.params), last_state)
+        last_state_value_vmap = jax.vmap(critic_training.apply_fn, in_axes=(None, 0, 0))
+        last_state_value, critic_hidden_state = last_state_value_vmap(lax.stop_gradient(critic_training.params), jnp.expand_dims(last_state, axis=1), critic_hidden_state)
         last_state_value = jnp.expand_dims(last_state_value, axis=1)
 
         """Remove first entry so that the next state values per step are in sync with the state rewards."""
@@ -548,12 +550,14 @@ class IPPOBase(ABC):
 
         rollout_runner = (
             update_runner.env_state,
-            update_runner.state,
+            jnp.repeat(jnp.expand_dims(update_runner.state, axis=0), self.config.seq_length, axis=0).squeeze(),
             update_runner.actor_training,
             update_runner.critic_training,
-            update_runner.rng
+            update_runner.rng,
+            jnp.zeros((self.config.batch_size, self.config.hidden_size)),
+            jnp.zeros((self.config.batch_size, self.config.hidden_size))
         )
-        rollout_runners = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))(*rollout_runner)
+        rollout_runners = jax.vmap(lambda t, u, v, w, x, y, z: (t, u, v, w, x, y, z), in_axes=(0, 1, None, None, 0, 0, 0))(*rollout_runner)
         return rollout_runners
 
     @partial(jax.jit, static_argnums=(0,))
@@ -570,25 +574,30 @@ class IPPOBase(ABC):
         :return: The updated step_runner tuple and the rollout step transition.
         """
 
-        env_state, state, actor_training, critic_training, rng = step_runner
+        env_state, state, actor_training, critic_training, rng, actor_hidden_state, critic_hidden_state = step_runner
 
         rng, rng_action = jax.random.split(rng)
-        actions = self._sample_actions(rng_action, actor_training, state)
+        actions, next_actor_hidden_state = self._sample_actions(rng_action, actor_training, jnp.expand_dims(state, axis=0), actor_hidden_state)
 
-        values = critic_training.apply_fn(lax.stop_gradient(critic_training.params), state)
+        values, next_critic_hidden_state = critic_training.apply_fn(lax.stop_gradient(critic_training.params), jnp.expand_dims(state, axis=0), critic_hidden_state)
 
-        log_prob = self._log_prob(actor_training, lax.stop_gradient(actor_training.params), state, actions)
+        log_prob = self._log_prob(actor_training, lax.stop_gradient(actor_training.params), jnp.expand_dims(state, axis=0), actions, actor_hidden_state)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, actions)
 
-        step_runner = (next_env_state, next_state, actor_training, critic_training, rng)
+        next_states = jnp.vstack((state, next_state))
+        next_states = jnp.take(next_states, jnp.arange(1, self.config.seq_length+1), axis=0)
 
-        transition = self._make_transition(state, actions, values, log_prob, reward, next_state, terminated, info)
+        next_states = jnp.where(terminated, jnp.repeat(next_state, self.config.seq_length, axis=0), next_states)
+
+        step_runner = (next_env_state, next_states, actor_training, critic_training, rng, next_actor_hidden_state, next_critic_hidden_state)
+
+        transition = self._make_transition(state, actions, values, log_prob, reward, next_states, terminated, info, next_actor_hidden_state, next_critic_hidden_state)
 
         return step_runner, transition
 
     @partial(jax.jit, static_argnums=(0,))
-    def _process_trajectory(self, update_runner: Runner, traj_batch: Transition, last_state: STATE_TYPE) -> Transition:
+    def _process_trajectory(self, update_runner: Runner, traj_batch: Transition, last_state: STATE_TYPE, critic_hidden_state) -> Transition:
         """
         Estimates the value and advantages for a batch of trajectories. For the last state of trajectory, which is not
         guaranteed to end with termination, the value is estimated using the critic network. This assumption has been
@@ -601,7 +610,7 @@ class IPPOBase(ABC):
         """
 
         traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
-        traj_batch = self._add_next_values(traj_batch, last_state, update_runner.critic_training)
+        traj_batch = self._add_next_values(traj_batch, last_state, update_runner.critic_training, critic_hidden_state)
 
         advantages = self._advantages(traj_batch, update_runner.hyperparams.gamma, update_runner.hyperparams.gae_lambda)
         traj_batch = self._add_advantages(traj_batch, advantages)
@@ -772,13 +781,16 @@ class IPPOBase(ABC):
         """
 
         rollout_runners = self._make_rollout_runners(update_runner)
-        scan_rollout_fn = lambda x: lax.scan(self._rollout, x, None, self.config.rollout_length)
+        scan_rollout_fn = lambda x: lax.scan(self._rollout, x, jnp.arange(self.config.rollout_length), self.config.rollout_length)
         rollout_runners, traj_batch = jax.vmap(scan_rollout_fn)(rollout_runners)
-        last_env_state, last_state, _, _, rng = rollout_runners
-        traj_batch = self._process_trajectory(update_runner, traj_batch, last_state)
+        last_env_state, last_state, _, _, rng, actor_hidden_state, critic_hidden_state = rollout_runners
+        traj_batch = self._process_trajectory(update_runner, traj_batch, last_state, critic_hidden_state)
 
         actor_training = self._actor_update(update_runner, traj_batch)
         critic_training = self._critic_update(update_runner, traj_batch)
+
+        last_state = jnp.take(last_state, -1, axis=1)  # FIXME
+        last_state = jnp.expand_dims(last_state, axis=1)  # FIXME
 
         """Update runner as a dataclass."""
         update_runner = update_runner.replace(
@@ -972,7 +984,7 @@ class IPPOBase(ABC):
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                     targets: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters) -> float:
+                     targets: Float[Array, "batch_size n_rollout"], h, hyperparams: HyperParameters) -> float:
         """
         Calculates the critic loss.
         :param training: The critic TrainState object.
@@ -1051,7 +1063,7 @@ class IPPOBase(ABC):
         :return: Whether the episode is terminated, which means that the while loop must stop.
         """
 
-        _, _, _, terminated, truncated, _, _, _ = eval_runner
+        _, _, _, _, terminated, truncated, _, _, _ = eval_runner
         return jnp.logical_and(jnp.logical_not(terminated), jnp.logical_not(truncated))
 
     @partial(jax.jit, static_argnums=(0,))
@@ -1064,16 +1076,22 @@ class IPPOBase(ABC):
         :return: The updated eval_runner tuple.
         """
 
-        env_state, state, actor_training, terminated, truncated, reward, sum_rewards, rng = eval_runner
+        env_state, state, actor_training, actor_hidden_state, terminated, truncated, reward, sum_rewards, rng = eval_runner
 
-        actions = self.policy(actor_training, state)
+        state = jnp.expand_dims(state, axis=0)
+        actions, actor_hidden_state = self.policy(actor_training, state, actor_hidden_state)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, actions)
         truncated = info["truncated"]
 
+        next_states = jnp.vstack((state.squeeze(), next_state))
+        next_states = jnp.take(next_states, jnp.arange(1, self.config.seq_length+1), axis=0)
+
+        next_states = jnp.where(terminated, jnp.repeat(next_state, self.config.seq_length, axis=0), next_states)
+
         sum_rewards += reward
 
-        eval_runner = (next_env_state, next_state, actor_training, terminated, truncated, reward, sum_rewards, rng)
+        eval_runner = (next_env_state, next_states, actor_training, actor_hidden_state, terminated, truncated, reward, sum_rewards, rng)
 
         return eval_runner
 
@@ -1092,8 +1110,9 @@ class IPPOBase(ABC):
 
         eval_runner = (
             env_state,
-            state,
+            jnp.repeat(state, self.config.seq_length, axis=1),
             actor_training,
+            jnp.zeros((n_episodes, self.config.hidden_size)),
             jnp.zeros(1, dtype=jnp.bool).squeeze(),
             jnp.zeros(1, dtype=jnp.bool).squeeze(),
             jnp.zeros(self.n_actors),
@@ -1101,12 +1120,12 @@ class IPPOBase(ABC):
             rng
         )
         eval_runners = jax.vmap(
-            lambda s, t, u, v, w, x, y, z: (s, t, u, v, w, x, y, z),
-            in_axes=(0, 0, None, None, None, None, None, 0)
+            lambda r, s, t, u, v, w, x, y, z: (r, s, t, u, v, w, x, y, z),
+            in_axes=(0, 0, None, 0, None, None, None, None, 0)
         )(*eval_runner)
 
         eval_runner = jax.vmap(lambda x: lax.while_loop(self._eval_cond, self._eval_body, x))(eval_runners)
-        _, _, _, terminated, truncated, final_rewards, sum_rewards, _ = eval_runner
+        _, _, _, _, terminated, truncated, final_rewards, sum_rewards, _ = eval_runner
 
         return self._eval_metrics(terminated, truncated, final_rewards, sum_rewards)
 
@@ -1247,7 +1266,7 @@ class IPPO(IPPOBase):
 
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                    actions: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
+                    actions: Float[Array, "n_rollout batch_size"], h, log_prob_old: Float[Array, "n_rollout batch_size"],
                     advantage: RETURNS_TYPE, hyperparams: HyperParameters) \
             -> Tuple[Union[float, Float[Array, "1"]], Float[Array, "1"]]:
         """
@@ -1265,8 +1284,9 @@ class IPPO(IPPOBase):
         """ Standardize GAE, greatly improves behaviour"""
         advantage = (advantage - advantage.mean(axis=0)) / (advantage.std(axis=0) + 1e-8)
 
-        log_prob_vmap = jax.vmap(jax.vmap(self._log_prob, in_axes=(None, None, 0, 0)), in_axes=(None, None, 0, 0))
-        log_prob = log_prob_vmap(training, training.params, state, actions)
+        log_prob_vmap = jax.vmap(jax.vmap(self._log_prob, in_axes=(None, None, 0, 0, 0)), in_axes=(None, None, 0, 0, 0))
+        state = jnp.expand_dims(state, axis=2)
+        log_prob = log_prob_vmap(training, training.params, state, actions, h)
         log_policy_ratio = log_prob - log_prob_old
         policy_ratio = jnp.exp(log_policy_ratio)
         kl = jnp.sum(-log_policy_ratio)
@@ -1282,7 +1302,7 @@ class IPPO(IPPOBase):
         # advantage_clip = jnp.clip(policy_ratio, 1 - hyperparams.eps_clip, 1 + hyperparams.eps_clip) * advantage
 
         loss_actor = jnp.minimum(policy_ratio * advantage, advantage_clip)
-        entropy = jax.vmap(jax.vmap(self._entropy, in_axes=(None, 0)), in_axes=(None, 0))(training, state)
+        entropy = jax.vmap(jax.vmap(self._entropy, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))(training, state, h)
         total_loss_actor = loss_actor.mean() + hyperparams.ent_coeff * entropy.mean()
 
         """ Negative loss, because we want ascent but 'apply_gradients' applies descent """
@@ -1290,7 +1310,7 @@ class IPPO(IPPOBase):
 
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                     targets: RETURNS_TYPE, hyperparams: HyperParameters) -> Float[Array, "1"]:
+                     targets: RETURNS_TYPE, h, hyperparams: HyperParameters) -> Float[Array, "1"]:
         """
         Calculates the critic loss.
         :param training: The critic TrainState object.
@@ -1300,8 +1320,9 @@ class IPPO(IPPOBase):
         :return: The critic loss.
         """
 
-        value_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
-        value = value_vmap(training.params, state)
+        value_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))
+        state = jnp.expand_dims(state, axis=2)
+        value, _ = value_vmap(training.params, state, h)
         residuals = value - targets
         value_loss = jnp.mean(residuals ** 2)
         critic_total_loss = hyperparams.vf_coeff * value_loss
@@ -1339,6 +1360,7 @@ class IPPO(IPPOBase):
         return (
             traj_minibatch.state,
             traj_minibatch.action,
+            traj_minibatch.actor_hidden_state,
             traj_minibatch.log_prob,
             traj_minibatch.advantage,
             update_runner.hyperparams
@@ -1373,6 +1395,7 @@ class IPPO(IPPOBase):
         return (
             traj_minibatch.state,
             traj_minibatch.advantage + traj_minibatch.value,
+            traj_minibatch.critic_hidden_state,
             update_runner.hyperparams
         )
 

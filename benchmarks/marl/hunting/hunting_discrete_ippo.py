@@ -7,7 +7,7 @@ from hunting_env import HuntingDiscrete, EnvParams
 from jaxagents.ippo import IPPO, IPPOConfig, HyperParameters, OptimizerParams, TrainState, STATE_TYPE
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 from typing import List, Tuple
-from hunting_gallery import PGActorDiscrete, PGCritic
+from agent_gallery import PGActorDiscrete, PGCritic
 from jax_tqdm import scan_tqdm
 from functools import partial
 import matplotlib.pyplot as plt
