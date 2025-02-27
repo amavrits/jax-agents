@@ -1268,6 +1268,7 @@ class IPPO(IPPOBase):
         log_prob_vmap = jax.vmap(jax.vmap(self._log_prob, in_axes=(None, None, 0, 0)), in_axes=(None, None, 0, 0))
         log_prob = log_prob_vmap(training, training.params, state, actions)
         log_policy_ratio = log_prob - log_prob_old
+        # log_policy_ratio = log_prob - lax.stop_gradient(log_prob_old)
         policy_ratio = jnp.exp(log_policy_ratio)
         kl = jnp.sum(-log_policy_ratio)
 

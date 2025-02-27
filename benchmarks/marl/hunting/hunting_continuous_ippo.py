@@ -16,24 +16,24 @@ import pandas as pd
 
 
 class HuntingIPPO(IPPO):
+    log_std = -0.0
 
     @partial(jax.jit, static_argnums=(0,))
     def _entropy(self, actor_training: TrainState, state: STATE_TYPE)-> Float[Array, "n_actors"]:
         mus = actor_training.apply_fn(actor_training.params, state).squeeze()
-        pis = distrax.Normal(loc=mus, scale=jnp.exp(-0.5))
+        pis = distrax.Normal(loc=mus, scale=jnp.exp(self.log_std))
         return pis.entropy()
 
     @partial(jax.jit, static_argnums=(0, 4,))
     def _log_prob(self, actor_training: TrainState, params: dict, state: STATE_TYPE, actions: Int[Array, "n_actors"])\
             -> Float[Array, "n_actors"]:
         mus = actor_training.apply_fn(params, state).squeeze()
-        log_probs = distrax.Normal(loc=mus, scale=jnp.exp(-0.5)).log_prob(actions)
-        # log_probs = distrax.ClippedNormal(loc=mus, scale=jnp.exp(-0.5), minimum=-jnp.pi, maximum=jnp.pi).log_prob(actions)
+        log_probs = distrax.Normal(loc=mus, scale=jnp.exp(self.log_std)).log_prob(actions)
         return log_probs
 
     @partial(jax.jit, static_argnums=(0,))
     def policy(self, actor_training: TrainState, state: STATE_TYPE) -> Float[Array, "n_actors"]:
-        mus = actor_training.apply_fn(actor_training.params, state).squeeze()
+        mus = actor_training.apply_fn(jax.lax.stop_gradient(actor_training.params), state).squeeze()
         return mus
 
     @partial(jax.jit, static_argnums=(0,))
@@ -41,8 +41,7 @@ class HuntingIPPO(IPPO):
         -> Tuple[PRNGKeyArray, List[Int[Array, "1"]]]:
         mus = actor_training.apply_fn(jax.lax.stop_gradient(actor_training.params), state).squeeze()
         # Use fixed std, OpenAI: https://github.com/openai/spinningup/blob/master/spinup/algos/pytorch/ppo/core.py#L84
-        actions = distrax.Normal(loc=mus, scale=jnp.exp(-0.5)).sample(seed=rng)
-        # actions = distrax.ClippedNormal(loc=mus, scale=jnp.exp(-0.5), minimum=-jnp.pi, maximum=jnp.pi).sample(seed=rng)
+        actions = distrax.Normal(loc=mus, scale=jnp.exp(self.log_std)).sample(seed=rng)
         return actions
 
 
@@ -108,7 +107,7 @@ def export_csv(render_metrics, csv_path):
 
 if __name__ == "__main__":
 
-    env_params = EnvParams(prey_velocity=10., predator_velocity=1.)
+    env_params = EnvParams(prey_velocity=3., predator_velocity=1., max_time=2.)
     env = HuntingContinuous()
 
     if sys.platform == "win32":
@@ -117,12 +116,13 @@ if __name__ == "__main__":
         checkpoint_dir = "/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting/checkpoints/ippo/continuous"
 
     config = IPPOConfig(
-        n_steps=1_000,
+        n_steps=5_000,
         batch_size=256,
         minibatch_size=16,
-        rollout_length=500,
+        rollout_length=int(env_params.max_time//env_params.dt+1),
+        # rollout_length=500,
         actor_epochs=10,
-        critic_epochs=30,
+        critic_epochs=10,
         actor_network=PGActorContinuous,
         critic_network=PGCritic,
         optimizer=optax.adam,
@@ -136,10 +136,10 @@ if __name__ == "__main__":
 
     hyperparams = HyperParameters(
         gamma=0.99,
-        eps_clip=0.20,
+        eps_clip=0.2,
         kl_threshold=1e-5,
         gae_lambda=0.97,
-        ent_coeff=0.5,
+        ent_coeff=.5,
         vf_coeff=1.0,
         actor_optimizer_params=OptimizerParams(learning_rate=3e-4, eps=1e-5, grad_clip=1),
         critic_optimizer_params=OptimizerParams(learning_rate=5e-5, eps=1e-5, grad_clip=1)
@@ -150,6 +150,7 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
     runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
+    # with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
     eval_metrics = jax.block_until_ready(ippo.eval(rng_eval, runner.actor_training, n_evals=16))
 
     training_plot_path = r"figures/continuous/ippo_continuous_policy_training_{steps}steps.png".format(steps=config.n_steps)

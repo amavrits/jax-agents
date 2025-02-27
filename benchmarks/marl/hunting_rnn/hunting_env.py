@@ -15,7 +15,6 @@ from matplotlib.backends.backend_pdf import PdfPages
 from PIL import Image
 import io
 
-
 POSITIONS = Float[Array, "n_predators+n_prey 2"]
 STATE = Float[Array, "1+n_predators+n_prey 2"]
 ACTIONS = Int[Array, "n_predators+n_prey"]
@@ -28,7 +27,9 @@ REWARDS = Float[Array, "n_predators+n_prey"]
 class EnvState:
     time: jnp.float32
     positions: STATE
+    directions: DIRECTIONS
     distance: jnp.float32
+    action_mask: Float[Array, "2"]
 
 
 @struct.dataclass
@@ -51,23 +52,33 @@ class HuntingBase(environment.Environment):
         self.n_actors = 2
 
     def get_obs(self, state: EnvState) -> STATE:
-        return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1)), dtype=jnp.float32)
-        # return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1), jnp.expand_dims(state.distance, axis=(0, -1))), dtype=jnp.float32)
-        # return state.positions.flatten()
+        return jnp.hstack(
+            (jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1), state.directions.reshape(1, -1)),
+            dtype=jnp.float32)
+        # return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1)), dtype=jnp.float32)
 
     def reset_env(self, key: chex.PRNGKey, env_params: Optional[EnvParams] = None) -> Tuple[STATE, EnvState]:
+
+        # key = jax.random.PRNGKey(11)
 
         rng, *rngs = jax.random.split(key, 3)
         rng_x, rng_y = rngs
 
-        x_coords = jax.random.uniform(rng_x, minval=env_params.x_lims[0], maxval=env_params.x_lims[1], shape=(self.n_actors,))
-        y_coords = jax.random.uniform(rng_y, minval=env_params.y_lims[0], maxval=env_params.y_lims[1], shape=(self.n_actors,))
+        x_coords = jax.random.uniform(rng_x, minval=env_params.x_lims[0], maxval=env_params.x_lims[1],
+                                      shape=(self.n_actors,))
+        y_coords = jax.random.uniform(rng_y, minval=env_params.y_lims[0], maxval=env_params.y_lims[1],
+                                      shape=(self.n_actors,))
 
         positions = jnp.stack((x_coords.T, y_coords.T), axis=-1)
 
+        directions = jnp.zeros(2)
+
         distance = self._distance(positions)
 
-        state = EnvState(time=jnp.zeros(1), positions=positions, distance=distance)
+        action_mask = jnp.asarray([-jnp.pi, +jnp.pi])
+
+        state = EnvState(time=jnp.zeros(1), positions=positions, directions=directions, distance=distance,
+                         action_mask=action_mask)
 
         return self.get_obs(state), state
 
@@ -75,7 +86,7 @@ class HuntingBase(environment.Environment):
     def _adjust_bnds(self, positions: POSITIONS, env_params: EnvParams):
         raise NotImplementedError
 
-    def update_positions(self, positions:POSITIONS, directions: DIRECTIONS, velocities: VELOCITIES,
+    def update_positions(self, positions: POSITIONS, directions: DIRECTIONS, velocities: VELOCITIES,
                          env_params: EnvParams) -> POSITIONS:
 
         displacement = env_params.dt * velocities * directions
@@ -89,10 +100,6 @@ class HuntingBase(environment.Environment):
     def _distance(self, positions: POSITIONS) -> Float[Array, "1"]:
         return jnp.linalg.norm(jnp.diff(positions, axis=0))
 
-    # def _reward(self, time: Float[Array, "1"], distance: Float[Array, "1"], prey_caught: Bool[Array, "1"],
-    #             env_params: EnvParams) -> REWARDS:
-    #     return rewards
-
     def step_env(self, key: chex.PRNGKey, state: EnvState, actions: ACTIONS, env_params: EnvParams) \
             -> Tuple[STATE, EnvState, REWARDS, bool, bool, dict]:
 
@@ -104,26 +111,24 @@ class HuntingBase(environment.Environment):
         next_time = time + env_params.dt
         next_positions = self.update_positions(positions, directions, velocities, env_params)
         next_distance = self._distance(next_positions)
-        next_state = EnvState(time=next_time, positions=next_positions, distance=next_distance)
+        next_action_mask = jnp.asarray([-jnp.pi, +jnp.pi])
+        next_directions = jnp.clip(actions, -jnp.pi, +jnp.pi)
+        next_state = EnvState(time=next_time, positions=next_positions, directions=next_directions,
+                              distance=next_distance, action_mask=next_action_mask)
 
         prey_caught = jnp.less_equal(next_distance, env_params.predator_radius)
         truncated = jnp.greater_equal(time, env_params.max_time)  # Truncation = time over
         terminated = jnp.logical_or(prey_caught, truncated)
 
-        # reward_prey = jnp.where(prey_caught, -env_params.caught_reward, 1)
-        # reward_predator = jnp.where(prey_caught, env_params.caught_reward, -1)
-        # rewards = jnp.stack((reward_prey, reward_predator), axis=-1).squeeze()
-
-        movement = jnp.linalg.norm(next_positions-positions, axis=-1)
+        movement = jnp.linalg.norm(next_positions - positions, axis=-1)
         eff_velocity = movement / env_params.dt
         # Avoid numerical inaccuracy of velocity --> stuck when effective velocity is 95% of maximum
-        stuck = jnp.less(eff_velocity.squeeze(), velocities.squeeze()*0.95)
+        stuck = jnp.less(eff_velocity.squeeze(), velocities.squeeze() * 0.95)
 
-        step_rewards = jnp.asarray([1, -1])
-        stuck_rewards = - 20 * jnp.ones(self.n_actors)
-        caught_rewards = jnp.asarray([-1, 1]) * env_params.caught_reward
-        # rewards = step_rewards * (1 - stuck) * (1 - prey_caught) + stuck_rewards * stuck + caught_rewards * prey_caught
+        step_rewards = jnp.asarray([+1, -1])
+        caught_rewards = jnp.asarray([-1, +1]) * env_params.caught_reward
         rewards = step_rewards * (1 - prey_caught) + caught_rewards * prey_caught
+        # rewards = step_rewards * (1 - prey_caught) + caught_rewards * prey_caught + jnp.asarray([1, 0]) * (1 - stuck)
 
         info = {
             "truncated": truncated.squeeze(),
@@ -160,8 +165,10 @@ class HuntingBase(environment.Environment):
         ax.scatter(positions[1, 0], positions[1, 1], c="r", s=80, label="Predator")
         ax.arrow(positions[0, 0], positions[0, 1], dx[0], dy[0], color="b", linewidth=1)
         ax.arrow(positions[1, 0], positions[1, 1], dx[1], dy[1], color="r", linewidth=1)
-        ax.annotate("${V}_{s}$"+"={value:.2f}".format(value=values[0]), (positions[0, 0], positions[0, 1]+0.01), color="b")
-        ax.annotate("${V}_{s}$"+"={value:.2f}".format(value=values[1]), (positions[1, 0], positions[1, 1]+0.01), color="r")
+        ax.annotate("${V}_{s}$" + "={value:.2f}".format(value=values[0]), (positions[0, 0], positions[0, 1] + 0.01),
+                    color="b")
+        ax.annotate("${V}_{s}$" + "={value:.2f}".format(value=values[1]), (positions[1, 0], positions[1, 1] + 0.01),
+                    color="r")
         pred_circle = plt.Circle((positions[1, 0], positions[1, 1]), env_params.predator_radius, color='r', alpha=0.3)
         ax.add_patch(pred_circle)
         ax.set_xlim(min(env_params.x_lims), max(env_params.x_lims))
@@ -200,7 +207,7 @@ class HuntingBase(environment.Environment):
         )
 
         if export_pdf:
-            pdf_path = gif_path[:-3]+"pdf"
+            pdf_path = gif_path[:-3] + "pdf"
             pp = PdfPages(pdf_path)
             [pp.savefig(fig) for fig in figs]
             pp.close()
@@ -215,8 +222,9 @@ class HuntingBase(environment.Environment):
         angle = jnp.atan(jnp.take())
         return jnp.asarray([angle.squeeze(), angle.squeeze()])
 
+
 class HuntingDiscrete(HuntingBase):
-    
+
     def _directions(self, actions: ACTIONS) -> DIRECTIONS:
         cond_list = [actions == 0, actions == 1, actions == 2, actions == 3]
         choice_list = [0, jnp.pi / 2, jnp.pi, 3 / 2 * jnp.pi]
@@ -258,6 +266,7 @@ if __name__ == "__main__":
     env_params = EnvParams(prey_velocity=2, predator_velocity=1)
     env = HuntingDiscrete() if discrete else HuntingContinuous()
 
+
     def f(runner, i):
         rng, state, state_env = runner
         rng, rng_action, rng_step = jax.random.split(rng, 3)
@@ -276,6 +285,7 @@ if __name__ == "__main__":
             "terminated": terminated,
         }
         return runner, metrics
+
 
     n_eval_steps = 300
     rng = jax.random.PRNGKey(43)

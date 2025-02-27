@@ -106,7 +106,7 @@ def export_csv(render_metrics, csv_path):
 
 if __name__ == "__main__":
 
-    env_params = EnvParams(prey_velocity=5., predator_velocity=1.)
+    env_params = EnvParams(prey_velocity=3., predator_velocity=1., max_time=2,)
     env = HuntingContinuous()
 
     if sys.platform == "win32":
@@ -115,14 +115,15 @@ if __name__ == "__main__":
         checkpoint_dir = "/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting/checkpoints/ippo/continuous"
 
     config = IPPOConfig(
-        n_steps=2_000,
-        seq_length=20,
-        hidden_size=8,
+        n_steps=1_000,
+        seq_length=5,
+        hidden_size=128,
         batch_size=256,
         minibatch_size=16,
-        rollout_length=500,
+        # rollout_length=500,
+        rollout_length=int(env_params.max_time//env_params.dt+1),
         actor_epochs=10,
-        critic_epochs=30,
+        critic_epochs=10,
         actor_network=PGActorContinuous,
         critic_network=PGCritic,
         optimizer=optax.adam,
