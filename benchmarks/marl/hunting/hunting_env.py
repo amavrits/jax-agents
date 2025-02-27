@@ -215,6 +215,7 @@ class HuntingBase(environment.Environment):
         angle = jnp.atan(jnp.take())
         return jnp.asarray([angle.squeeze(), angle.squeeze()])
 
+
 class HuntingDiscrete(HuntingBase):
     
     def _directions(self, actions: ACTIONS) -> DIRECTIONS:
