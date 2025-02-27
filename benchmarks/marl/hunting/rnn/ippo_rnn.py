@@ -7,22 +7,21 @@ Author: Antonis Mavritsakis
 """
 
 import jax
-import jax.numpy as jnp
 from jax import lax
 from jax_tqdm import scan_tqdm
-import distrax
 import optax
 from flax.core import FrozenDict
-from jaxagents.agent_utils.ppo_utils import *
+
+from benchmarks.marl.hunting.rnn.ippo_rnn_utils import *
 from gymnax.environments.environment import Environment, EnvParams
-from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
+from gymnax.wrappers.purerl import LogEnvState
 from flax.training.train_state import TrainState
 from flax.training import orbax_utils
 import orbax
 from abc import abstractmethod
 from functools import partial
 from abc import ABC
-from typing import Tuple, Dict, NamedTuple, Type, Union, Optional, ClassVar
+from typing import Tuple, Dict, NamedTuple, Type, Union, Optional, ClassVar, List
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 import warnings
 import os
@@ -32,24 +31,25 @@ warnings.filterwarnings("ignore")
 
 STATE_TYPE = Float[Array, "state_size"]
 STEP_RUNNER_TYPE = Tuple[LogEnvState, STATE_TYPE, TrainState, TrainState, PRNGKeyArray]
-PI_DIST_TYPE = distrax.Categorical
-RETURNS_TYPE = Float[Array, "batch_size n_rollout"]
+RETURNS_TYPE = Float[Array, "batch_size n_rollout n_actors"]
 
 
-class PPOAgentBase(ABC):
+class IPPOBase(ABC):
     """
-    Base for PPO agents.
-    Can be used for both discrete or continuous action environments, and its use depends on the provided actor network.
-    Follows the instructions of: https://spinningup.openai.com/en/latest/algorithms/ppo.html
-    Uses lax.scan for rollout, so trajectories may be truncated.
+        Base for PPO agents.
+        Can be used for both discrete or continuous action environments, and its use depends on the provided actor network.
+        Follows the instructions of: https://spinningup.openai.com/en/latest/algorithms/ppo.html
+        Uses lax.scan for rollout, so trajectories may be truncated.
 
-    Training relies on jitting several methods by treating the 'self' arg as static. According to suggested practice,
-    this can prove dangerous (https://jax.readthedocs.io/en/latest/faq.html#how-to-use-jit-with-methods -
-    How to use jit with methods?); if attrs of 'self' change during training, the changes will not be registered in
-    jit. In this case, neither agent training nor evaluation change any 'self' attrs, so using Strategy 2 of the
-    suggested practice is valid. Otherwise, strategy 3 should have been used.
-    """
+        Training relies on jitting several methods by treating the 'self' arg as static. According to suggested practice,
+        this can prove dangerous (https://jax.readthedocs.io/en/latest/faq.html#how-to-use-jit-with-methods -
+        How to use jit with methods?); if attrs of 'self' change during training, the changes will not be registered in
+        jit. In this case, neither agent training nor evaluation change any 'self' attrs, so using Strategy 2 of the
+        suggested practice is valid. Otherwise, strategy 3 should have been used.
+        """
 
+    # Number of actors in environment
+    n_actors: int
     # Function for performing a minibatch update of the actor network.
     _actor_minibatch_fn: ClassVar[Callable[[Tuple[TrainState, tuple, float]], Tuple[TrainState, tuple, float]]]
     # Function for performing a minibatch update of the critic network.
@@ -64,15 +64,18 @@ class PPOAgentBase(ABC):
     # restoring or passing a trained agent (from serial training or restoring)
     previous_training_max_step: ClassVar[int] = 0
 
-    def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfig) -> None:
+    def __init__(self, env: Environment, env_params: EnvParams, config: IPPOConfig, eval_during_training: bool = True)\
+            -> None:
+
         """
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
         :param env_params: A dataclass named "EnvParams" containing the parametrization of the environment.
         :param config: The configuration of the agent as and AgentConfig object (from vpf_utils).
+        :param eval_during_training: Whether evaluation should be performed during training.
         """
-
+        self.n_actors = env.n_actors
         self.config = config
-        self.eval_during_training = self.config.eval_rng is not None
+        self.eval_during_training = eval_during_training
         self._init_checkpointer()
         self._init_env(env, env_params)
 
@@ -85,10 +88,10 @@ class PPOAgentBase(ABC):
         output_lst = ['Agent configuration:'] + output_lst
 
         return '\n'.join(output_lst)
-
+    
     """ GENERAL METHODS"""
 
-    def _init_env(self, env: Type[Environment], env_params: EnvParams) -> None:
+    def _init_env(self, env: Environment, env_params: EnvParams) -> None:
         """
         Environment initialization.
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
@@ -96,10 +99,10 @@ class PPOAgentBase(ABC):
         :return:
         """
 
-        env = FlattenObservationWrapper(env)
-        self.env = LogWrapper(env)
+        # env = FlattenObservationWrapper(env)
+        # self.env = LogWrapper(env)
+        self.env = env
         self.env_params = env_params
-        self.n_actions = self.env.action_space(self.env_params).n
 
     def _init_checkpointer(self) -> None:
         """
@@ -135,8 +138,7 @@ class PPOAgentBase(ABC):
 
             options = orbax.checkpoint.CheckpointManagerOptions(
                 create=True,
-                best_fn=jnp.max,  # The checkpoint with the maximum metric is selected.
-                step_prefix='training step',
+                step_prefix='trainingstep',
             )
 
             self.checkpoint_manager = orbax.checkpoint.CheckpointManager(
@@ -166,27 +168,34 @@ class PPOAgentBase(ABC):
 
         return empty_training
 
-    def restore(self, mode: str = "best"):
+    def restore(self, mode: str = "best", best_fn: Optional[Callable[[dict], [int]]] = None) -> None:
         """
         Restores a checkpoint (best or latest) and collects the history of metrics as assessed during training. Then,
         post-processes the restored checkpoint.
         :param mode: Determines whether the best performing or latest checkpoint should be restored.
+        :param best_fn: The function that should be used in determining the best performing checkpoint.
         :return:
         """
 
         steps = self.checkpoint_manager.all_steps()
 
+        # Log keys in checkpoints
+        ckpt = self.checkpoint_manager.restore(steps[0])
+        ckpt_keys = [key for key in list(ckpt.keys()) if key != "runner"]
+
         # Collect history of metrics in training. Useful for continuing training.
-        metrics_lst = [None] * len(steps)
+        metrics = {key: [None] * len(steps) for key in ckpt_keys}
         for i, step in enumerate(steps):
             ckpt = self.checkpoint_manager.restore(step)
-            metrics_lst[i] = ckpt["episode_returns"][jnp.newaxis, :]
-
-        metrics_array = jnp.concatenate(metrics_lst, axis=0)
-        metrics = {"episode_returns": metrics_array}
+            for key in ckpt_keys:
+                metrics[key][i] = ckpt[key][jnp.newaxis, :]
+        metrics = {key: jnp.concatenate(val, axis=0) for (key, val) in metrics.items()}
 
         if mode == "best":
-            step = self.checkpoint_manager.best_step()  # In case of multiple max performances, the last one is used.
+            if best_fn is not None:
+                step = steps[best_fn(metrics)]
+            else:
+                raise Exception("Function for determining best checkpoint not provided")
         elif mode == "last":
             step = self.checkpoint_manager.latest_step()
         else:
@@ -201,7 +210,7 @@ class PPOAgentBase(ABC):
         empty_critic_training = self._create_empty_trainstate(self.config.critic_network)
 
         # Get some state and env_state for restoring the checkpoint.
-        state, env_state = self.env.reset(jax.random.PRNGKey(1), self.env_params)
+        _, state, env_state = self._reset(jax.random.PRNGKey(1))
 
         empty_runner = Runner(
             actor_training=empty_actor_training,
@@ -215,7 +224,10 @@ class PPOAgentBase(ABC):
 
         target_ckpt = {
             "runner": empty_runner,
-            "episode_returns": jnp.zeros(metrics["episode_returns"].shape[1])
+            "terminated": jnp.zeros(metrics["terminated"].shape[1]),
+            "truncated": jnp.zeros(metrics["truncated"].shape[1]),
+            "final_rewards": jnp.zeros(metrics["final_rewards"].shape[1]),
+            "sum_rewards": jnp.zeros(metrics["sum_rewards"].shape[1]),
         }
 
         ckpt = self.checkpoint_manager.restore(step, items=target_ckpt)
@@ -273,18 +285,18 @@ class PPOAgentBase(ABC):
         :return: A random key after splitting the input and the initial parameters of the policy network.
         """
 
-        # Initialize the agent networks. The number of actions is irrelevant for the Critic network, which should return
-        # a single value in the final layer. However, the network class should accept the number of actions as an
-        # argument, even if it isn't used.
-        network = network(self.n_actions, self.config)
+        network = network(self.config)
 
         rng, *_rng = jax.random.split(rng, 3)
         dummy_reset_rng, network_init_rng = _rng
 
-        dummy_state, _ = self.env.reset(dummy_reset_rng, self.env_params)
+        _, dummy_state, _ = self._reset(dummy_reset_rng)
         init_x = jnp.zeros((1, dummy_state.size))
+        init_x = jnp.expand_dims(init_x, axis=1)  # FIXME
+        init_x = jnp.repeat(init_x, self.config.seq_length, axis=1)
+        init_h = jnp.zeros(self.config.hidden_size)
 
-        params = network.init(network_init_rng, init_x)
+        params = network.init(network_init_rng, init_x, init_h)
 
         return network, params
 
@@ -298,19 +310,20 @@ class PPOAgentBase(ABC):
 
         rng, reset_rng = jax.random.split(rng)
         state, env_state = self.env.reset(reset_rng, self.env_params)
+
         return rng, state, env_state
 
     @partial(jax.jit, static_argnums=(0,))
-    def _env_step(self, rng: PRNGKeyArray, env_state: Type[NamedTuple], action: Union[Int[Array, "1"], int]) -> \
-        Tuple[
-            PRNGKeyArray, Float[Array, "state_size"], Type[LogEnvState], Union[float, Float[Array, "1"]],
-            Union[bool, Bool[Array, "1"]], dict
-        ]:
+    def _env_step(self, rng: PRNGKeyArray, env_state: Type[NamedTuple], actions: Union[Int[Array, "n_actors"], int])\
+            -> Tuple[
+                PRNGKeyArray, Float[Array, "state_size"], Type[LogEnvState], Union[float, Float[Array, "1"]],
+                Union[bool, Bool[Array, "1"]], dict
+            ]:
         """
         Environment step.
         :param rng: Random key for initialization.
         :param env_state: The environment state in LogEnvState format.
-        :param action: The action selected by the agent.
+        :param actions: The actions selected per actor.
         :return: A tuple of: a random key after splitting the input, the next state in array and LogEnvState formats,
                  the collected reward after executing the action, episode termination and a dictionary of optional
                  additional information.
@@ -318,30 +331,31 @@ class PPOAgentBase(ABC):
 
         rng, step_rng = jax.random.split(rng)
         next_state, next_env_state, reward, terminated, info = \
-            self.env.step(step_rng, env_state, action.squeeze(), self.env_params)
+            self.env.step(step_rng, env_state, actions.squeeze(), self.env_params)
 
         return rng, next_state, next_env_state, reward, terminated, info
-
-
+    
     """ METHODS FOR TRAINING """
 
     @partial(jax.jit, static_argnums=(0,))
     def _make_transition(self,
                          state: STATE_TYPE,
-                         action: Int[Array, "1"],
-                         value: Float[Array, "1"],
-                         log_prob: Float[Array, "1"],
-                         reward: Float[Array, "1"],
+                         actions: Int[Array, "n_actors"],
+                         value: Float[Array, "n_actors"],
+                         log_prob: Float[Array, "n_actors"],
+                         reward: Float[Array, "n_actors"],
                          next_state: STATE_TYPE,
                          terminated: Bool[Array, "1"],
-                         info: Dict) -> Transition:
+                         info: Dict,
+                         actor_hidden_state,
+                         critic_hidden_state) -> Transition:
         """
         Creates a transition object based on the input and output of an episode step.
         :param state: The current state of the episode step in array format.
-        :param action: The action selected by the agent.
-        :param value: The critic value of the state.
+        :param actions: The action selected per actor.
+        :param value: The value of the state per critic.
         :param log_prob: The actor log-probability of the selected action.
-        :param reward: The collected reward after executing the action.
+        :param reward: The collected reward after executing the action per actor.
         :param next_state: The next state of the episode step in array format.
         :param terminated: Episode termination.
         :param info: Dictionary of optional additional information.
@@ -349,7 +363,7 @@ class PPOAgentBase(ABC):
                  the executed action, the collected reward, episode termination and optional additional information.
         """
 
-        transition = Transition(state.squeeze(), action, value, log_prob, reward, next_state, terminated, info)
+        transition = Transition(state.squeeze(), actions, value, log_prob, reward, next_state, terminated, info, actor_hidden_state, critic_hidden_state)
         transition = jax.tree_util.tree_map(lambda x: jnp.expand_dims(x, axis=0), transition)
 
         return transition
@@ -358,23 +372,21 @@ class PPOAgentBase(ABC):
     def _generate_metrics(self, runner: Runner, update_step: int) -> Dict:
         """
         Generates metrics for on-policy learning. The agent performance during training is evaluated by running
-        batch_size episodes (until termination). The selected metric is the sum of rewards collected dring the episode.
-        If the user selects not to generate metrics (leading to faster training), an empty dictinary is returned.
+        n_evals episodes (until termination). If the user selects not to generate metrics (leading to faster training),
+        an empty dictionary is returned.
         :param runner: The update runner object, containing information about the current status of the actor's/critic's
         training, the state of the environment and training hyperparameters.
         :param update_step: The number of the update step.
-        :return: A dictionary of the sum of rewards collected over 'batch_size' episodes, or empty dictionary.
+        :return: A dictionary of the sum of rewards collected over 'n_evals' episodes, or empty dictionary.
         """
 
         metric = {}
         if self.eval_during_training:
-            sum_rewards = self._eval_agent(
+            metric = self._eval_agent(
                 self.config.eval_rng,
                 runner.actor_training,
-                runner.critic_training,
-                self.config.batch_size
+                self.config.n_evals
             )
-            metric.update({"episode_returns": sum_rewards})
 
         return metric
 
@@ -393,15 +405,15 @@ class PPOAgentBase(ABC):
         return TrainState.create(apply_fn=network.apply, tx=tx, params=params)
 
     @partial(jax.jit, static_argnums=(0,))
-    def _create_update_runner(self, rng: PRNGKeyArray, actor_training: TrainState, critic_training: TrainState,
-                              hyperparams: HyperParameters) -> Runner:
+    def _create_update_runner(self, rng: PRNGKeyArray, actor_training: List[TrainState],
+                              critic_training: List[TrainState], hyperparams: HyperParameters) -> Runner:
         """
         Initializes the update runner as a Runner object. The runner contains batch_size initializations of the
         environment, which are used for sampling trajectories. The update runner has one TrainState for the actor and
         one for the critic network, so that trajectory batches are used to train the same parameters.
         :param rng: Random key for initialization.
-        :param actor_training: The actor TrainState object used in training.
-        :param critic_training: The critic TrainState object used in training.
+        :param actor_training: The actor TrainState objects used in training.
+        :param critic_training: The critic TrainState objects used in training.
         :param hyperparams: An instance of HyperParameters for training.
         :return: An update runner object to be used in trajectory sampling and training.
         """
@@ -418,74 +430,24 @@ class PPOAgentBase(ABC):
             env_state=env_state,
             state=state,
             rng=runner_rngs,
-            hyperparams=hyperparams
+            hyperparams=hyperparams,
         )
 
         return update_runner
 
     @partial(jax.jit, static_argnums=(0,))
-    def _pi(self, actor_training: TrainState, state: STATE_TYPE) -> PI_DIST_TYPE:
-        """
-        Assess the stochastic policy via the actor network for the state.
-        :param actor_training: The actor TrainState object used in training.
-        :param state: The current state of the episode step in array format.
-        :return: The stochastic policy for the input state.
-        """
-
-        pi = actor_training.apply_fn(lax.stop_gradient(actor_training.params), state)
-        return pi
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _value(self, critic_training: TrainState, state: STATE_TYPE) -> Float[Array, "1"]:
-        """
-        Assess the stochastic policy via the actor network for the state.
-        :param critic_training: The critic TrainState object used in training.
-        :param state: The current state of the episode step in array format.
-        :return: The value for the input state.
-        """
-
-        value = critic_training.apply_fn(lax.stop_gradient(critic_training.params), state)
-        return value
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _pi_value(self, actor_training: TrainState, critic_training: TrainState, state: STATE_TYPE)\
-            -> Tuple[PI_DIST_TYPE, Float[Array, "1"]]:
-        """
-        Assess the stochastic policy via the actor network and the value via the critic network for the state.
-        :param actor_training: The actor TrainState object used in training.
-        :param critic_training: The critic TrainState object used in training.
-        :param state: The current state of the episode step in array format.
-        :return: A tuple of the stochastic policy and the value of the state.
-        """
-
-        pi = self._pi(actor_training, state)
-        value = self._value(critic_training, state)
-        return pi, value
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _select_action(self, rng: PRNGKeyArray, pi: PI_DIST_TYPE) -> Tuple[PRNGKeyArray, Int[Array, "1"]]:
-        """
-        Select action by sampling from the stochastic policy for a state.
-        :param rng: Random key for initialization.
-        :param pi: The distax distribution procuded by the actor network indicating the stochastic policy for a state.
-        :return: A random key after action selection and the selected action from the stochastic policy.
-        """
-
-        rng, rng_action_sample = jax.random.split(rng)
-        action = pi.sample(seed=rng_action_sample)
-        return rng, action
-
-    @partial(jax.jit, static_argnums=(0,))
     def _add_next_values(self, traj_batch: Transition, last_state: Float[Array, 'state_size'],
-                         critic_training: TrainState) -> Transition:
+                         critic_training: TrainState, critic_hidden_state) -> Transition:
 
-        last_state_value_vmap = jax.vmap(critic_training.apply_fn, in_axes=(None, 0))
-        last_state_value = last_state_value_vmap(lax.stop_gradient(critic_training.params), last_state)
+        last_state_value_vmap = jax.vmap(critic_training.apply_fn, in_axes=(None, 0, 0))
+        last_state_value, critic_hidden_state = last_state_value_vmap(lax.stop_gradient(critic_training.params), jnp.expand_dims(last_state, axis=1), critic_hidden_state)
+        last_state_value = jnp.expand_dims(last_state_value, axis=1)
 
         """Remove first entry so that the next state values per step are in sync with the state rewards."""
-        next_values_t = jnp.concatenate(
-            [traj_batch.value.squeeze(), last_state_value[..., jnp.newaxis]],
-            axis=-1)[:, 1:]
+        next_values_t = jnp.concatenate([
+            traj_batch.value.squeeze(),
+            last_state_value
+        ], axis=1)[:, 1:, :]
 
         traj_batch = traj_batch._replace(next_value=next_values_t)
 
@@ -547,12 +509,12 @@ class PPOAgentBase(ABC):
         :param last_next_state_value: The value of the last next state in each trajectory.
         :param gamma: Discount factor
         :param gae_lambda: The GAE λ factor.
-        :return: The returns over the episodes of the trajectory batch.
+        :return: The advantages over the episodes of the trajectory batch.
         """
 
         rewards_t = traj_batch.reward.squeeze()
         values_t = traj_batch.value.squeeze()
-        terminated_t = traj_batch.terminated.squeeze()
+        terminated_t = jnp.expand_dims(traj_batch.terminated, axis=-1)
         next_state_values_t = traj_batch.next_value.squeeze()
         gamma_t = jnp.ones_like(terminated_t) * gamma
         gae_lambda_t = jnp.ones_like(terminated_t) * gae_lambda
@@ -569,9 +531,8 @@ class PPOAgentBase(ABC):
         ends with episode termination and the advantage is zero. Training is still successful and the influence of this
         implementation choice is negligible.
         """
-        end_advantage = jnp.zeros(self.config.batch_size)
+        end_advantage = jnp.zeros((self.config.batch_size, self.n_actors))
         _, advantages = jax.lax.scan(self._trajectory_advantages, end_advantage, traj_runner, reverse=True)
-
         advantages = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), advantages)
 
         return advantages
@@ -589,12 +550,14 @@ class PPOAgentBase(ABC):
 
         rollout_runner = (
             update_runner.env_state,
-            update_runner.state,
+            jnp.repeat(jnp.expand_dims(update_runner.state, axis=0), self.config.seq_length, axis=0).squeeze(),
             update_runner.actor_training,
             update_runner.critic_training,
-            update_runner.rng
+            update_runner.rng,
+            jnp.zeros((self.config.batch_size, self.config.hidden_size)),
+            jnp.zeros((self.config.batch_size, self.config.hidden_size))
         )
-        rollout_runners = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))(*rollout_runner)
+        rollout_runners = jax.vmap(lambda t, u, v, w, x, y, z: (t, u, v, w, x, y, z), in_axes=(0, 1, None, None, 0, 0, 0))(*rollout_runner)
         return rollout_runners
 
     @partial(jax.jit, static_argnums=(0,))
@@ -611,25 +574,30 @@ class PPOAgentBase(ABC):
         :return: The updated step_runner tuple and the rollout step transition.
         """
 
-        env_state, state, actor_training, critic_training, rng = step_runner
+        env_state, state, actor_training, critic_training, rng, actor_hidden_state, critic_hidden_state = step_runner
 
-        pi, value = self._pi_value(actor_training, critic_training, state)
+        rng, rng_action = jax.random.split(rng)
+        actions, next_actor_hidden_state = self._sample_actions(rng_action, actor_training, jnp.expand_dims(state, axis=0), actor_hidden_state)
 
-        rng, action = self._select_action(rng, pi)
+        values, next_critic_hidden_state = critic_training.apply_fn(lax.stop_gradient(critic_training.params), jnp.expand_dims(state, axis=0), critic_hidden_state)
 
-        log_prob = pi.log_prob(action)
+        log_prob = self._log_prob(actor_training, lax.stop_gradient(actor_training.params), jnp.expand_dims(state, axis=0), actions, actor_hidden_state)
 
-        rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, action)
+        rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, actions)
 
-        step_runner = (next_env_state, next_state, actor_training, critic_training, rng)
+        next_states = jnp.vstack((state, next_state))
+        next_states = jnp.take(next_states, jnp.arange(1, self.config.seq_length+1), axis=0)
 
-        transition = self._make_transition(state, action, value, log_prob, reward, next_state, terminated, info)
+        next_states = jnp.where(terminated, jnp.repeat(next_state, self.config.seq_length, axis=0), next_states)
+
+        step_runner = (next_env_state, next_states, actor_training, critic_training, rng, next_actor_hidden_state, next_critic_hidden_state)
+
+        transition = self._make_transition(state, actions, values, log_prob, reward, next_states, terminated, info, next_actor_hidden_state, next_critic_hidden_state)
 
         return step_runner, transition
 
-
     @partial(jax.jit, static_argnums=(0,))
-    def _process_trajectory(self, update_runner: Runner, traj_batch: Transition, last_state: STATE_TYPE) -> Transition:
+    def _process_trajectory(self, update_runner: Runner, traj_batch: Transition, last_state: STATE_TYPE, critic_hidden_state) -> Transition:
         """
         Estimates the value and advantages for a batch of trajectories. For the last state of trajectory, which is not
         guaranteed to end with termination, the value is estimated using the critic network. This assumption has been
@@ -642,7 +610,7 @@ class PPOAgentBase(ABC):
         """
 
         traj_batch = jax.tree_util.tree_map(lambda x: x.squeeze(), traj_batch)
-        traj_batch = self._add_next_values(traj_batch, last_state, update_runner.critic_training)
+        traj_batch = self._add_next_values(traj_batch, last_state, update_runner.critic_training, critic_hidden_state)
 
         advantages = self._advantages(traj_batch, update_runner.hyperparams.gamma, update_runner.hyperparams.gae_lambda)
         traj_batch = self._add_advantages(traj_batch, advantages)
@@ -813,13 +781,16 @@ class PPOAgentBase(ABC):
         """
 
         rollout_runners = self._make_rollout_runners(update_runner)
-        scan_rollout_fn = lambda x: lax.scan(self._rollout, x, None, self.config.rollout_length)
+        scan_rollout_fn = lambda x: lax.scan(self._rollout, x, jnp.arange(self.config.rollout_length), self.config.rollout_length)
         rollout_runners, traj_batch = jax.vmap(scan_rollout_fn)(rollout_runners)
-        last_env_state, last_state, _, _, rng = rollout_runners
-        traj_batch = self._process_trajectory(update_runner, traj_batch, last_state)
+        last_env_state, last_state, _, _, rng, actor_hidden_state, critic_hidden_state = rollout_runners
+        traj_batch = self._process_trajectory(update_runner, traj_batch, last_state, critic_hidden_state)
 
         actor_training = self._actor_update(update_runner, traj_batch)
         critic_training = self._critic_update(update_runner, traj_batch)
+
+        last_state = jnp.take(last_state, -1, axis=1)  # FIXME
+        last_state = jnp.expand_dims(last_state, axis=1)  # FIXME
 
         """Update runner as a dataclass."""
         update_runner = update_runner.replace(
@@ -863,8 +834,13 @@ class PPOAgentBase(ABC):
 
             ckpt = {
                 "runner": update_runner,
-                "episode_returns": metrics["episode_returns"]
+                "terminated": metrics["terminated"],
+                "truncated": metrics["truncated"],
+                "final_rewards": metrics["final_rewards"],
+                "sum_rewards": metrics["sum_rewards"]
             }
+
+            # ckpt = {"runner": update_runner}.update(metrics)
 
             save_args = orbax_utils.save_args_from_target(ckpt)
 
@@ -875,7 +851,11 @@ class PPOAgentBase(ABC):
                 i_training_step+self.previous_training_max_step,
                 ckpt,
                 save_kwargs={'save_args': save_args},
-                metrics=float(jnp.mean(metrics["episode_returns"]))
+                # metrics=(
+                #     float(jnp.mean(metrics["final_rewards"])),
+                #     float(jnp.mean(metrics["sum_rewards"])),
+                # )
+                # metrics=metrics
             )
 
     @partial(jax.jit, static_argnums=(0,))
@@ -904,7 +884,7 @@ class PPOAgentBase(ABC):
     @partial(jax.jit, static_argnums=(0,))
     def train(self, rng: PRNGKeyArray, hyperparams: HyperParameters) -> Tuple[Runner, Dict]:
         """
-        Trains the agent. A jax_tqdm progressbar has been added in the lax.scan loop.
+        Trains the agents. A jax_tqdm progressbar has been added in the lax.scan loop.
         :param rng: Random key for initialization. This is the original key for training.
         :param hyperparams: An instance of HyperParameters for training.
         :return: The final state of the step runner after training and the training metrics accumulated over all
@@ -914,28 +894,20 @@ class PPOAgentBase(ABC):
         rng, *_rng = jax.random.split(rng, 4)
         actor_init_rng, critic_init_rng, runner_rng = _rng
 
-        """
-        Start new training or continue from previous training (passed serially or from restored checkpoint).
-        New hyperparameters can be used for continuing the training.
-        """
-        if not self.agent_trained:
+        actor_training = self._create_training(
+            actor_init_rng, self.config.actor_network, hyperparams.actor_optimizer_params
+        )
+        critic_training = self._create_training(
+            critic_init_rng, self.config.critic_network, hyperparams.critic_optimizer_params
+        )
 
-            actor_training = self._create_training(
-                actor_init_rng, self.config.actor_network, hyperparams.actor_optimizer_params
-            )
-            critic_training = self._create_training(
-                critic_init_rng, self.config.critic_network, hyperparams.critic_optimizer_params
-            )
-
-            update_runner = self._create_update_runner(runner_rng, actor_training, critic_training, hyperparams)
-
-        else:
-
-            update_runner = self.training_runner
-            update_runner = update_runner.replace(hyperparams=hyperparams)  # Use newly provided hyperparameters.
+        update_runner = self._create_update_runner(runner_rng, actor_training, critic_training, hyperparams)
 
         # Checkpoint initial state
-        metrics_start = self._generate_metrics(runner=update_runner, update_step=0)
+        if self.eval_during_training:
+            metrics_start = self._generate_metrics(runner=update_runner, update_step=0)
+        else:
+            metrics_start = {}
         self._checkpoint(update_runner, metrics_start, self.previous_training_max_step)
 
         # Initialize agent updating functions, which can be avoided to be done within the training loops.
@@ -946,7 +918,6 @@ class PPOAgentBase(ABC):
         self._critic_minibatch_fn = lambda x, y: self._critic_minibatch_update(x, y, critic_grad_fn)
 
         # Train, evaluate, checkpoint
-
         n_training_batches = self.config.n_steps // self.config.eval_frequency
         progressbar_desc = f'Training batch (training steps = batch x {self.config.eval_frequency})'
 
@@ -957,19 +928,10 @@ class PPOAgentBase(ABC):
             n_training_batches
         )
 
-        if self.agent_trained:
-            # If training has been continued from a previous state, append the previously collected metrics.
-            metrics["episode_returns"] = jnp.concatenate((
-                self.training_metrics["episode_returns"],
-                metrics["episode_returns"]
-            ), axis=0)
-        else:
-            # If training is not continued, append the metrics before training starts. In case training is continued,
-            # this is replaced by the last iteration of the previous training's metrics.
-            metrics["episode_returns"] = jnp.concatenate((
-                metrics_start["episode_returns"][jnp.newaxis, :],
-                metrics["episode_returns"]
-            ), axis=0)
+        metrics = {
+            key: jnp.concatenate((metrics_start[key][jnp.newaxis, :], metrics[key]), axis=0)
+            for key in metrics.keys()
+        }
 
         return runner, metrics
 
@@ -1022,7 +984,7 @@ class PPOAgentBase(ABC):
     @abstractmethod
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                     targets: Float[Array, "batch_size n_rollout"], hyperparams: HyperParameters) -> float:
+                     targets: Float[Array, "batch_size n_rollout"], h, hyperparams: HyperParameters) -> float:
         """
         Calculates the critic loss.
         :param training: The critic TrainState object.
@@ -1060,27 +1022,80 @@ class PPOAgentBase(ABC):
 
         raise NotImplementedError
 
+    @abstractmethod
+    def _entropy(self, actor_training: TrainState, state: STATE_TYPE)-> Float[Array, "n_actors"]:
+        raise NotImplemented
+
+    @abstractmethod
+    def _log_prob(self, actor_training: TrainState, params: Union[dict, FrozenDict], state: STATE_TYPE,
+                  actions: Int[Array, "n_actors"]) -> Float[Array, "n_actors"]:
+        raise NotImplemented
+
+    @abstractmethod
+    def _sample_actions(self, rng: PRNGKeyArray, actor_training: TrainState, state: STATE_TYPE)\
+        -> Tuple[PRNGKeyArray, List[Int[Array, "1"]]]:
+        """
+        Select action by sampling from the stochastic policy for a state.
+        :param rng: Random key for initialization.
+        :param pi: The distax distribution procuded by the actor network indicating the stochastic policy for a state.
+        :return: A random key after action selection and the selected action from the stochastic policy.
+        """
+        raise NotImplemented
+
     """ METHODS FOR APPLYING AGENT"""
 
-    @partial(jax.jit, static_argnums=(0,))
-    def policy(self, state: STATE_TYPE) -> Int[Array, "1"]:
+    @abstractmethod
+    def policy(self, actor_training: TrainState, state: STATE_TYPE) -> Int[Array, "1"]:
         """
         Evaluates the action of the optimal policy (argmax) according to the trained agent for the given state.
         :param state: The current state of the episode step in array format.
         :return:
         """
+        raise NotImplemented
 
-        if self.agent_trained:
-            pi = self._pi(self.actor_training, state)
-            action = jnp.argmax(pi.logits)
-            return action
-        else:
-            raise Exception("The agent has not been trained.")
+    @partial(jax.jit, static_argnums=(0,))
+    def _eval_cond(self, eval_runner: tuple) -> Bool[Array, "1"]:
+        """
+        Checks whether the episode is terminated, meaning that the 'lax.while_loop' can stop.
+        :param eval_runner: A tuple containing information about the environment state, the actor and critic training
+        states, whether the episode is terminated (for checking the condition in 'lax.while_loop'), the sum of rewards
+        over the episode and a random key.
+        :return: Whether the episode is terminated, which means that the while loop must stop.
+        """
 
-    """ METHODS FOR PERFORMANCE EVALUATION """
+        _, _, _, _, terminated, truncated, _, _, _ = eval_runner
+        return jnp.logical_and(jnp.logical_not(terminated), jnp.logical_not(truncated))
 
-    def _eval_agent(self, rng: PRNGKeyArray, actor_training: TrainState, critic_training: TrainState,
-                    n_episodes: int = 1) -> Float[Array, "batch_size"]:
+    @partial(jax.jit, static_argnums=(0,))
+    def _eval_body(self, eval_runner: tuple) -> tuple:
+        """
+        A step in the episode to be used with 'lax.while_loop' for evaluation of the agent in a complete episode.
+        :param eval_runner: A tuple containing information about the environment state, the actor and critic training
+        states, whether the episode is terminated (for checking the condition in 'lax.while_loop'), the sum of rewards
+        over the episode and a random key.
+        :return: The updated eval_runner tuple.
+        """
+
+        env_state, state, actor_training, actor_hidden_state, terminated, truncated, reward, sum_rewards, rng = eval_runner
+
+        state = jnp.expand_dims(state, axis=0)
+        actions, actor_hidden_state = self.policy(actor_training, state, actor_hidden_state)
+
+        rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, actions)
+        truncated = info["truncated"]
+
+        next_states = jnp.vstack((state.squeeze(), next_state))
+        next_states = jnp.take(next_states, jnp.arange(1, self.config.seq_length+1), axis=0)
+
+        next_states = jnp.where(terminated, jnp.repeat(next_state, self.config.seq_length, axis=0), next_states)
+
+        sum_rewards += reward
+
+        eval_runner = (next_env_state, next_states, actor_training, actor_hidden_state, terminated, truncated, reward, sum_rewards, rng)
+
+        return eval_runner
+
+    def _eval_agent(self, rng: PRNGKeyArray, actor_training: TrainState, n_episodes: int = 1) -> dict:
         """
         Evaluates the agents for n_episodes complete episodes using 'lax.while_loop'.
         :param rng: A random key used for evaluating the agent.
@@ -1093,56 +1108,47 @@ class PPOAgentBase(ABC):
         rng_eval = jax.random.split(rng, n_episodes)
         rng, state, env_state = jax.vmap(self._reset)(rng_eval)
 
-        eval_runner = (env_state, state, actor_training, critic_training, False, 0, rng)
+        eval_runner = (
+            env_state,
+            jnp.repeat(state, self.config.seq_length, axis=1),
+            actor_training,
+            jnp.zeros((n_episodes, self.config.hidden_size)),
+            jnp.zeros(1, dtype=jnp.bool).squeeze(),
+            jnp.zeros(1, dtype=jnp.bool).squeeze(),
+            jnp.zeros(self.n_actors),
+            jnp.zeros(self.n_actors),
+            rng
+        )
         eval_runners = jax.vmap(
-            lambda t, u, v, w, x, y, z: (t, u, v, w, x, y, z),
-            in_axes=(0, 0, None, None, None, None, 0)
+            lambda r, s, t, u, v, w, x, y, z: (r, s, t, u, v, w, x, y, z),
+            in_axes=(0, 0, None, 0, None, None, None, None, 0)
         )(*eval_runner)
 
         eval_runner = jax.vmap(lambda x: lax.while_loop(self._eval_cond, self._eval_body, x))(eval_runners)
+        _, _, _, _, terminated, truncated, final_rewards, sum_rewards, _ = eval_runner
 
-        _, _, _, _, _, sum_rewards, _ = eval_runner
+        return self._eval_metrics(terminated, truncated, final_rewards, sum_rewards)
 
-        return sum_rewards
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _eval_body(self, eval_runner: tuple) -> tuple:
+    def _eval_metrics(self, terminated: Bool[Array, "1"], truncated: Bool[Array, "1"],
+                      final_rewards: Float[Array, "n_actors"], sum_rewards: Float[Array, "n_actors"]) -> dict:
         """
-        A step in the episode to be used with 'lax.while_loop' for evaluation of the agent in a complete episode.
-        :param eval_runner: A tuple containing information about the environment state, the actor and critic training
-        states, whether the episode is terminated (for checking the condition in 'lax.while_loop'), the sum of rewards
-        over the episode and a random key.
-        :return: The updated eval_runner tuple.
+        Evaluate the metrics.
+        :param terminated: Whether the episode finished by termination.
+        :param truncated: Whether the episode finished by truncation.
+        :param final_rewards: The rewards collected in the final step of the episode.
+        :param sum_rewards: The sum of rewards collected during the episode.
+        :return: Dictionary combining the input arguments and the case-specific special metrics.
         """
+        metrics = {
+            "terminated": terminated,
+            "truncated": truncated,
+            "final_rewards": final_rewards,
+            "sum_rewards": sum_rewards
+        }
 
-        env_state, state, actor_training, critic_training, terminated, sum_rewards, rng = eval_runner
+        return metrics
 
-        pi = self._pi(actor_training, state)
-
-        action = jnp.argmax(pi.logits)
-
-        rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, action)
-
-        sum_rewards += reward
-
-        eval_runner = (next_env_state, next_state, actor_training, critic_training, terminated, sum_rewards, rng)
-
-        return eval_runner
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _eval_cond(self, eval_runner: tuple) -> Bool[Array, "1"]:
-        """
-        Checks whether the episode is terminated, meaning that the 'lax.while_loop' can stop.
-        :param eval_runner: A tuple containing information about the environment state, the actor and critic training
-        states, whether the episode is terminated (for checking the condition in 'lax.while_loop'), the sum of rewards
-        over the episode and a random key.
-        :return: Whether the episode is terminated, which means that the while loop must stop.
-        """
-
-        _, _, _, _, terminated, _, _ = eval_runner
-        return jnp.logical_not(terminated)
-
-    def eval(self, rng: PRNGKeyArray, n_evals: int = 32) -> Float[Array, "n_evals"]:
+    def eval(self, rng: PRNGKeyArray, actor_training: List[TrainState], n_evals: int = 32) -> Float[Array, "n_evals"]:
         """
         Evaluates the trained agent's performance post-training using the trained agent's actor and critic.
         :param rng: Random key for evaluation.
@@ -1150,7 +1156,7 @@ class PPOAgentBase(ABC):
         :return: Dictionary of evaluation metrics.
         """
 
-        eval_metrics = self._eval_agent(rng, self.actor_training, self.critic_training, n_evals)
+        eval_metrics = self._eval_agent(rng, actor_training, n_evals)
 
         return eval_metrics
 
@@ -1188,7 +1194,7 @@ class PPOAgentBase(ABC):
         self.previous_training_max_step = previous_training_max_step
         self.training_runner = runner
         self.training_metrics = metrics
-        n_evals = metrics["episode_returns"].shape[0]
+        n_evals = list(metrics.values())[0].shape[0]
         self.eval_steps_in_training = jnp.arange(n_evals) * self.config.eval_frequency
         self._pp()
 
@@ -1221,12 +1227,11 @@ class PPOAgentBase(ABC):
         )
 
 
-class PPOAgent(PPOAgentBase):
+class IPPO(IPPOBase):
 
     """
-    PPO clip agent using the GAE (PPO2) for calculating the advantage. The actor loss function standardizes the
+    IPPO clip agent using the GAE (PPO2) for calculating the advantage. The actor loss function standardizes the
     advantage.
-    See : https://spinningup.openai.com/en/latest/algorithms/ppo.html
     """
 
     @partial(jax.jit, static_argnums=(0,))
@@ -1261,7 +1266,7 @@ class PPOAgent(PPOAgentBase):
 
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                    action: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
+                    actions: Float[Array, "n_rollout batch_size"], h, log_prob_old: Float[Array, "n_rollout batch_size"],
                     advantage: RETURNS_TYPE, hyperparams: HyperParameters) \
             -> Tuple[Union[float, Float[Array, "1"]], Float[Array, "1"]]:
         """
@@ -1269,7 +1274,7 @@ class PPOAgent(PPOAgentBase):
         discounted returns and the value as estimated by the critic.
         :param training: The actor TrainState object.
         :param state: The states in the trajectory batch.
-        :param action: The actions in the trajectory batch.
+        :param actions: The actions in the trajectory batch.
         :param log_prob_old: Log-probabilities of the old policy collected over the trajectory batch.
         :param advantage: The GAE over the trajectory batch.
         :param hyperparams: The HyperParameters object used for training.
@@ -1279,9 +1284,9 @@ class PPOAgent(PPOAgentBase):
         """ Standardize GAE, greatly improves behaviour"""
         advantage = (advantage - advantage.mean(axis=0)) / (advantage.std(axis=0) + 1e-8)
 
-        actor_policy_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
-        actor_policy = actor_policy_vmap(training.params, state)
-        log_prob = actor_policy.log_prob(action)
+        log_prob_vmap = jax.vmap(jax.vmap(self._log_prob, in_axes=(None, None, 0, 0, 0)), in_axes=(None, None, 0, 0, 0))
+        state = jnp.expand_dims(state, axis=2)
+        log_prob = log_prob_vmap(training, training.params, state, actions, h)
         log_policy_ratio = log_prob - log_prob_old
         policy_ratio = jnp.exp(log_policy_ratio)
         kl = jnp.sum(-log_policy_ratio)
@@ -1297,16 +1302,15 @@ class PPOAgent(PPOAgentBase):
         # advantage_clip = jnp.clip(policy_ratio, 1 - hyperparams.eps_clip, 1 + hyperparams.eps_clip) * advantage
 
         loss_actor = jnp.minimum(policy_ratio * advantage, advantage_clip)
-
-        entropy = actor_policy.entropy().mean()
-        total_loss_actor = loss_actor.mean() + hyperparams.ent_coeff * entropy
+        entropy = jax.vmap(jax.vmap(self._entropy, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))(training, state, h)
+        total_loss_actor = loss_actor.mean() + hyperparams.ent_coeff * entropy.mean()
 
         """ Negative loss, because we want ascent but 'apply_gradients' applies descent """
         return -total_loss_actor, kl
 
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                     targets: RETURNS_TYPE, hyperparams: HyperParameters) -> Float[Array, "1"]:
+                     targets: RETURNS_TYPE, h, hyperparams: HyperParameters) -> Float[Array, "1"]:
         """
         Calculates the critic loss.
         :param training: The critic TrainState object.
@@ -1316,9 +1320,9 @@ class PPOAgent(PPOAgentBase):
         :return: The critic loss.
         """
 
-        # value = training.apply_fn(training.params, state)
-        value_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
-        value = value_vmap(training.params, state)
+        value_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))
+        state = jnp.expand_dims(state, axis=2)
+        value, _ = value_vmap(training.params, state, h)
         residuals = value - targets
         value_loss = jnp.mean(residuals ** 2)
         critic_total_loss = hyperparams.vf_coeff * value_loss
@@ -1356,6 +1360,7 @@ class PPOAgent(PPOAgentBase):
         return (
             traj_minibatch.state,
             traj_minibatch.action,
+            traj_minibatch.actor_hidden_state,
             traj_minibatch.log_prob,
             traj_minibatch.advantage,
             update_runner.hyperparams
@@ -1390,164 +1395,7 @@ class PPOAgent(PPOAgentBase):
         return (
             traj_minibatch.state,
             traj_minibatch.advantage + traj_minibatch.value,
+            traj_minibatch.critic_hidden_state,
             update_runner.hyperparams
         )
 
-
-class PPOClipCriticAgent(PPOAgentBase):
-
-    """
-    PPO clip agent using the GAE (PPO2) for calculating the advantage. The actor loss function standardizes the
-    advantage. The critic loss function is clipped.
-    See : https://spinningup.openai.com/en/latest/algorithms/ppo.html
-    """
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _trajectory_returns(self, value: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
-        """
-        Calculates the returns per episode step over a batch of trajectories.
-        :param value: The values of the steps in the trajectory according to the critic (including the one of the last
-        state). In the begining of the method, 'value' is the value of the state in the next step in the trajectory
-        (not the reverse iteration), and after calculation it is the value of the examined state in the examined step.
-        :param traj: The trajectory batch.
-        :return: An array of returns.
-        """
-        rewards, discounts, next_state_values, gae_lambda = traj
-        value = rewards + discounts * ((1 - gae_lambda) * next_state_values + gae_lambda * value)
-        return value, value
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _trajectory_advantages(self, advantage: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
-        """
-        Calculates the GAE per episode step over a batch of trajectories.
-        :param advantage: The GAE advantages of the steps in the trajectory according to the critic (including the one
-        of the last state). In the beginning of the method, 'advantage' is the advantage of the state in the next step
-        in the trajectory (not the reverse iteration), and after calculation it is the advantage of the examined state
-        in each step.
-        :param traj: The trajectory batch.
-        :return: An array of returns.
-        """
-        rewards, values, next_state_values, terminated, gamma, gae_lambda = traj
-        d_t = rewards + (1 - terminated) * gamma * next_state_values - values  # Temporal difference residual at time t
-        advantage = d_t + gamma * gae_lambda * (1 - terminated) * advantage
-        return advantage, advantage
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                    action: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
-                    advantage: RETURNS_TYPE, hyperparams: HyperParameters) \
-            -> Tuple[Union[float, Float[Array, "1"]], Float[Array, "1"]]:
-        """
-        Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
-        discounted returns and the value as estimated by the critic.
-        :param training: The actor TrainState object.
-        :param state: The states in the trajectory batch.
-        :param action: The actions in the trajectory batch.
-        :param log_prob_old: Log-probabilities of the old policy collected over the trajectory batch.
-        :param advantage: The GAE over the trajectory batch.
-        :param hyperparams: The HyperParameters object used for training.
-        :return: A tuple containing the actor loss and the KL divergence (for early checking stopping criterion).
-        """
-
-        """ Standardize GAE, greatly improves behaviour"""
-        advantage = (advantage - advantage.mean(axis=0)) / (advantage.std(axis=0) + 1e-8)
-
-        # actor_policy = training.apply_fn(training.params, state)
-        actor_policy_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
-        actor_policy = actor_policy_vmap(training.params, state)
-        log_prob = actor_policy.log_prob(action)
-        log_policy_ratio = log_prob - log_prob_old
-        policy_ratio = jnp.exp(log_policy_ratio)
-        kl = jnp.sum(-log_policy_ratio)
-
-        """
-        Adopt simplified formulation of clipped policy ratio * advantage as explained in the note of:
-        https://spinningup.openai.com/en/latest/algorithms/ppo.html#id2
-        """
-        policy_ratio_clip = jnp.where(jnp.greater(advantage, 0), 1 + hyperparams.eps_clip, 1 - hyperparams.eps_clip)
-        advantage_clip = advantage * policy_ratio_clip
-
-        """Actual clip calculation - not used but left here for comparison to simplified version"""
-        # advantage_clip = jnp.clip(policy_ratio, 1 - hyperparams.eps_clip, 1 + hyperparams.eps_clip) * advantage
-
-        loss_actor = jnp.minimum(policy_ratio * advantage, advantage_clip)
-
-        entropy = actor_policy.entropy().mean()
-        total_loss_actor = loss_actor.mean() + hyperparams.ent_coeff * entropy
-
-        """ Negative loss, because we want ascent but 'apply_gradients' applies descent """
-        return -total_loss_actor, kl
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                     value_t, targets: RETURNS_TYPE, hyperparams: HyperParameters) -> Float[Array, "1"]:
-        """
-        Calculates the critic loss.
-        :param training: The critic TrainState object.
-        :param state: The states in the trajectory batch.
-        :param targets: The targets over the trajectory batch for training the critic.
-        :param hyperparams: The HyperParameters object used for training.
-        :return: The critic loss.
-        """
-
-        # value = training.apply_fn(training.params, state)
-        value_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
-        value = value_vmap(training.params, state)
-        residuals = value - targets
-        value_loss = residuals ** 2
-
-        value_clipped = value_t + jnp.clip(value - value, -hyperparams.eps_clip, hyperparams.eps_clip)
-        residuals_clipped = value_clipped - targets
-        value_loss_clipped = residuals_clipped ** 2
-
-        critic_total_loss = jnp.maximum(value_loss, value_loss_clipped).mean()
-        critic_total_loss = hyperparams.vf_coeff * critic_total_loss
-
-        return critic_total_loss
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
-        """
-        Prepares the input required by the actor loss function. For the PPO agent, this entails the:
-        - the actions collected over the trajectory batch.
-        - the log-probability of the actions collected over the trajectory batch.
-        - the returns over the trajectory batch.
-        - the values over the trajectory batch as evaluated by the critic.
-        - the training hyperparameters.
-        The input is reshaped so that it is split into minibatches.
-        :param update_runner: The Runner object used in training.
-        :param traj_batch: The batch of trajectories.
-        :return: A tuple of input to the actor loss function.
-        """
-
-        return (
-            traj_batch.state,
-            traj_batch.action,
-            traj_batch.log_prob,
-            traj_batch.advantage,
-            update_runner.hyperparams
-        )
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
-        """
-        Prepares the input required by the critic loss function. For the PPO agent, this entails the:
-        - the states collected over the trajectory batch.
-        - the targets (returns = GAE + next_value) over the trajectory batch.
-        - the training hyperparameters.
-        The input is reshaped so that it is split into minibatches.
-        :param update_runner: The Runner object used in training.
-        :param traj_batch: The batch of trajectories.
-        :return: A tuple of input to the critic loss function.
-        """
-
-        return (
-            traj_batch.state,
-            traj_batch.value,
-            traj_batch.advantage + traj_batch.value,
-            update_runner.hyperparams
-        )
-
-
-if __name__ == "__main__":
-    pass

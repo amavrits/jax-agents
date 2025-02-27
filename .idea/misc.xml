@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="Python 3.9 (jax-agents)" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="Poetry (jax-agents)" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="Python 3.11.10 WSL (Ubuntu): (/home/amavrits/.virtualenvs/jax-agents/bin/python)" project-jdk-type="Python SDK" />
 </project>

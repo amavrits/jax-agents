@@ -17,9 +17,9 @@ if __name__ == '__main__':
     env, env_params = gymnax.make("CartPole-v1")
 
     if sys.platform == "win32":
-        checkpoint_dir = 'C:\\Users\\Repositories\\jax-agents\\benchmarks\\cartpole v1\\checkpoints\\ppo'
+        checkpoint_dir = 'C:\\Users\\Repositories\\jax-agents\\benchmarks\\rl\\cartpole v1\\checkpoints\\ppo'
     else:
-        checkpoint_dir = '/mnt/c/Users/Repositories/jax-agents/benchmarks/cartpole v1/checkpoints/ppo'
+        checkpoint_dir = '/mnt/c/Users/Repositories/jax-agents/benchmarks/rl/cartpole v1/checkpoints/ppo'
 
     """Define configuration for agent training"""
     config = ppo.AgentConfig(
