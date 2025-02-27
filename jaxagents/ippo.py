@@ -1021,13 +1021,7 @@ class IPPOBase(ABC):
 
     @abstractmethod
     def _sample_actions(self, rng: PRNGKeyArray, actor_training: TrainState, state: STATE_TYPE)\
-        -> Tuple[PRNGKeyArray, List[Int[Array, "1"]]]:
-        """
-        Select action by sampling from the stochastic policy for a state.
-        :param rng: Random key for initialization.
-        :param pi: The distax distribution procuded by the actor network indicating the stochastic policy for a state.
-        :return: A random key after action selection and the selected action from the stochastic policy.
-        """
+        -> Union[Int[Array, "n_actors"], Float[Array, "n_actors"]]:
         raise NotImplemented
 
     """ METHODS FOR APPLYING AGENT"""

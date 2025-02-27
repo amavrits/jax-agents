@@ -22,7 +22,7 @@ import orbax
 from abc import abstractmethod
 from functools import partial
 from abc import ABC
-from typing import Tuple, Dict, NamedTuple, Type, Union, Optional, ClassVar
+from typing import Tuple, Dict, NamedTuple, Type, Union, Optional, ClassVar, List
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 import warnings
 import os
@@ -116,7 +116,7 @@ class PPOAgentBase(ABC):
 
                 dir_exists = os.path.exists(self.config.checkpoint_dir)
                 if not dir_exists:
-                    os.mkdir(self.config.checkpoint_dir)
+                    os.makedirs(self.config.checkpoint_dir)
 
                 dir_files = [
                     file for file in os.listdir(self.config.checkpoint_dir)
@@ -358,12 +358,12 @@ class PPOAgentBase(ABC):
     def _generate_metrics(self, runner: Runner, update_step: int) -> Dict:
         """
         Generates metrics for on-policy learning. The agent performance during training is evaluated by running
-        batch_size episodes (until termination). The selected metric is the sum of rewards collected dring the episode.
+        n_evals episodes (until termination). The selected metric is the sum of rewards collected dring the episode.
         If the user selects not to generate metrics (leading to faster training), an empty dictinary is returned.
         :param runner: The update runner object, containing information about the current status of the actor's/critic's
         training, the state of the environment and training hyperparameters.
         :param update_step: The number of the update step.
-        :return: A dictionary of the sum of rewards collected over 'batch_size' episodes, or empty dictionary.
+        :return: A dictionary of the sum of rewards collected over 'n_evals' episodes, or empty dictionary.
         """
 
         metric = {}
@@ -372,7 +372,7 @@ class PPOAgentBase(ABC):
                 self.config.eval_rng,
                 runner.actor_training,
                 runner.critic_training,
-                self.config.batch_size
+                self.config.n_evals
             )
             metric.update({"episode_returns": sum_rewards})
 
@@ -396,7 +396,7 @@ class PPOAgentBase(ABC):
     def _create_update_runner(self, rng: PRNGKeyArray, actor_training: TrainState, critic_training: TrainState,
                               hyperparams: HyperParameters) -> Runner:
         """
-        Initializes the update runner as a Runner object. The runner contains batch_size initializations of the
+        Initializes the update runner as a Runner object. The runner contains n_evals initializations of the
         environment, which are used for sampling trajectories. The update runner has one TrainState for the actor and
         one for the critic network, so that trajectory batches are used to train the same parameters.
         :param rng: Random key for initialization.
@@ -422,58 +422,6 @@ class PPOAgentBase(ABC):
         )
 
         return update_runner
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _pi(self, actor_training: TrainState, state: STATE_TYPE) -> PI_DIST_TYPE:
-        """
-        Assess the stochastic policy via the actor network for the state.
-        :param actor_training: The actor TrainState object used in training.
-        :param state: The current state of the episode step in array format.
-        :return: The stochastic policy for the input state.
-        """
-
-        pi = actor_training.apply_fn(lax.stop_gradient(actor_training.params), state)
-        return pi
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _value(self, critic_training: TrainState, state: STATE_TYPE) -> Float[Array, "1"]:
-        """
-        Assess the stochastic policy via the actor network for the state.
-        :param critic_training: The critic TrainState object used in training.
-        :param state: The current state of the episode step in array format.
-        :return: The value for the input state.
-        """
-
-        value = critic_training.apply_fn(lax.stop_gradient(critic_training.params), state)
-        return value
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _pi_value(self, actor_training: TrainState, critic_training: TrainState, state: STATE_TYPE)\
-            -> Tuple[PI_DIST_TYPE, Float[Array, "1"]]:
-        """
-        Assess the stochastic policy via the actor network and the value via the critic network for the state.
-        :param actor_training: The actor TrainState object used in training.
-        :param critic_training: The critic TrainState object used in training.
-        :param state: The current state of the episode step in array format.
-        :return: A tuple of the stochastic policy and the value of the state.
-        """
-
-        pi = self._pi(actor_training, state)
-        value = self._value(critic_training, state)
-        return pi, value
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _select_action(self, rng: PRNGKeyArray, pi: PI_DIST_TYPE) -> Tuple[PRNGKeyArray, Int[Array, "1"]]:
-        """
-        Select action by sampling from the stochastic policy for a state.
-        :param rng: Random key for initialization.
-        :param pi: The distax distribution procuded by the actor network indicating the stochastic policy for a state.
-        :return: A random key after action selection and the selected action from the stochastic policy.
-        """
-
-        rng, rng_action_sample = jax.random.split(rng)
-        action = pi.sample(seed=rng_action_sample)
-        return rng, action
 
     @partial(jax.jit, static_argnums=(0,))
     def _add_next_values(self, traj_batch: Transition, last_state: Float[Array, 'state_size'],
@@ -613,11 +561,12 @@ class PPOAgentBase(ABC):
 
         env_state, state, actor_training, critic_training, rng = step_runner
 
-        pi, value = self._pi_value(actor_training, critic_training, state)
+        rng, rng_action = jax.random.split(rng)
+        action = self._sample_action(rng_action, actor_training, state)
 
-        rng, action = self._select_action(rng, pi)
+        value = critic_training.apply_fn(lax.stop_gradient(critic_training.params), state)
 
-        log_prob = pi.log_prob(action)
+        log_prob = self._log_prob(actor_training, lax.stop_gradient(actor_training.params), state, action)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, action)
 
@@ -1060,22 +1009,30 @@ class PPOAgentBase(ABC):
 
         raise NotImplementedError
 
+    @abstractmethod
+    def _entropy(self, training: TrainState, state: STATE_TYPE)-> Float[Array, "1"]:
+        raise NotImplemented
+
+    @abstractmethod
+    def _log_prob(self, training: TrainState, params: Union[dict, FrozenDict], state: STATE_TYPE,
+                  action: Int[Array, "1"]) -> Float[Array, "n_actors"]:
+        raise NotImplemented
+
+    @abstractmethod
+    def _sample_action(self, rng: PRNGKeyArray, training: TrainState, state: STATE_TYPE)\
+        -> Union[Int[Array, "1"], Float[Array, "1"]]:
+        raise NotImplemented
+
     """ METHODS FOR APPLYING AGENT"""
 
-    @partial(jax.jit, static_argnums=(0,))
-    def policy(self, state: STATE_TYPE) -> Int[Array, "1"]:
+    @abstractmethod
+    def policy(self, training: TrainState, state: STATE_TYPE) -> Int[Array, "1"]:
         """
         Evaluates the action of the optimal policy (argmax) according to the trained agent for the given state.
         :param state: The current state of the episode step in array format.
         :return:
         """
-
-        if self.agent_trained:
-            pi = self._pi(self.actor_training, state)
-            action = jnp.argmax(pi.logits)
-            return action
-        else:
-            raise Exception("The agent has not been trained.")
+        raise NotImplemented
 
     """ METHODS FOR PERFORMANCE EVALUATION """
 
@@ -1117,9 +1074,7 @@ class PPOAgentBase(ABC):
 
         env_state, state, actor_training, critic_training, terminated, sum_rewards, rng = eval_runner
 
-        pi = self._pi(actor_training, state)
-
-        action = jnp.argmax(pi.logits)
+        action = self.policy(actor_training, state)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, action)
 
@@ -1279,9 +1234,8 @@ class PPOAgent(PPOAgentBase):
         """ Standardize GAE, greatly improves behaviour"""
         advantage = (advantage - advantage.mean(axis=0)) / (advantage.std(axis=0) + 1e-8)
 
-        actor_policy_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
-        actor_policy = actor_policy_vmap(training.params, state)
-        log_prob = actor_policy.log_prob(action)
+        log_prob_vmap = jax.vmap(jax.vmap(self._log_prob, in_axes=(None, None, 0, 0)), in_axes=(None, None, 0, 0))
+        log_prob = log_prob_vmap(training, training.params, state, action)
         log_policy_ratio = log_prob - log_prob_old
         policy_ratio = jnp.exp(log_policy_ratio)
         kl = jnp.sum(-log_policy_ratio)
@@ -1298,8 +1252,8 @@ class PPOAgent(PPOAgentBase):
 
         loss_actor = jnp.minimum(policy_ratio * advantage, advantage_clip)
 
-        entropy = actor_policy.entropy().mean()
-        total_loss_actor = loss_actor.mean() + hyperparams.ent_coeff * entropy
+        entropy = self._entropy(training, state)
+        total_loss_actor = loss_actor.mean() + hyperparams.ent_coeff * entropy.mean()
 
         """ Negative loss, because we want ascent but 'apply_gradients' applies descent """
         return -total_loss_actor, kl
@@ -1393,160 +1347,6 @@ class PPOAgent(PPOAgentBase):
             update_runner.hyperparams
         )
 
-
-class PPOClipCriticAgent(PPOAgentBase):
-
-    """
-    PPO clip agent using the GAE (PPO2) for calculating the advantage. The actor loss function standardizes the
-    advantage. The critic loss function is clipped.
-    See : https://spinningup.openai.com/en/latest/algorithms/ppo.html
-    """
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _trajectory_returns(self, value: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
-        """
-        Calculates the returns per episode step over a batch of trajectories.
-        :param value: The values of the steps in the trajectory according to the critic (including the one of the last
-        state). In the begining of the method, 'value' is the value of the state in the next step in the trajectory
-        (not the reverse iteration), and after calculation it is the value of the examined state in the examined step.
-        :param traj: The trajectory batch.
-        :return: An array of returns.
-        """
-        rewards, discounts, next_state_values, gae_lambda = traj
-        value = rewards + discounts * ((1 - gae_lambda) * next_state_values + gae_lambda * value)
-        return value, value
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _trajectory_advantages(self, advantage: Float[Array, "batch_size"], traj: Transition) -> Tuple[float, float]:
-        """
-        Calculates the GAE per episode step over a batch of trajectories.
-        :param advantage: The GAE advantages of the steps in the trajectory according to the critic (including the one
-        of the last state). In the beginning of the method, 'advantage' is the advantage of the state in the next step
-        in the trajectory (not the reverse iteration), and after calculation it is the advantage of the examined state
-        in each step.
-        :param traj: The trajectory batch.
-        :return: An array of returns.
-        """
-        rewards, values, next_state_values, terminated, gamma, gae_lambda = traj
-        d_t = rewards + (1 - terminated) * gamma * next_state_values - values  # Temporal difference residual at time t
-        advantage = d_t + gamma * gae_lambda * (1 - terminated) * advantage
-        return advantage, advantage
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                    action: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
-                    advantage: RETURNS_TYPE, hyperparams: HyperParameters) \
-            -> Tuple[Union[float, Float[Array, "1"]], Float[Array, "1"]]:
-        """
-        Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
-        discounted returns and the value as estimated by the critic.
-        :param training: The actor TrainState object.
-        :param state: The states in the trajectory batch.
-        :param action: The actions in the trajectory batch.
-        :param log_prob_old: Log-probabilities of the old policy collected over the trajectory batch.
-        :param advantage: The GAE over the trajectory batch.
-        :param hyperparams: The HyperParameters object used for training.
-        :return: A tuple containing the actor loss and the KL divergence (for early checking stopping criterion).
-        """
-
-        """ Standardize GAE, greatly improves behaviour"""
-        advantage = (advantage - advantage.mean(axis=0)) / (advantage.std(axis=0) + 1e-8)
-
-        # actor_policy = training.apply_fn(training.params, state)
-        actor_policy_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
-        actor_policy = actor_policy_vmap(training.params, state)
-        log_prob = actor_policy.log_prob(action)
-        log_policy_ratio = log_prob - log_prob_old
-        policy_ratio = jnp.exp(log_policy_ratio)
-        kl = jnp.sum(-log_policy_ratio)
-
-        """
-        Adopt simplified formulation of clipped policy ratio * advantage as explained in the note of:
-        https://spinningup.openai.com/en/latest/algorithms/ppo.html#id2
-        """
-        policy_ratio_clip = jnp.where(jnp.greater(advantage, 0), 1 + hyperparams.eps_clip, 1 - hyperparams.eps_clip)
-        advantage_clip = advantage * policy_ratio_clip
-
-        """Actual clip calculation - not used but left here for comparison to simplified version"""
-        # advantage_clip = jnp.clip(policy_ratio, 1 - hyperparams.eps_clip, 1 + hyperparams.eps_clip) * advantage
-
-        loss_actor = jnp.minimum(policy_ratio * advantage, advantage_clip)
-
-        entropy = actor_policy.entropy().mean()
-        total_loss_actor = loss_actor.mean() + hyperparams.ent_coeff * entropy
-
-        """ Negative loss, because we want ascent but 'apply_gradients' applies descent """
-        return -total_loss_actor, kl
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                     value_t, targets: RETURNS_TYPE, hyperparams: HyperParameters) -> Float[Array, "1"]:
-        """
-        Calculates the critic loss.
-        :param training: The critic TrainState object.
-        :param state: The states in the trajectory batch.
-        :param targets: The targets over the trajectory batch for training the critic.
-        :param hyperparams: The HyperParameters object used for training.
-        :return: The critic loss.
-        """
-
-        # value = training.apply_fn(training.params, state)
-        value_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
-        value = value_vmap(training.params, state)
-        residuals = value - targets
-        value_loss = residuals ** 2
-
-        value_clipped = value_t + jnp.clip(value - value, -hyperparams.eps_clip, hyperparams.eps_clip)
-        residuals_clipped = value_clipped - targets
-        value_loss_clipped = residuals_clipped ** 2
-
-        critic_total_loss = jnp.maximum(value_loss, value_loss_clipped).mean()
-        critic_total_loss = hyperparams.vf_coeff * critic_total_loss
-
-        return critic_total_loss
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _actor_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
-        """
-        Prepares the input required by the actor loss function. For the PPO agent, this entails the:
-        - the actions collected over the trajectory batch.
-        - the log-probability of the actions collected over the trajectory batch.
-        - the returns over the trajectory batch.
-        - the values over the trajectory batch as evaluated by the critic.
-        - the training hyperparameters.
-        The input is reshaped so that it is split into minibatches.
-        :param update_runner: The Runner object used in training.
-        :param traj_batch: The batch of trajectories.
-        :return: A tuple of input to the actor loss function.
-        """
-
-        return (
-            traj_batch.state,
-            traj_batch.action,
-            traj_batch.log_prob,
-            traj_batch.advantage,
-            update_runner.hyperparams
-        )
-
-    @partial(jax.jit, static_argnums=(0,))
-    def _critic_loss_input(self, update_runner: Runner, traj_batch: Transition) -> tuple:
-        """
-        Prepares the input required by the critic loss function. For the PPO agent, this entails the:
-        - the states collected over the trajectory batch.
-        - the targets (returns = GAE + next_value) over the trajectory batch.
-        - the training hyperparameters.
-        The input is reshaped so that it is split into minibatches.
-        :param update_runner: The Runner object used in training.
-        :param traj_batch: The batch of trajectories.
-        :return: A tuple of input to the critic loss function.
-        """
-
-        return (
-            traj_batch.state,
-            traj_batch.value,
-            traj_batch.advantage + traj_batch.value,
-            update_runner.hyperparams
-        )
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ if __name__ == '__main__':
         eval_frequency=1,
         eval_rng=jax.random.PRNGKey(18),
         checkpoint_dir=checkpoint_dir,
+        n_evals=100,
         restore_agent=False
     )
 
@@ -76,6 +77,7 @@ if __name__ == '__main__':
         eval_frequency=1,
         eval_rng=jax.random.PRNGKey(18),
         checkpoint_dir=checkpoint_dir,
+        n_evals=100,
         restore_agent=True
     )
 

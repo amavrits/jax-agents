@@ -77,14 +77,13 @@ class PGActorNN(nn.Module):
 
         activation = nn.tanh
 
-        actor_mean = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
-        actor_mean = activation(actor_mean)
-        actor_mean = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(actor_mean)
-        actor_mean = activation(actor_mean)
-        actor_mean = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(actor_mean)
-        pi = distrax.Categorical(logits=actor_mean)
+        logits = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
+        logits = activation(logits)
+        logits = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(logits)
+        logits = activation(logits)
+        logits = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(logits)
 
-        return pi
+        return logits
 
 
 class PGCriticNN(nn.Module):
