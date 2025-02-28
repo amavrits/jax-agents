@@ -41,6 +41,7 @@ class EnvParams:
     predator_velocity: float = 1.
     predator_radius: float = .2
     max_time: float = 1.
+    time_step_reward: float = 1.
     dt: float = .01
     caught_reward: float = 100.
     x_lims: Tuple[float, float] = (0., 1.)
@@ -54,11 +55,8 @@ class HuntingBase(environment.Environment):
 
     def get_obs(self, state: EnvState) -> STATE:
         return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1), state.directions.reshape(1, -1)), dtype=jnp.float32)
-        # return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1)), dtype=jnp.float32)
 
     def reset_env(self, key: chex.PRNGKey, env_params: Optional[EnvParams] = None) -> Tuple[STATE, EnvState]:
-
-        # key = jax.random.PRNGKey(11)
 
         rng, *rngs = jax.random.split(key, 3)
         rng_x, rng_y = rngs
@@ -68,7 +66,7 @@ class HuntingBase(environment.Environment):
 
         positions = jnp.stack((x_coords.T, y_coords.T), axis=-1)
 
-        directions = jnp.zeros(2)
+        directions = jnp.zeros(self.n_actors)
 
         distance = self._distance(positions)
 
@@ -96,6 +94,12 @@ class HuntingBase(environment.Environment):
     def _distance(self, positions: POSITIONS) -> Float[Array, "1"]:
         return jnp.linalg.norm(jnp.diff(positions, axis=0))
 
+    def _rewards(self, prey_caught: Bool[Array, "1"], env_params: EnvParams) -> REWARDS:
+        step_rewards = jnp.asarray([+1, -1]) * env_params.time_step_reward
+        caught_rewards = jnp.asarray([-1, +1]) * env_params.caught_reward
+        rewards = step_rewards * (1 - prey_caught) + caught_rewards * prey_caught
+        return rewards
+
     def step_env(self, key: chex.PRNGKey, state: EnvState, actions: ACTIONS, env_params: EnvParams) \
             -> Tuple[STATE, EnvState, REWARDS, bool, bool, dict]:
 
@@ -115,15 +119,12 @@ class HuntingBase(environment.Environment):
         truncated = jnp.greater_equal(time, env_params.max_time)  # Truncation = time over
         terminated = jnp.logical_or(prey_caught, truncated)
 
-        movement = jnp.linalg.norm(next_positions-positions, axis=-1)
-        eff_velocity = movement / env_params.dt
-        # Avoid numerical inaccuracy of velocity --> stuck when effective velocity is 95% of maximum
-        stuck = jnp.less(eff_velocity.squeeze(), velocities.squeeze()*0.95)
+        # movement = jnp.linalg.norm(next_positions-positions, axis=-1)
+        # eff_velocity = movement / env_params.dt
+        # # Avoid numerical inaccuracy of velocity --> stuck when effective velocity is 95% of maximum
+        # stuck = jnp.less(eff_velocity.squeeze(), velocities.squeeze()*0.95)
 
-        step_rewards = jnp.asarray([+1, -1])
-        caught_rewards = jnp.asarray([-1, +1]) * env_params.caught_reward
-        rewards = step_rewards * (1 - prey_caught) + caught_rewards * prey_caught
-        # rewards = step_rewards * (1 - prey_caught) + caught_rewards * prey_caught + jnp.asarray([1, 0]) * (1 - stuck)
+        rewards = self._rewards(prey_caught, env_params)
 
         info = {
             "truncated": truncated.squeeze(),

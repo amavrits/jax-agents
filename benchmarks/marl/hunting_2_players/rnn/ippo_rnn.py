@@ -12,7 +12,7 @@ from jax_tqdm import scan_tqdm
 import optax
 from flax.core import FrozenDict
 
-from benchmarks.marl.hunting.rnn.ippo_rnn_utils import *
+from benchmarks.marl.hunting_2_players.rnn.ippo_rnn_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import LogEnvState
 from flax.training.train_state import TrainState
