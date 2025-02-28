@@ -5,7 +5,7 @@ import numpy as np
 import optax
 import distrax
 from hunting_env import HuntingContinuous, EnvParams
-from benchmarks.marl.hunting.rnn.ippo_rnn import IPPO, IPPOConfig, HyperParameters, OptimizerParams, TrainState, STATE_TYPE
+from benchmarks.marl.hunting_2_players.rnn.ippo_rnn import IPPO, IPPOConfig, HyperParameters, OptimizerParams, TrainState, STATE_TYPE
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 from typing import List, Tuple
 from agent_gallery import PGActorContinuous, PGCritic
@@ -110,9 +110,9 @@ if __name__ == "__main__":
     env = HuntingContinuous()
 
     if sys.platform == "win32":
-        checkpoint_dir = "C:\\Users\\mavritsa\\Repositories\\jax-agents\\benchmarks\\marl\\hunting\\checkpoints\\ippo\\continuous"
+        checkpoint_dir = "/benchmarks/marl/hunting_2_players\\checkpoints\\ippo\\continuous"
     else:
-        checkpoint_dir = "/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting/checkpoints/ippo/continuous"
+        checkpoint_dir = "/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting_2_players/checkpoints/ippo/continuous"
 
     config = IPPOConfig(
         n_steps=1_000,

@@ -122,7 +122,7 @@ class IPPOBase(ABC):
 
                 dir_exists = os.path.exists(self.config.checkpoint_dir)
                 if not dir_exists:
-                    os.mkdir(self.config.checkpoint_dir)
+                    os.makedirs(self.config.checkpoint_dir)
 
                 dir_files = [
                     file for file in os.listdir(self.config.checkpoint_dir)
@@ -1277,7 +1277,9 @@ class IPPO(IPPOBase):
         # advantage_clip = jnp.clip(policy_ratio, 1 - hyperparams.eps_clip, 1 + hyperparams.eps_clip) * advantage
 
         loss_actor = jnp.minimum(policy_ratio * advantage, advantage_clip)
+
         entropy = jax.vmap(jax.vmap(self._entropy, in_axes=(None, 0)), in_axes=(None, 0))(training, state)
+
         total_loss_actor = loss_actor.mean() + hyperparams.ent_coeff * entropy.mean()
 
         """ Negative loss, because we want ascent but 'apply_gradients' applies descent """

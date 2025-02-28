@@ -1253,6 +1253,7 @@ class PPOAgent(PPOAgentBase):
         loss_actor = jnp.minimum(policy_ratio * advantage, advantage_clip)
 
         entropy = self._entropy(training, state)
+
         total_loss_actor = loss_actor.mean() + hyperparams.ent_coeff * entropy.mean()
 
         """ Negative loss, because we want ascent but 'apply_gradients' applies descent """

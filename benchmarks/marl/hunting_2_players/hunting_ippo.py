@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import distrax
-from hunting_env import HuntingContinuous, EnvParams
+from hunting2_env import HuntingContinuous, EnvParams
 from jaxagents.ippo import IPPO, IPPOConfig, HyperParameters, OptimizerParams, TrainState, STATE_TYPE
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 from typing import List, Tuple
@@ -110,9 +110,9 @@ if __name__ == "__main__":
     if not os.path.exists(fig_folder): os.mkdir(fig_folder)
 
     if sys.platform == "win32":
-        checkpoint_dir = os.path.join("/benchmarks/marl/hunting", folder, "checkpoints")
+        checkpoint_dir = os.path.join("/benchmarks/marl/hunting_2_players", folder, "checkpoints")
     else:
-        checkpoint_dir = os.path.join("/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting", folder, "checkpoints")
+        checkpoint_dir = os.path.join("/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting_2_players", folder, "checkpoints")
 
     config = IPPOConfig(
         n_steps=5_000,
@@ -136,7 +136,7 @@ if __name__ == "__main__":
         eps_clip=0.2,
         kl_threshold=1e-5,
         gae_lambda=0.97,
-        ent_coeff=.5,
+        ent_coeff=.005,
         vf_coeff=1.0,
         actor_optimizer_params=OptimizerParams(learning_rate=3e-4, eps=1e-5, grad_clip=1),
         critic_optimizer_params=OptimizerParams(learning_rate=5e-5, eps=1e-5, grad_clip=1)
