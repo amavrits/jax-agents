@@ -35,7 +35,6 @@ jaxtyping==0.2.29
 keyring==25.2.1
 kiwisolver==1.4.5
 markdown-it-py==3.0.0
-matplotlib==3.9.1
 mdurl==0.1.2
 ml-dtypes==0.4.0
 more-itertools==10.2.0

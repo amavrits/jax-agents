@@ -60,7 +60,7 @@ if __name__ == '__main__':
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
-        eval_frequency=10,
+        eval_frequency=100,
         eval_rng=jax.random.PRNGKey(18),
         checkpoint_dir=checkpoint_dir,
         n_evals=100,
@@ -108,3 +108,4 @@ if __name__ == '__main__':
     plt.ylabel("Training reward [-]", fontsize=14)
     plt.close()
     fig.savefig(os.path.join(os.getcwd(), r'figures/PPO Clip training.png'))
+

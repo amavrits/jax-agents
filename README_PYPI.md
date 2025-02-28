@@ -4,7 +4,7 @@ Jaxagents is a Python implementation of Reinforcement Learning agents built upon
 
 ## Content
 
-So far, the project includes the following agents:
+So far, the project includes the following agents for Reinforcement Learning:
 * Q-learning:
   * Deep Q Networks (DQN)
   * Double Deep Q Networks (DDQN) 
@@ -13,6 +13,11 @@ So far, the project includes the following agents:
 * Policy gradient:
   * REINFORCE
   * PPO with clipping and GAE
+
+So far, the project includes the following agents for Multi-Agent Reinforcement Learning:
+* Policy gradient:
+  * IPPO
+
 
 ## Background
 
