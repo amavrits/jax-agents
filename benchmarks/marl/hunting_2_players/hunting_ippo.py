@@ -148,7 +148,8 @@ if __name__ == "__main__":
     rng = jax.random.PRNGKey(42)
     rng_train, rng_eval = jax.random.split(rng)
     runner, training_metrics = jax.block_until_ready(ippo.train(rng_train, hyperparams))
-    eval_metrics = jax.block_until_ready(ippo.eval(rng_eval, runner.actor_training, n_evals=16))
+    ippo.collect_training(runner, training_metrics)
+    eval_metrics = jax.block_until_ready(ippo.eval(rng_eval, n_evals=16))
 
     training_plot_path = os.path.join(fig_folder, "ippo_policy_training_{steps}steps.png".format(steps=config.n_steps))
     plot_training(training_metrics, config.eval_frequency, env_params, training_plot_path)

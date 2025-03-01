@@ -230,7 +230,7 @@ class IPPOBase(ABC):
             "terminated": jnp.zeros(metrics["terminated"].shape[1]),
             "truncated": jnp.zeros(metrics["truncated"].shape[1]),
             "final_rewards": jnp.zeros(metrics["final_rewards"].shape[1]),
-            "sum_rewards": jnp.zeros(metrics["sum_rewards"].shape[1]),
+            "returns": jnp.zeros(metrics["returns"].shape[1]),
         }
 
         ckpt = self.checkpoint_manager.restore(step, items=target_ckpt)
@@ -383,6 +383,7 @@ class IPPOBase(ABC):
             metric = self._eval_agent(
                 self.config.eval_rng,
                 runner.actor_training,
+                runner.critic_training,
                 self.config.n_evals
             )
 
@@ -825,10 +826,8 @@ class IPPOBase(ABC):
                 "terminated": metrics["terminated"],
                 "truncated": metrics["truncated"],
                 "final_rewards": metrics["final_rewards"],
-                "sum_rewards": metrics["sum_rewards"]
+                "returns": metrics["returns"]
             }
-
-            # ckpt = {"runner": update_runner}.update(metrics)
 
             save_args = orbax_utils.save_args_from_target(ckpt)
 
@@ -839,11 +838,6 @@ class IPPOBase(ABC):
                 i_training_step+self.previous_training_max_step,
                 ckpt,
                 save_kwargs={'save_args': save_args},
-                # metrics=(
-                #     float(jnp.mean(metrics["final_rewards"])),
-                #     float(jnp.mean(metrics["sum_rewards"])),
-                # )
-                # metrics=metrics
             )
 
     @partial(jax.jit, static_argnums=(0,))
@@ -1058,20 +1052,22 @@ class IPPOBase(ABC):
         :return: The updated eval_runner tuple.
         """
 
-        env_state, state, actor_training, terminated, truncated, reward, sum_rewards, rng = eval_runner
+        env_state, state, actor_training, terminated, truncated, reward, returns, rng = eval_runner
 
         actions = self.policy(actor_training, state)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, actions)
-        truncated = info["truncated"]
+        truncated = info["truncated"] if "truncated" in list(info.keys()) else jnp.asarray([0], dtype=jnp.bool)
+        truncated = truncated.squeeze()
 
-        sum_rewards += reward
+        returns += reward
 
-        eval_runner = (next_env_state, next_state, actor_training, terminated, truncated, reward, sum_rewards, rng)
+        eval_runner = (next_env_state, next_state, actor_training, terminated, truncated, reward, returns, rng)
 
         return eval_runner
 
-    def _eval_agent(self, rng: PRNGKeyArray, actor_training: TrainState, n_episodes: int = 1) -> dict:
+    def _eval_agent(self, rng: PRNGKeyArray, actor_training: TrainState, critic_training: TrainState,
+                    n_episodes: int = 1) -> dict:
         """
         Evaluates the agents for n_episodes complete episodes using 'lax.while_loop'.
         :param rng: A random key used for evaluating the agent.
@@ -1094,36 +1090,37 @@ class IPPOBase(ABC):
             jnp.zeros(self.n_actors),
             rng
         )
+
         eval_runners = jax.vmap(
             lambda s, t, u, v, w, x, y, z: (s, t, u, v, w, x, y, z),
             in_axes=(0, 0, None, None, None, None, None, 0)
         )(*eval_runner)
 
         eval_runner = jax.vmap(lambda x: lax.while_loop(self._eval_cond, self._eval_body, x))(eval_runners)
-        _, _, _, terminated, truncated, final_rewards, sum_rewards, _ = eval_runner
+        _, _, _, terminated, truncated, final_rewards, returns, _ = eval_runner
 
-        return self._eval_metrics(terminated, truncated, final_rewards, sum_rewards)
+        return self._eval_metrics(terminated, truncated, final_rewards, returns)
 
     def _eval_metrics(self, terminated: Bool[Array, "1"], truncated: Bool[Array, "1"],
-                      final_rewards: Float[Array, "n_actors"], sum_rewards: Float[Array, "n_actors"]) -> dict:
+                      final_rewards: Float[Array, "n_actors"], returns: Float[Array, "n_actors"]) -> dict:
         """
         Evaluate the metrics.
         :param terminated: Whether the episode finished by termination.
         :param truncated: Whether the episode finished by truncation.
         :param final_rewards: The rewards collected in the final step of the episode.
-        :param sum_rewards: The sum of rewards collected during the episode.
+        :param returns: The sum of rewards collected during the episode.
         :return: Dictionary combining the input arguments and the case-specific special metrics.
         """
         metrics = {
             "terminated": terminated,
             "truncated": truncated,
             "final_rewards": final_rewards,
-            "sum_rewards": sum_rewards
+            "returns": returns
         }
 
         return metrics
 
-    def eval(self, rng: PRNGKeyArray, actor_training: List[TrainState], n_evals: int = 32) -> Float[Array, "n_evals"]:
+    def eval(self, rng: PRNGKeyArray, n_evals: int = 32) -> Float[Array, "n_evals"]:
         """
         Evaluates the trained agent's performance post-training using the trained agent's actor and critic.
         :param rng: Random key for evaluation.
@@ -1131,7 +1128,7 @@ class IPPOBase(ABC):
         :return: Dictionary of evaluation metrics.
         """
 
-        eval_metrics = self._eval_agent(rng, actor_training, n_evals)
+        eval_metrics = self._eval_agent(rng, self.actor_training, self.critic_training, n_evals)
 
         return eval_metrics
 

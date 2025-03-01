@@ -131,7 +131,7 @@ if __name__ == "__main__":
         checkpoint_dir = os.path.join("/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting_3_players", folder, "checkpoints")
 
     config = IPPOConfig(
-        n_steps=10_000,
+        n_steps=30_000,
         batch_size=256,
         minibatch_size=32,
         rollout_length=int(env_params.max_time//env_params.dt+1),
@@ -140,7 +140,7 @@ if __name__ == "__main__":
         actor_network=PGActorContinuous,
         critic_network=PGCritic,
         optimizer=optax.adam,
-        eval_frequency=100,
+        eval_frequency=300,
         eval_rng=jax.random.PRNGKey(18),
         n_evals=500,
         # checkpoint_dir=checkpoint_dir,

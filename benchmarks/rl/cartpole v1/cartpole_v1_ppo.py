@@ -93,17 +93,16 @@ if __name__ == '__main__':
     print(f"time: {time.time() - t0:.2f} s")
 
     """ Post-process results"""
-    training_returns = agent.summarize(training_metrics["episode_returns"])
+    training_returns = agent.summarize(training_metrics["returns"])
     agent.collect_training(runner, training_metrics)
 
     """Evaluate agent performance"""
     eval_metrics = agent.eval(rng_eval, n_evals=16)
-    eval_returns = agent.summarize(eval_metrics)
+    eval_returns = agent.summarize(eval_metrics["returns"])
     print(eval_returns.episode_metric.min(), eval_returns.episode_metric.max())
 
     fig = plt.figure()
-    plt.fill_between(agent.eval_steps_in_training, training_returns.min, training_returns.max, color='b',
-                     alpha=0.4)
+    plt.fill_between(agent.eval_steps_in_training, training_returns.min, training_returns.max, color='b', alpha=0.4)
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Training reward [-]", fontsize=14)
     plt.close()

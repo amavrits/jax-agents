@@ -135,8 +135,7 @@ class PPOAgentBase(ABC):
 
             options = orbax.checkpoint.CheckpointManagerOptions(
                 create=True,
-                best_fn=jnp.max,  # The checkpoint with the maximum metric is selected.
-                step_prefix='training step',
+                step_prefix='trainingstep',
             )
 
             self.checkpoint_manager = orbax.checkpoint.CheckpointManager(
@@ -166,27 +165,34 @@ class PPOAgentBase(ABC):
 
         return empty_training
 
-    def restore(self, mode: str = "best"):
+    def restore(self, mode: str = "best", best_fn: Optional[Callable[[dict], [int]]] = None) -> None:
         """
         Restores a checkpoint (best or latest) and collects the history of metrics as assessed during training. Then,
         post-processes the restored checkpoint.
         :param mode: Determines whether the best performing or latest checkpoint should be restored.
+        :param best_fn: The function that should be used in determining the best performing checkpoint.
         :return:
         """
 
         steps = self.checkpoint_manager.all_steps()
 
+        # Log keys in checkpoints
+        ckpt = self.checkpoint_manager.restore(steps[0])
+        ckpt_keys = [key for key in list(ckpt.keys()) if key != "runner"]
+
         # Collect history of metrics in training. Useful for continuing training.
-        metrics_lst = [None] * len(steps)
+        metrics = {key: [None] * len(steps) for key in ckpt_keys}
         for i, step in enumerate(steps):
             ckpt = self.checkpoint_manager.restore(step)
-            metrics_lst[i] = ckpt["episode_returns"][jnp.newaxis, :]
-
-        metrics_array = jnp.concatenate(metrics_lst, axis=0)
-        metrics = {"episode_returns": metrics_array}
+            for key in ckpt_keys:
+                metrics[key][i] = ckpt[key][jnp.newaxis, :]
+        metrics = {key: jnp.concatenate(val, axis=0) for (key, val) in metrics.items()}
 
         if mode == "best":
-            step = self.checkpoint_manager.best_step()  # In case of multiple max performances, the last one is used.
+            if best_fn is not None:
+                step = steps[best_fn(metrics)]
+            else:
+                raise Exception("Function for determining best checkpoint not provided")
         elif mode == "last":
             step = self.checkpoint_manager.latest_step()
         else:
@@ -201,7 +207,7 @@ class PPOAgentBase(ABC):
         empty_critic_training = self._create_empty_trainstate(self.config.critic_network)
 
         # Get some state and env_state for restoring the checkpoint.
-        state, env_state = self.env.reset(jax.random.PRNGKey(1), self.env_params)
+        _, state, env_state = self._reset(jax.random.PRNGKey(1))
 
         empty_runner = Runner(
             actor_training=empty_actor_training,
@@ -215,7 +221,10 @@ class PPOAgentBase(ABC):
 
         target_ckpt = {
             "runner": empty_runner,
-            "episode_returns": jnp.zeros(metrics["episode_returns"].shape[1])
+            "terminated": jnp.zeros(metrics["terminated"].shape[1]),
+            "truncated": jnp.zeros(metrics["truncated"].shape[1]),
+            "final_rewards": jnp.zeros(metrics["final_rewards"].shape[1]),
+            "returns": jnp.zeros(metrics["returns"].shape[1]),
         }
 
         ckpt = self.checkpoint_manager.restore(step, items=target_ckpt)
@@ -368,13 +377,12 @@ class PPOAgentBase(ABC):
 
         metric = {}
         if self.eval_during_training:
-            sum_rewards = self._eval_agent(
+            metric = self._eval_agent(
                 self.config.eval_rng,
                 runner.actor_training,
                 runner.critic_training,
                 self.config.n_evals
             )
-            metric.update({"episode_returns": sum_rewards})
 
         return metric
 
@@ -812,7 +820,10 @@ class PPOAgentBase(ABC):
 
             ckpt = {
                 "runner": update_runner,
-                "episode_returns": metrics["episode_returns"]
+                "terminated": metrics["terminated"],
+                "truncated": metrics["truncated"],
+                "final_rewards": metrics["final_rewards"],
+                "returns": metrics["returns"]
             }
 
             save_args = orbax_utils.save_args_from_target(ckpt)
@@ -824,7 +835,6 @@ class PPOAgentBase(ABC):
                 i_training_step+self.previous_training_max_step,
                 ckpt,
                 save_kwargs={'save_args': save_args},
-                metrics=float(jnp.mean(metrics["episode_returns"]))
             )
 
     @partial(jax.jit, static_argnums=(0,))
@@ -863,28 +873,20 @@ class PPOAgentBase(ABC):
         rng, *_rng = jax.random.split(rng, 4)
         actor_init_rng, critic_init_rng, runner_rng = _rng
 
-        """
-        Start new training or continue from previous training (passed serially or from restored checkpoint).
-        New hyperparameters can be used for continuing the training.
-        """
-        if not self.agent_trained:
+        actor_training = self._create_training(
+            actor_init_rng, self.config.actor_network, hyperparams.actor_optimizer_params
+        )
+        critic_training = self._create_training(
+            critic_init_rng, self.config.critic_network, hyperparams.critic_optimizer_params
+        )
 
-            actor_training = self._create_training(
-                actor_init_rng, self.config.actor_network, hyperparams.actor_optimizer_params
-            )
-            critic_training = self._create_training(
-                critic_init_rng, self.config.critic_network, hyperparams.critic_optimizer_params
-            )
-
-            update_runner = self._create_update_runner(runner_rng, actor_training, critic_training, hyperparams)
-
-        else:
-
-            update_runner = self.training_runner
-            update_runner = update_runner.replace(hyperparams=hyperparams)  # Use newly provided hyperparameters.
+        update_runner = self._create_update_runner(runner_rng, actor_training, critic_training, hyperparams)
 
         # Checkpoint initial state
-        metrics_start = self._generate_metrics(runner=update_runner, update_step=0)
+        if self.eval_during_training:
+            metrics_start = self._generate_metrics(runner=update_runner, update_step=0)
+        else:
+            metrics_start = {}
         self._checkpoint(update_runner, metrics_start, self.previous_training_max_step)
 
         # Initialize agent updating functions, which can be avoided to be done within the training loops.
@@ -906,19 +908,10 @@ class PPOAgentBase(ABC):
             n_training_batches
         )
 
-        if self.agent_trained:
-            # If training has been continued from a previous state, append the previously collected metrics.
-            metrics["episode_returns"] = jnp.concatenate((
-                self.training_metrics["episode_returns"],
-                metrics["episode_returns"]
-            ), axis=0)
-        else:
-            # If training is not continued, append the metrics before training starts. In case training is continued,
-            # this is replaced by the last iteration of the previous training's metrics.
-            metrics["episode_returns"] = jnp.concatenate((
-                metrics_start["episode_returns"][jnp.newaxis, :],
-                metrics["episode_returns"]
-            ), axis=0)
+        metrics = {
+            key: jnp.concatenate((metrics_start[key][jnp.newaxis, :], metrics[key]), axis=0)
+            for key in metrics.keys()
+        }
 
         return runner, metrics
 
@@ -1050,17 +1043,44 @@ class PPOAgentBase(ABC):
         rng_eval = jax.random.split(rng, n_episodes)
         rng, state, env_state = jax.vmap(self._reset)(rng_eval)
 
-        eval_runner = (env_state, state, actor_training, critic_training, False, 0, rng)
+        eval_runner = (
+            env_state,
+            state,
+            actor_training,
+            jnp.zeros(1, dtype=jnp.bool).squeeze(),
+            jnp.zeros(1, dtype=jnp.bool).squeeze(),
+            jnp.zeros(1).squeeze(),
+            jnp.zeros(1).squeeze(),
+            rng
+        )
         eval_runners = jax.vmap(
-            lambda t, u, v, w, x, y, z: (t, u, v, w, x, y, z),
-            in_axes=(0, 0, None, None, None, None, 0)
+            lambda s, t, u, v, w, x, y, z: (s, t, u, v, w, x, y, z),
+            in_axes=(0, 0, None, None, None, None, None, 0)
         )(*eval_runner)
 
         eval_runner = jax.vmap(lambda x: lax.while_loop(self._eval_cond, self._eval_body, x))(eval_runners)
+        _, _, _, terminated, truncated, final_rewards, returns, _ = eval_runner
 
-        _, _, _, _, _, sum_rewards, _ = eval_runner
+        return self._eval_metrics(terminated, truncated, final_rewards, returns)
 
-        return sum_rewards
+    def _eval_metrics(self, terminated: Bool[Array, "1"], truncated: Bool[Array, "1"],
+                      final_rewards: Float[Array, "1"], returns: Float[Array, "1"]) -> dict:
+        """
+        Evaluate the metrics.
+        :param terminated: Whether the episode finished by termination.
+        :param truncated: Whether the episode finished by truncation.
+        :param final_rewards: The rewards collected in the final step of the episode.
+        :param returns: The sum of rewards collected during the episode.
+        :return: Dictionary combining the input arguments and the case-specific special metrics.
+        """
+        metrics = {
+            "terminated": terminated,
+            "truncated": truncated,
+            "final_rewards": final_rewards,
+            "returns": returns
+        }
+
+        return metrics
 
     @partial(jax.jit, static_argnums=(0,))
     def _eval_body(self, eval_runner: tuple) -> tuple:
@@ -1072,15 +1092,17 @@ class PPOAgentBase(ABC):
         :return: The updated eval_runner tuple.
         """
 
-        env_state, state, actor_training, critic_training, terminated, sum_rewards, rng = eval_runner
+        env_state, state, actor_training, terminated, truncated, reward, returns, rng = eval_runner
 
         action = self.policy(actor_training, state)
 
         rng, next_state, next_env_state, reward, terminated, info = self._env_step(rng, env_state, action)
+        truncated = info["truncated"] if "truncated" in list(info.keys()) else jnp.asarray([0], dtype=jnp.bool)
+        truncated = truncated.squeeze()
 
-        sum_rewards += reward
+        returns += reward
 
-        eval_runner = (next_env_state, next_state, actor_training, critic_training, terminated, sum_rewards, rng)
+        eval_runner = (next_env_state, next_state, actor_training, terminated, truncated, reward, returns, rng)
 
         return eval_runner
 
@@ -1094,8 +1116,8 @@ class PPOAgentBase(ABC):
         :return: Whether the episode is terminated, which means that the while loop must stop.
         """
 
-        _, _, _, _, terminated, _, _ = eval_runner
-        return jnp.logical_not(terminated)
+        _, _, _, terminated, truncated, _, _, _ = eval_runner
+        return jnp.logical_and(jnp.logical_not(terminated), jnp.logical_not(truncated))
 
     def eval(self, rng: PRNGKeyArray, n_evals: int = 32) -> Float[Array, "n_evals"]:
         """
@@ -1143,7 +1165,7 @@ class PPOAgentBase(ABC):
         self.previous_training_max_step = previous_training_max_step
         self.training_runner = runner
         self.training_metrics = metrics
-        n_evals = metrics["episode_returns"].shape[0]
+        n_evals = list(metrics.values())[0].shape[0]
         self.eval_steps_in_training = jnp.arange(n_evals) * self.config.eval_frequency
         self._pp()
 
