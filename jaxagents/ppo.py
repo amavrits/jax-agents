@@ -276,7 +276,7 @@ class PPOAgentBase(ABC):
         # Initialize the agent networks. The number of actions is irrelevant for the Critic network, which should return
         # a single value in the final layer. However, the network class should accept the number of actions as an
         # argument, even if it isn't used.
-        network = network(self.n_actions, self.config)
+        network = network(self.config)
 
         rng, *_rng = jax.random.split(rng, 3)
         dummy_reset_rng, network_init_rng = _rng

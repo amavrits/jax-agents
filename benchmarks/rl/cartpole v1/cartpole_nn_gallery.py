@@ -69,30 +69,30 @@ class QRDDQN_NN(nn.Module):
 
 
 class PGActorNN(nn.Module):
-    action_dim: Sequence[int]
     config: dict
 
     @nn.compact
     def __call__(self, x):
 
+        action_dim = 2
         activation = nn.tanh
 
         logits = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
         logits = activation(logits)
         logits = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(logits)
         logits = activation(logits)
-        logits = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(logits)
+        logits = nn.Dense(action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(logits)
 
         return logits
 
 
 class PGCriticNN(nn.Module):
-    action_dim: Sequence[int]
     config: dict
 
     @nn.compact
     def __call__(self, x):
 
+        action_dim = 2
         activation = nn.tanh
 
         critic = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
