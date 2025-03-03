@@ -113,6 +113,12 @@ class Runner:
     """Training hyperparameters"""
     hyperparams: HyperParameters
 
+    """The loss value of the actor"""
+    actor_loss: Float[Array, "1"]
+
+    """The loss value of the critic"""
+    critic_loss: Float[Array, "1"]
+
 
 class AgentConfig(NamedTuple):
     """Configuration of the PPO agents, passed at initialization of instance."""

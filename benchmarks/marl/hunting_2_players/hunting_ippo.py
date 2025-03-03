@@ -115,7 +115,7 @@ if __name__ == "__main__":
         checkpoint_dir = os.path.join("/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting_2_players", folder, "checkpoints")
 
     config = IPPOConfig(
-        n_steps=5_000,
+        n_steps=1_000,
         batch_size=256,
         minibatch_size=16,
         rollout_length=int(env_params.max_time//env_params.dt+1),
