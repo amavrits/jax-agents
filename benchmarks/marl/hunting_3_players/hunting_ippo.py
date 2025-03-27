@@ -86,6 +86,22 @@ def plot_training(training_metrics, eval_frequency, env_params, path):
     fig.savefig(path)
 
 
+def plot_loss(training_metrics, eval_frequency, env_params, path):
+    actor_loss = training_metrics["actor_loss"].squeeze()
+    critic_loss = training_metrics["critic_loss"].squeeze()
+    steps = jnp.arange(actor_loss.size) * eval_frequency
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
+    axs[0].plot(steps, actor_loss, c="b")
+    axs[0].set_ylabel("Actor loss [-]", fontsize=12)
+    axs[1].plot(steps, critic_loss, c="b")
+    axs[1].set_xlabel("Training steps", fontsize=12)
+    axs[1].set_ylabel("Critic loss [-]", fontsize=12)
+    for ax in axs.flatten():
+        ax.grid()
+    plt.close()
+    fig.savefig(path)
+
+
 def export_csv(render_metrics, csv_path):
     df = pd.DataFrame(
         data = np.round(np.c_[
@@ -131,7 +147,7 @@ if __name__ == "__main__":
         checkpoint_dir = os.path.join("/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting_3_players", folder, "checkpoints")
 
     config = IPPOConfig(
-        n_steps=30_000,
+        n_steps=50_000,
         batch_size=256,
         minibatch_size=32,
         rollout_length=int(env_params.max_time//env_params.dt+1),
@@ -168,6 +184,9 @@ if __name__ == "__main__":
 
     training_plot_path = os.path.join(fig_folder, "ippo_policy_training_{steps}steps.png".format(steps=config.n_steps))
     plot_training(training_metrics, config.eval_frequency, env_params, training_plot_path)
+
+    training_plot_path = os.path.join(fig_folder, "ippo_losses_{steps}steps.png".format(steps=config.n_steps))
+    plot_loss(training_metrics, config.eval_frequency, env_params, training_plot_path)
 
     def f(runner, i):
         rng, actor_training, critic_training, state, state_env = runner

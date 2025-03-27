@@ -14,6 +14,7 @@ from jax_tqdm import scan_tqdm
 from functools import partial
 import matplotlib.pyplot as plt
 import pandas as pd
+import pickle
 
 
 class HuntingIPPO(IPPO):
@@ -78,6 +79,22 @@ def plot_training(training_metrics, eval_frequency, env_params, path):
     fig.savefig(path)
 
 
+def plot_loss(training_metrics, eval_frequency, env_params, path):
+    actor_loss = training_metrics["actor_loss"].squeeze()
+    critic_loss = training_metrics["critic_loss"].squeeze()
+    steps = jnp.arange(actor_loss.size) * eval_frequency
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
+    axs[0].plot(steps, actor_loss, c="b")
+    axs[0].set_ylabel("Actor loss [-]", fontsize=12)
+    axs[1].plot(steps, critic_loss, c="b")
+    axs[1].set_xlabel("Training steps", fontsize=12)
+    axs[1].set_ylabel("Critic loss [-]", fontsize=12)
+    for ax in axs.flatten():
+        ax.grid()
+    plt.close()
+    fig.savefig(path)
+
+
 def export_csv(render_metrics, csv_path):
     df = pd.DataFrame(
         data = np.round(np.c_[
@@ -98,7 +115,7 @@ def export_csv(render_metrics, csv_path):
 
 if __name__ == "__main__":
 
-    env_params = EnvParams(prey_velocity=3., predator_velocity=1., max_time=2.)
+    env_params = EnvParams(prey_velocity=3., predator_velocity=1., max_time=2., caught_reward=100.)
     env = HuntingContinuous()
 
     folder = r"mlp/prey{prey_vel:.1f}_pred{pred_vel:.1f}_maxtime{max_time:.1f}".format(
@@ -115,7 +132,7 @@ if __name__ == "__main__":
         checkpoint_dir = os.path.join("/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting_2_players", folder, "checkpoints")
 
     config = IPPOConfig(
-        n_steps=1_000,
+        n_steps=5_000,
         batch_size=256,
         minibatch_size=16,
         rollout_length=int(env_params.max_time//env_params.dt+1),
@@ -128,21 +145,22 @@ if __name__ == "__main__":
         eval_rng=jax.random.PRNGKey(18),
         n_evals=100,
         checkpoint_dir=checkpoint_dir,
-        restore_agent=False,
+        # restore_agent=False,
     )
 
     hyperparams = HyperParameters(
         gamma=0.99,
-        eps_clip=0.2,
+        eps_clip=0.20,
         kl_threshold=1e-5,
         gae_lambda=0.97,
         ent_coeff=.005,
         vf_coeff=1.0,
         actor_optimizer_params=OptimizerParams(learning_rate=3e-4, eps=1e-5, grad_clip=1),
-        critic_optimizer_params=OptimizerParams(learning_rate=5e-5, eps=1e-5, grad_clip=1)
+        critic_optimizer_params=OptimizerParams(learning_rate=5e-4, eps=1e-5, grad_clip=1)
     )
 
-    ippo = HuntingIPPO(env, env_params, config, eval_during_training=True)
+    # ippo = HuntingIPPO(env, env_params, config, eval_during_training=True)
+    ippo = HuntingIPPO(env, env_params, config, eval_during_training=False)
     ippo.log_hyperparams(hyperparams)
 
     rng = jax.random.PRNGKey(42)
@@ -153,6 +171,9 @@ if __name__ == "__main__":
 
     training_plot_path = os.path.join(fig_folder, "ippo_policy_training_{steps}steps.png".format(steps=config.n_steps))
     plot_training(training_metrics, config.eval_frequency, env_params, training_plot_path)
+
+    training_plot_path = os.path.join(fig_folder, "ippo_losses_{steps}steps.png".format(steps=config.n_steps))
+    plot_loss(training_metrics, config.eval_frequency, env_params, training_plot_path)
 
     def f(runner, i):
         rng, actor_training, critic_training, state, state_env = runner
@@ -187,4 +208,7 @@ if __name__ == "__main__":
     gif_path = os.path.join(fig_folder, "ippo_{steps}steps.gif".format(steps=config.n_steps))
     env.animate(render_metrics["time"].squeeze(), render_metrics["positions"], render_metrics["actions"],
                 render_metrics["values"], env_params, gif_path, export_pdf=True)
+
+    with open(r"../../../../hunting-game/training/models/pretrained/actor_{n_steps}.pkl".format(n_steps=config.n_steps), 'wb') as handle:
+        pickle.dump(runner.actor_training.params, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
