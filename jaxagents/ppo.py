@@ -874,11 +874,14 @@ class PPOAgentBase(ABC):
 
         update_runner = lax.fori_loop(0, n_training_steps, self._update_step, update_runner)
 
-        metrics = self._generate_metrics(runner=update_runner, update_step=i_training_batch)
-
-        i_training_step = self.config.eval_frequency * (i_training_batch + 1)
-        i_training_step = jnp.minimum(i_training_step, self.config.n_steps)
-        self._checkpoint(update_runner, metrics, i_training_step)
+        if self.eval_during_training:
+            metrics = self._generate_metrics(runner=update_runner, update_step=i_training_batch)
+            i_training_step = self.config.eval_frequency * (i_training_batch + 1)
+            i_training_step = jnp.minimum(i_training_step, self.config.n_steps)
+            if self.checkpointing:
+                self._checkpoint(update_runner, metrics, i_training_step)
+        else:
+            metrics = {}
 
         return update_runner, metrics
 
@@ -907,9 +910,8 @@ class PPOAgentBase(ABC):
         # Checkpoint initial state
         if self.eval_during_training:
             metrics_start = self._generate_metrics(runner=update_runner, update_step=0)
-        else:
-            metrics_start = {}
-        self._checkpoint(update_runner, metrics_start, self.previous_training_max_step)
+            if self.checkpointing:
+                self._checkpoint(update_runner, metrics_start, self.previous_training_max_step)
 
         # Initialize agent updating functions, which can be avoided to be done within the training loops.
         actor_grad_fn = jax.grad(self._actor_loss, has_aux=True, allow_int=True)
@@ -930,10 +932,13 @@ class PPOAgentBase(ABC):
             n_training_batches
         )
 
-        metrics = {
-            key: jnp.concatenate((metrics_start[key][jnp.newaxis, :], metrics[key]), axis=0)
-            for key in metrics.keys()
-        }
+        if self.eval_during_training:
+            metrics = {
+                key: jnp.concatenate((metrics_start[key][jnp.newaxis, :], metrics[key]), axis=0)
+                for key in metrics.keys()
+            }
+        else:
+            metrics= {}
 
         return runner, metrics
 
