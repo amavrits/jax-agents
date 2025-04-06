@@ -5,9 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import distrax
-from dulwich.protocol import agent_string
-
-from hunting2_env import HuntingContinuous, EnvParams
+from hunting_env import HuntingContinuous, EnvParams
 from jaxagents.ippo import IPPO, IPPOConfig, HyperParameters, OptimizerParams, TrainState, STATE_TYPE
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 from typing import List, Tuple
@@ -134,7 +132,7 @@ if __name__ == "__main__":
         checkpoint_dir = os.path.join("/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting_2_players", folder, "checkpoints")
 
     config = IPPOConfig(
-        n_steps=10,
+        n_steps=5_000,
         batch_size=256,
         minibatch_size=16,
         rollout_length=int(env_params.max_time//env_params.dt+1),
@@ -145,7 +143,7 @@ if __name__ == "__main__":
         optimizer=optax.adam,
         eval_frequency=100,
         eval_rng=jax.random.PRNGKey(18),
-        n_evals=5,
+        n_evals=100,
         # checkpoint_dir=checkpoint_dir,
         # restore_agent=False,
     )
@@ -161,8 +159,7 @@ if __name__ == "__main__":
         critic_optimizer_params=OptimizerParams(learning_rate=5e-4, eps=1e-5, grad_clip=1)
     )
 
-    # ippo = HuntingIPPO(env, env_params, config, eval_during_training=True)
-    ippo = HuntingIPPO(env, env_params, config, eval_during_training=False)
+    ippo = HuntingIPPO(env, env_params, config, eval_during_training=True)
     ippo.log_hyperparams(hyperparams)
 
     rng = jax.random.PRNGKey(42)
