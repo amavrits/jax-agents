@@ -4,7 +4,7 @@ import jax
 import optax
 import gymnax
 import numpy as np
-from jaxagents import vpg
+from jaxagents.depreceated import vpg
 from cartpole_nn_gallery import *
 import matplotlib
 matplotlib.use("TkAgg")

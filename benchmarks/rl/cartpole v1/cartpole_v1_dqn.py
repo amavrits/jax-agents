@@ -4,7 +4,7 @@ import jax
 import optax
 import gymnax
 import numpy as np
-from jaxagents import dqn
+from jaxagents.depreceated import dqn
 from cartpole_nn_gallery import *
 import matplotlib
 matplotlib.use("TkAgg")
