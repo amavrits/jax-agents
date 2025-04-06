@@ -71,7 +71,7 @@ can improve exploration of the observation domain.
  
 Using the truncation_utils.TruncationWrapper, a distinction is made. The environment step returns the variable for done,
 while info return information about termination and truncation. The done variable resets the environment if needed. The
-termination and trunction inforamtion is passed to the batch of trajectories for estimation of returns and advantages.
+termination and truncation information is passed to the batch of trajectories for estimation of returns and advantages.
 With this implementation, no further calculations are required; now terminated reflects situation where true episode 
 termination is reached (e.g. the pole falls in Cartpole-v1, or the agents succeeds in keeping the pole for 500 steps).
 For example, if in Cartpole-v1 the maximum steps per episode where 450 (lower than the 500 steps needed for the agent to
