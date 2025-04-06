@@ -75,7 +75,7 @@ if __name__ == '__main__':
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
-        max_episode_steps=450,
+        max_episode_steps=550,
         eval_frequency=100,
         eval_rng=jax.random.PRNGKey(18),
         # checkpoint_dir=checkpoint_dir,

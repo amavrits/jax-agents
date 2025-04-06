@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "jaxagents"
-version = "0.2.1"
+version = "0.2.3"
 description = "JAX implementation of Reinforcement Learning agents"
 authors = ["Antonis Mavritsakis <amavrits@gmail.com>"]
 license = "Proprietary"

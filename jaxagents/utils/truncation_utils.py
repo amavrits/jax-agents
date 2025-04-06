@@ -36,13 +36,13 @@ class TruncationWrapper(Environment):
         Dict[str, float | bool]
     ]:
 
-        next_obs, next_envstate, reward, done, info = self._env.step(rng, envstate.envstate, action, params)
+        # Termination is determined by whether the environment is done (no other info is available)
+        next_obs, next_envstate, reward, terminated, info = self._env.step(rng, envstate.envstate, action, params)
 
         next_step = envstate.step + 1
-        truncated = jnp.greater_equal(next_step, self.max_steps)
 
-        terminated = done  # Termination is determined by whether the environment is done (no other info is available)
-        truncated = jnp.logical_and(done, truncated)
+        truncated = jnp.greater_equal(next_step, self.max_steps)
+        done = jnp.logical_or(terminated, truncated)
 
         next_step = jnp.where(done, 0, next_step)
 
