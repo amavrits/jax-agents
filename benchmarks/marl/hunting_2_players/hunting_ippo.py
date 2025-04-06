@@ -6,7 +6,7 @@ import numpy as np
 import optax
 import distrax
 from hunting_env import HuntingContinuous, EnvParams
-from jaxagents.ippo import IPPO, IPPOConfig, HyperParameters, OptimizerParams, TrainState, STATE_TYPE
+from jaxagents.ippo import IPPO, AgentConfig, HyperParameters, OptimizerParams, TrainState, ObsType, ActionType
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 from typing import List, Tuple
 from agents import PGActorContinuous, PGCritic
@@ -21,26 +21,24 @@ class HuntingIPPO(IPPO):
     log_std = -0.0
 
     @partial(jax.jit, static_argnums=(0,))
-    def _entropy(self, actor_training: TrainState, state: STATE_TYPE)-> Float[Array, "n_actors"]:
+    def _entropy(self, actor_training: TrainState, state: ObsType)-> Float[Array, "n_actors"]:
         mus = actor_training.apply_fn(actor_training.params, state).squeeze()
         pis = distrax.Normal(loc=mus, scale=jnp.exp(self.log_std))
         return pis.entropy()
 
     @partial(jax.jit, static_argnums=(0, 4,))
-    def _log_prob(self, actor_training: TrainState, params: dict, state: STATE_TYPE, actions: Int[Array, "n_actors"])\
-            -> Float[Array, "n_actors"]:
+    def _log_prob(self, actor_training: TrainState, params: dict, state: ObsType, actions: ActionType) -> Float[Array, "n_actors"]:
         mus = actor_training.apply_fn(params, state).squeeze()
         log_probs = distrax.Normal(loc=mus, scale=jnp.exp(self.log_std)).log_prob(actions)
         return log_probs
 
     @partial(jax.jit, static_argnums=(0,))
-    def policy(self, actor_training: TrainState, state: STATE_TYPE) -> Float[Array, "n_actors"]:
+    def policy(self, actor_training: TrainState, state: ObsType) -> ActionType:
         mus = actor_training.apply_fn(jax.lax.stop_gradient(actor_training.params), state).squeeze()
         return mus
 
     @partial(jax.jit, static_argnums=(0,))
-    def _sample_actions(self, rng: PRNGKeyArray, actor_training: TrainState, state: STATE_TYPE)\
-        -> Tuple[PRNGKeyArray, List[Int[Array, "1"]]]:
+    def _sample_actions(self, rng: PRNGKeyArray, actor_training: TrainState, state: ObsType) -> ActionType:
         mus = actor_training.apply_fn(jax.lax.stop_gradient(actor_training.params), state).squeeze()
         # Use fixed std, OpenAI: https://github.com/openai/spinningup/blob/master/spinup/algos/pytorch/ppo/core.py#L84
         actions = distrax.Normal(loc=mus, scale=jnp.exp(self.log_std)).sample(seed=rng)
@@ -131,7 +129,7 @@ if __name__ == "__main__":
     else:
         checkpoint_dir = os.path.join("/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting_2_players", folder, "checkpoints")
 
-    config = IPPOConfig(
+    config = AgentConfig(
         n_steps=5_000,
         batch_size=256,
         minibatch_size=16,

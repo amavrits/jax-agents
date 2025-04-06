@@ -16,7 +16,7 @@ class Transition(NamedTuple):
     obs: Float[Array, "obs_size"]
 
     """Action selecetd by agent"""
-    action: Int[Array, "n_agents"] | Float[Array, "n_agents"]
+    action: Int[Array, "n_actors"] | Float[Array, "n_actors"]
 
     """Value of the state"""
     value: Float[Array, "n_agents"]
@@ -119,7 +119,7 @@ class Runner:
     critic_loss: Float[Array, "1"]
 
 
-class IPPOConfig(NamedTuple):
+class AgentConfig(NamedTuple):
     """Configuration of the IPPO training algorithm agents, passed at initialization of instance."""
 
     """

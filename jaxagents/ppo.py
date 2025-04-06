@@ -23,7 +23,7 @@ from numpy.typing import NDArray
 from abc import abstractmethod
 from functools import partial
 from abc import ABC
-from typing import Tuple, Dict, NamedTuple, Optional, ClassVar, Annotated
+from typing import Tuple, Dict, Optional, ClassVar, Annotated
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 import warnings
 import os
@@ -34,6 +34,16 @@ warnings.filterwarnings("ignore")
 ObsType = Float[Array, "obs_size"]
 ActionType = Int[Array, "1"] | Float[Array, "1"]
 StepRunnerType = tuple[LogEnvState, ObsType, TrainState, TrainState, PRNGKeyArray]
+EvalRunnerType = Tuple[
+    LogEnvState,
+    ObsType,
+    TrainState,
+    Bool[Array, "1"],
+    Bool[Array, "1"],
+    Float[Array, "1"],
+    Float[Array, "1"],
+    PRNGKeyArray
+]
 ReturnsType = Float[Array, "batch_size n_rollout"]
 ActorLossInputType = Tuple[
     Annotated[ObsType, "n_minibatch"],
@@ -83,8 +93,13 @@ class PPOAgentBase(ABC):
     # restoring or passing a trained agent (from serial training or restoring)
     previous_training_max_step: ClassVar[int] = 0
 
-    def __init__(self, env: type[Environment], env_params: EnvParams, config: AgentConfig,
-                 eval_during_training: bool = True) -> None:
+    def __init__(
+            self,
+            env: Environment,
+            env_params: EnvParams,
+            config: AgentConfig,
+            eval_during_training: bool = True
+    ) -> None:
         """
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
         :param env_params: A dataclass named "EnvParams" containing the parametrization of the environment.
@@ -119,7 +134,6 @@ class PPOAgentBase(ABC):
         env = FlattenObservationWrapper(env)
         self.env = LogWrapper(env)
         self.env_params = env_params
-        self.n_actions = self.env.action_space(self.env_params).n
 
     def _init_checkpointer(self) -> None:
         """
@@ -297,8 +311,11 @@ class PPOAgentBase(ABC):
 
         return tx
 
-    def _init_network(self, rng: PRNGKeyArray, network: type[flax.linen.Module])\
-            -> Tuple[flax.linen.Module, FrozenDict]:
+    def _init_network(
+            self,
+            rng: PRNGKeyArray,
+            network: flax.linen.Module
+    ) -> Tuple[flax.linen.Module, FrozenDict]:
         """
         Initialization of the actor or critic network.
         :param rng: Random key for initialization.
@@ -322,7 +339,7 @@ class PPOAgentBase(ABC):
         return network, params
 
     @partial(jax.jit, static_argnums=(0,))
-    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, Float[Array, "obs_size"], LogEnvState]:
+    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, ObsType, LogEnvState]:
         """
         Environment reset.
         :param rng: Random key for initialization.
@@ -341,7 +358,7 @@ class PPOAgentBase(ABC):
             action: ActionType
     ) -> Tuple[
         PRNGKeyArray,
-        Float[Array, "obs_size"],
+        ObsType,
         LogEnvState,
         Float[Array, "1"],
         Bool[Array, "1"],
@@ -485,7 +502,7 @@ class PPOAgentBase(ABC):
     def _add_next_values(
             self,
             traj_batch: Transition,
-            last_obs: Float[Array, 'obs_size'],
+            last_obs: ObsType,
             critic_training: TrainState
     ) -> Transition:
 
@@ -502,7 +519,7 @@ class PPOAgentBase(ABC):
         return traj_batch
 
     @partial(jax.jit, static_argnums=(0,))
-    def _add_advantages(self, traj_batch: Transition, advantage: Float[Array, 'obs_size']) -> Transition:
+    def _add_advantages(self, traj_batch: Transition, advantage: ReturnsType) -> Transition:
 
         traj_batch = traj_batch._replace(advantage=advantage)
 
@@ -717,8 +734,10 @@ class PPOAgentBase(ABC):
         return critic_training, critic_loss_input
 
     @partial(jax.jit, static_argnums=(0,))
-    def _actor_epoch(self, epoch_runner: tuple[TrainState, tuple, float, int, float])\
-            -> Tuple[TrainState, tuple, float, int, float]:
+    def _actor_epoch(
+            self,
+            epoch_runner: Tuple[TrainState, ActorLossInputType, Float[Array, "1"], int, float]
+    ) -> Tuple[TrainState, ActorLossInputType, Float[Array, "1"], int, float]:
         """
         Performs a Gradient Ascent update of the actor.
         :param epoch_runner: A tuple containing the following information about the update:
@@ -741,7 +760,7 @@ class PPOAgentBase(ABC):
     @partial(jax.jit, static_argnums=(0,))
     def _actor_training_cond(
             self,
-            epoch_runner: Tuple[TrainState, ActorLossInputType, Float[Array, "1"], int, Float[Array, "1"]]
+            epoch_runner: Tuple[TrainState, ActorLossInputType, Float[Array, "1"], int, float]
     ) -> Bool[Array, "1"]:
         """
         Checks whether the lax.while_loop over epochs should be terminated (either because the number of epochs has been
@@ -933,8 +952,11 @@ class PPOAgentBase(ABC):
             )
 
     @partial(jax.jit, static_argnums=(0,))
-    def _training_step(self, update_runner: Runner, i_training_batch: int
-                       ) -> Tuple[Runner, Dict[str, Float[Array, "1"]]]:
+    def _training_step(
+            self,
+            update_runner: Runner,
+            i_training_batch: int
+    ) -> Tuple[Runner, Dict[str, Float[Array, "1"]]]:
         """
         Performs trainings steps to update the agent per training batch.
         :param update_runner: The runner object, containing information about the current status of the actor's/
@@ -1023,7 +1045,7 @@ class PPOAgentBase(ABC):
         :param value: The values of the steps in the trajectory according to the critic (including the one of the last
          state).
         :param traj: The trajectory batch.
-        :return: An array of returns.
+        :return: A tuple of returns.
         """
 
         raise NotImplementedError
@@ -1047,11 +1069,9 @@ class PPOAgentBase(ABC):
             obs: Float[Array, "n_rollout batch_size obs_size"],
             action: Float[Array, "n_rollout batch_size"],
             log_prob_old: Float[Array, "n_rollout batch_size"],
-            advantage: ReturnsType, hyperparams: HyperParameters
-    )-> Tuple[
-        Float[Array, "1"],
-        Float[Array, "1"]
-    ]:
+            advantage: ReturnsType,
+            hyperparams: HyperParameters
+    )-> Tuple[Float[Array, "1"], Float[Array, "1"]]:
         """
         Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
         discounted returns and the value as estimated by the critic.
@@ -1151,7 +1171,7 @@ class PPOAgentBase(ABC):
             actor_training: TrainState,
             critic_training: TrainState,
             n_episodes: int = 1
-    ) -> Float[Array, "batch_size"]:
+    ) -> Dict[str, Float[Array, "1"] | Bool[Array, "1"]]:
         """
         Evaluates the agents for n_episodes complete episodes using 'lax.while_loop'.
         :param rng: A random key used for evaluating the agent.
@@ -1209,7 +1229,7 @@ class PPOAgentBase(ABC):
         return metrics
 
     @partial(jax.jit, static_argnums=(0,))
-    def _eval_body(self, eval_runner: Runner) -> Tuple[Runner]:
+    def _eval_body(self, eval_runner: EvalRunnerType) -> EvalRunnerType:
         """
         A step in the episode to be used with 'lax.while_loop' for evaluation of the agent in a complete episode.
         :param eval_runner: A tuple containing information about the environment state, the actor and critic training
@@ -1233,7 +1253,7 @@ class PPOAgentBase(ABC):
         return eval_runner
 
     @partial(jax.jit, static_argnums=(0,))
-    def _eval_cond(self, eval_runner: Tuple[Runner]) -> Bool[Array, "1"]:
+    def _eval_cond(self, eval_runner: EvalRunnerType) -> Bool[Array, "1"]:
         """
         Checks whether the episode is terminated, meaning that the 'lax.while_loop' can stop.
         :param eval_runner: A tuple containing information about the environment state, the actor and critic training
@@ -1374,7 +1394,7 @@ class PPOAgent(PPOAgentBase):
             self,
             training: TrainState,
             obs: Annotated[ObsType, "n_rollout batch_size"],
-            action: Int[Array, "n_rollout batch_size"],
+            action: Annotated[ActionType, "batch_size"],
             log_prob_old: Float[Array, "n_rollout batch_size"],
             advantage: ReturnsType,
             hyperparams: HyperParameters

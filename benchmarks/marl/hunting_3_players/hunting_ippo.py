@@ -6,7 +6,7 @@ import numpy as np
 import optax
 import distrax
 from hunting3_env import HuntingContinuous, EnvParams
-from jaxagents.ippo import IPPO, IPPOConfig, HyperParameters, OptimizerParams, TrainState, STATE_TYPE
+from jaxagents.ippo import IPPO, AgentConfig, HyperParameters, OptimizerParams, TrainState, STATE_TYPE
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 from typing import List, Tuple
 from agents import PGActorContinuous, PGCritic
@@ -146,7 +146,7 @@ if __name__ == "__main__":
     else:
         checkpoint_dir = os.path.join("/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting_3_players", folder, "checkpoints")
 
-    config = IPPOConfig(
+    config = AgentConfig(
         n_steps=50_000,
         batch_size=256,
         minibatch_size=32,
