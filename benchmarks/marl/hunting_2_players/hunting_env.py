@@ -6,7 +6,7 @@ from gymnax.environments import environment, spaces
 from jaxtyping import Array, Int, Float, Bool
 from typing import Optional
 import chex
-from typing import Tuple
+from typing import Tuple, Union
 from abc import abstractmethod
 from functools import partial
 import matplotlib.pyplot as plt
@@ -19,7 +19,7 @@ import io
 POSITIONS = Float[Array, "n_predators+n_prey 2"]
 STATE = Float[Array, "1+n_predators+n_prey 2"]
 ACTIONS = Int[Array, "n_predators+n_prey"]
-DIRECTIONS = Int[Array, "n_predators+n_prey"]
+DIRECTIONS = Union[Int[Array, "n_predators+n_prey"], Float[Array, "n_predators+n_prey"]]
 VELOCITIES = Int[Array, "n_predators+n_prey"]
 REWARDS = Float[Array, "n_predators+n_prey"]
 
@@ -55,6 +55,7 @@ class HuntingBase(environment.Environment):
 
     def get_obs(self, state: EnvState) -> STATE:
         return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1), state.directions.reshape(1, -1)), dtype=jnp.float32)
+        # return jnp.hstack((state.positions.reshape(1, -1), state.directions.reshape(1, -1)), dtype=jnp.float32)
 
     def reset_env(self, key: chex.PRNGKey, env_params: Optional[EnvParams] = None) -> Tuple[STATE, EnvState]:
 

@@ -62,7 +62,7 @@ class IPPOBase(ABC):
     actor_training: ClassVar[Optional[TrainState]] = None  # Actor training object.
     critic_training: ClassVar[Optional[TrainState]] = None  # Critic training object.
     training_metrics: ClassVar[Optional[Dict]] = None  # Metrics collected during training.
-    eval_during_training: ClassVar[bool] = False  # Whether the agent's performance is evaluated during training
+    eval_during_training: ClassVar[bool] = True  # Whether the agent's performance is evaluated during training
     # The maximum step reached in precious training. Zero by default for starting a new training. Will be set by
     # restoring or passing a trained agent (from serial training or restoring)
     previous_training_max_step: ClassVar[int] = 0
@@ -387,6 +387,11 @@ class IPPOBase(ABC):
                 self.config.n_evals
             )
 
+        metric.update({
+            "actor_loss": runner.actor_loss,
+            "critic_loss": runner.critic_loss
+        })
+
         return metric
 
     def _create_training(self, rng: PRNGKeyArray, network: Type[flax.linen.Module], optimizer_params: OptimizerParams)\
@@ -429,7 +434,9 @@ class IPPOBase(ABC):
             env_state=env_state,
             state=state,
             rng=runner_rngs,
-            hyperparams=hyperparams
+            hyperparams=hyperparams,
+            actor_loss=jnp.zeros(1),
+            critic_loss=jnp.zeros(1)
         )
 
         return update_runner
@@ -692,7 +699,7 @@ class IPPOBase(ABC):
         )
 
     @partial(jax.jit, static_argnums=(0,))
-    def _actor_update(self, update_runner: Runner, traj_batch: Transition) -> TrainState:
+    def _actor_update(self, update_runner: Runner, traj_batch: Transition) -> Tuple[TrainState, Float[Array, ""]]:
         """
         Prepares the input and performs Gradient Ascent for the actor network.
         :param update_runner: The Runner object, containing information about the current status of the actor's/
@@ -714,7 +721,16 @@ class IPPOBase(ABC):
         actor_epoch_runner = lax.while_loop(self._actor_training_cond, self._actor_epoch, actor_epoch_runner)
         actor_training, _, _, _, _ = actor_epoch_runner
 
-        return actor_training
+        actor_loss, _ = self._actor_loss(
+            actor_training,
+            traj_batch.state,
+            traj_batch.action,
+            traj_batch.log_prob,
+            traj_batch.advantage,
+            update_runner.hyperparams
+        )
+
+        return actor_training, actor_loss
 
     @partial(jax.jit, static_argnums=(0,))
     def _critic_epoch(self, i_epoch: int, epoch_runner: Tuple[TrainState, tuple]) -> Tuple[TrainState, tuple]:
@@ -736,7 +752,7 @@ class IPPOBase(ABC):
         return critic_training, critic_loss_input
 
     @partial(jax.jit, static_argnums=(0,))
-    def _critic_update(self, update_runner: Runner, traj_batch: Transition) -> TrainState:
+    def _critic_update(self, update_runner: Runner, traj_batch: Transition)  -> Tuple[TrainState, Float[Array, ""]]:
         """
         Prepares the input and performs Gradient Descent for the critic network.
         :param update_runner: The Runner object, containing information about the current status of the actor's/
@@ -750,7 +766,10 @@ class IPPOBase(ABC):
         critic_epoch_runner = lax.fori_loop(0, self.config.critic_epochs, self._critic_epoch, critic_epoch_runner)
         critic_training, _ = critic_epoch_runner
 
-        return critic_training
+        critic_targets = critic_loss_input[1].reshape(-1, self.config.rollout_length, self.n_actors)
+        critic_loss = self._critic_loss(critic_training, traj_batch.state, critic_targets, update_runner.hyperparams)
+
+        return critic_training, critic_loss
 
     @partial(jax.jit, static_argnums=(0,))
     def _update_step(self, i_update_step: int, update_runner: Runner) -> Runner:
@@ -778,8 +797,8 @@ class IPPOBase(ABC):
         last_env_state, last_state, _, _, rng = rollout_runners
         traj_batch = self._process_trajectory(update_runner, traj_batch, last_state)
 
-        actor_training = self._actor_update(update_runner, traj_batch)
-        critic_training = self._critic_update(update_runner, traj_batch)
+        actor_training, actor_loss = self._actor_update(update_runner, traj_batch)
+        critic_training, critic_loss = self._critic_update(update_runner, traj_batch)
 
         """Update runner as a dataclass."""
         update_runner = update_runner.replace(
@@ -788,6 +807,8 @@ class IPPOBase(ABC):
             actor_training=actor_training,
             critic_training=critic_training,
             rng=rng,
+            actor_loss=jnp.expand_dims(actor_loss, axis=-1),
+            critic_loss=jnp.expand_dims(critic_loss, axis=-1)
         )
 
         return update_runner
@@ -855,11 +876,14 @@ class IPPOBase(ABC):
 
         update_runner = lax.fori_loop(0, n_training_steps, self._update_step, update_runner)
 
-        metrics = self._generate_metrics(runner=update_runner, update_step=i_training_batch)
-
-        i_training_step = self.config.eval_frequency * (i_training_batch + 1)
-        i_training_step = jnp.minimum(i_training_step, self.config.n_steps)
-        self._checkpoint(update_runner, metrics, i_training_step)
+        if self.eval_during_training:
+            metrics = self._generate_metrics(runner=update_runner, update_step=i_training_batch)
+            i_training_step = self.config.eval_frequency * (i_training_batch + 1)
+            i_training_step = jnp.minimum(i_training_step, self.config.n_steps)
+            if self.checkpointing:
+                self._checkpoint(update_runner, metrics, i_training_step)
+        else:
+            metrics = {}
 
         return update_runner, metrics
 
@@ -888,9 +912,8 @@ class IPPOBase(ABC):
         # Checkpoint initial state
         if self.eval_during_training:
             metrics_start = self._generate_metrics(runner=update_runner, update_step=0)
-        else:
-            metrics_start = {}
-        self._checkpoint(update_runner, metrics_start, self.previous_training_max_step)
+            if self.checkpointing:
+                self._checkpoint(update_runner, metrics_start, self.previous_training_max_step)
 
         # Initialize agent updating functions, which can be avoided to be done within the training loops.
         actor_grad_fn = jax.grad(self._actor_loss, has_aux=True, allow_int=True)
@@ -910,10 +933,13 @@ class IPPOBase(ABC):
             n_training_batches
         )
 
-        metrics = {
-            key: jnp.concatenate((metrics_start[key][jnp.newaxis, :], metrics[key]), axis=0)
-            for key in metrics.keys()
-        }
+        if self.eval_during_training:
+            metrics = {
+                key: jnp.concatenate((metrics_start[key][jnp.newaxis, :], metrics[key]), axis=0)
+                for key in metrics.keys()
+            }
+        else:
+            metrics= {}
 
         return runner, metrics
 
@@ -1275,7 +1301,8 @@ class IPPO(IPPOBase):
 
         loss_actor = jnp.minimum(policy_ratio * advantage, advantage_clip)
 
-        entropy = jax.vmap(jax.vmap(self._entropy, in_axes=(None, 0)), in_axes=(None, 0))(training, state)
+        entropy_vmap = jax.vmap(jax.vmap(self._entropy, in_axes=(None, 0)), in_axes=(None, 0))
+        entropy = entropy_vmap(training, state)
 
         total_loss_actor = loss_actor.mean() + hyperparams.ent_coeff * entropy.mean()
 
@@ -1321,7 +1348,7 @@ class IPPO(IPPOBase):
         # Poor practice in using the random key, which however doesn't influence the training, since all trajectories in
         # the batch are used per epoch.
         minibatch_idx = jax.random.choice(
-            self.config.eval_rng,
+            jax.random.PRNGKey(1),
             jnp.arange(self.config.batch_size),
             replace=False,
             shape=(self.config.batch_size,)
@@ -1355,7 +1382,7 @@ class IPPO(IPPOBase):
         # Poor practice in using the random key, which however doesn't influence the training, since all trajectories in
         # the batch are used per epoch.
         minibatch_idx = jax.random.choice(
-            self.config.eval_rng,
+            jax.random.PRNGKey(1),
             jnp.arange(self.config.batch_size),
             replace=False,
             shape=(self.config.batch_size,)

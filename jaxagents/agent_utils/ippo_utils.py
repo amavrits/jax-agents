@@ -113,6 +113,12 @@ class Runner:
     """Training hyperparameters"""
     hyperparams: HyperParameters
 
+    """The loss value of the actors"""
+    actor_loss: Float[Array, "1"]
+
+    """The loss value of the critics"""
+    critic_loss: Float[Array, "1"]
+
 
 class IPPOConfig(NamedTuple):
     """Configuration of the IPPO training algorithm agents, passed at initialization of instance."""

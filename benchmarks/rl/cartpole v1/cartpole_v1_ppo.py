@@ -40,6 +40,23 @@ class CartpolePPO(PPOAgent):
         return actions
 
 
+
+def plot_loss(training_metrics, eval_frequency, env_params, path):
+    actor_loss = training_metrics["actor_loss"].squeeze()
+    critic_loss = training_metrics["critic_loss"].squeeze()
+    steps = jnp.arange(actor_loss.size) * eval_frequency
+    fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
+    axs[0].plot(steps, actor_loss, c="b")
+    axs[0].set_ylabel("Actor loss [-]", fontsize=12)
+    axs[1].plot(steps, critic_loss, c="b")
+    axs[1].set_xlabel("Training steps", fontsize=12)
+    axs[1].set_ylabel("Critic loss [-]", fontsize=12)
+    for ax in axs.flatten():
+        ax.grid()
+    plt.close()
+    fig.savefig(path)
+
+
 if __name__ == '__main__':
 
     env, env_params = gymnax.make("CartPole-v1")
@@ -100,6 +117,8 @@ if __name__ == '__main__':
     eval_metrics = agent.eval(rng_eval, n_evals=16)
     eval_returns = agent.summarize(eval_metrics["returns"])
     print(eval_returns.episode_metric.min(), eval_returns.episode_metric.max())
+
+    plot_loss(training_metrics, config.eval_frequency, env_params, r'figures/PPO losses.png')
 
     fig = plt.figure()
     plt.fill_between(agent.eval_steps_in_training, training_returns.min, training_returns.max, color='b', alpha=0.4)
