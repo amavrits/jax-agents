@@ -138,10 +138,10 @@ class AgentConfig(NamedTuple):
     rollout_length: int
 
     """Architecture of the actor network"""
-    actor_network: type[flax.linen.Module]
+    actor_network: flax.linen.Module
 
     """Architecture of the critic network"""
-    critic_network: type[flax.linen.Module]
+    critic_network: flax.linen.Module
 
     """Epochs for actor training per update step"""
     actor_epochs: int
