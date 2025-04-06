@@ -31,10 +31,7 @@ class Transition(NamedTuple):
     next_obs: Float[Array, "obs_size"]
 
     """Boolean variable indicating episode termination"""
-    terminated: Bool[Array, "n_agents"]
-
-    """Dictionary of additional information about step"""
-    info: Dict[str, float | bool]
+    terminated: Bool[Array, "1"]
 
     """Value of next state"""
     next_value: Optional[Float[Array, "n_agents"]] = None
@@ -168,6 +165,9 @@ class AgentConfig(NamedTuple):
 
     """Whether an agent should be restored from training checkpoints, for continuing training or deploying."""
     restore_agent: bool = False
+
+    "Maximum steps per episode for flagging episode truncation"
+    max_episode_steps: int = np.inf
 
 
 @struct.dataclass

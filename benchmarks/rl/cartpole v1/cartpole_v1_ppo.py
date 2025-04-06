@@ -4,7 +4,7 @@ import distrax
 import jax
 import optax
 import gymnax
-from jaxagents.ppo import PPOAgent, TrainState, ObsType, ActionType, AgentConfig, OptimizerParams, HyperParameters
+from jaxagents.ppo import *
 from jaxtyping import Float, Array, PRNGKeyArray
 from cartpole_nn_gallery import *
 from functools import partial
@@ -75,9 +75,11 @@ if __name__ == '__main__':
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
+        max_episode_steps=450,
         eval_frequency=100,
         eval_rng=jax.random.PRNGKey(18),
-        checkpoint_dir=checkpoint_dir,
+        # checkpoint_dir=checkpoint_dir,
+        checkpoint_dir=None,
         n_evals=100,
         restore_agent=False
     )

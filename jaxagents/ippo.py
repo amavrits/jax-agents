@@ -13,7 +13,8 @@ from jax_tqdm import scan_tqdm
 import optax
 from flax.core import FrozenDict
 from jaxagents.utils.ippo_utils import *
-from gymnax.environments.environment import Environment, EnvParams
+from jaxagents.utils.truncation_utils import *
+from gymnax.environments.environment import Environment, EnvParams, EnvState
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from flax.training.train_state import TrainState
 from flax.training import orbax_utils
@@ -33,16 +34,16 @@ warnings.filterwarnings("ignore")
 
 ObsType = Float[Array, "obs_size"]
 ActionType = Int[Array, "n_actors"] | Float[Array, "n_actors"]
-StepRunnerType = Tuple[LogEnvState, ObsType, TrainState, TrainState, PRNGKeyArray]
+StepRunnerType = Tuple[LogEnvState | EnvState | TruncationEnvState, ObsType, TrainState, TrainState, PRNGKeyArray]
 EvalRunnerType = Tuple[
-    LogEnvState,
+    LogEnvState | EnvState | TruncationEnvState,
     ObsType,
     TrainState,
     Bool[Array, "1"],
     Bool[Array, "1"],
     Float[Array, "n_agents"],
     Float[Array, "n_agents"],
-    PRNGKeyArray
+    PRNGKeyArray,
 ]
 ReturnsType = Float[Array, "batch_size n_rollout"]
 ActorLossInputType = Tuple[
@@ -57,6 +58,31 @@ CriticLossInputType = Tuple[
     Annotated[Float[Array, "1"], "n_minibatch"],
     HyperParameters,
 ]
+
+
+"""
+NOTE ABOUT TERMINATION, TRUNCATION AND EPISODE COMPLETION:
+
+An episode ends either by termination (e.g., agent fails or succeeds) or by truncation (e.g., reaching the max episode
+length). In both cases, the environment returns `done = True`, and Gymnax resets the environment automatically inside
+the `step` function.
+
+However, Gymnax does not guarantee a distinction between termination and truncation, which is often useful for training
+and analysis. This wrapper adds that distinction.
+
+Specifically:
+- `done` is `True` when either termination or truncation occurs (preserving Gymnax behavior).
+- The `info` dictionary includes two boolean flags: `terminated` and `truncated`.
+- These are used in trajectory processing (e.g., return and advantage estimation) to provide better learning signals.
+
+This is especially valuable when episodes are long and agents benefit from periodic resets. For example, in Cartpole-v1,
+the goal is to keep the pole balanced for 500 steps. If we truncate episodes at 450 steps:
+- `terminated = True` only when the pole falls.
+- `truncated = True` when the agent reaches 450 steps without failure.
+
+In both cases, the environment resets, but this wrapper allows distinguishing between a failure and a timeout, which
+can significantly enhance learning and performance diagnostics.
+"""
 
 
 class IPPOBase(ABC):
@@ -135,6 +161,7 @@ class IPPOBase(ABC):
         :return:
         """
 
+        env = TruncationWrapper(env, self.config.max_episode_steps)
         # env = FlattenObservationWrapper(env)
         # self.env = LogWrapper(env)
         self.env = env
@@ -341,7 +368,7 @@ class IPPOBase(ABC):
         return network, params
 
     @partial(jax.jit, static_argnums=(0,))
-    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, ObsType, type[LogEnvState]]:
+    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, ObsType, LogEnvState | EnvState | TruncationEnvState]:
         """
         Environment reset.
         :param rng: Random key for initialization.
@@ -357,12 +384,12 @@ class IPPOBase(ABC):
     def _env_step(
             self,
             rng: PRNGKeyArray,
-            envstate: LogEnvState,
+            envstate: LogEnvState | EnvState | TruncationEnvState,
             actions: ActionType
     )-> Tuple[
         PRNGKeyArray,
         ObsType,
-        LogEnvState,
+        LogEnvState | EnvState | TruncationEnvState,
         Float[Array, "1"],
         Bool[Array, "1"],
         Dict[str, float | bool]
@@ -395,7 +422,6 @@ class IPPOBase(ABC):
             reward: Float[Array, "n_actors"],
             next_obs: ObsType,
             terminated: Bool[Array, "1"],
-            info: Dict[str, float | bool]
             ) -> Transition:
         """
         Creates a transition object based on the input and output of an episode step.
@@ -406,12 +432,11 @@ class IPPOBase(ABC):
         :param reward: The collected reward after executing the action per actor.
         :param next_obs: The next state of the episode step in array format.
         :param terminated: Episode termination.
-        :param info: Dictionary of optional additional information.
         :return: A transition object storing information about the state before and after executing the episode step,
                  the executed action, the collected reward, episode termination and optional additional information.
         """
 
-        transition = Transition(obs.squeeze(), actions, value, log_prob, reward, next_obs, terminated, info)
+        transition = Transition(obs.squeeze(), actions, value, log_prob, reward, next_obs, terminated)
         transition = jax.tree_util.tree_map(lambda x: jnp.expand_dims(x, axis=0), transition)
 
         return transition
@@ -495,7 +520,7 @@ class IPPOBase(ABC):
             rng=runner_rngs,
             hyperparams=hyperparams,
             actor_loss=jnp.zeros(1),
-            critic_loss=jnp.zeros(1)
+            critic_loss=jnp.zeros(1),
         )
 
         return update_runner
@@ -632,9 +657,11 @@ class IPPOBase(ABC):
             update_runner.obs,
             update_runner.actor_training,
             update_runner.critic_training,
-            update_runner.rng
+            update_runner.rng,
         )
-        rollout_runners = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))(*rollout_runner)
+        rollout_runners = jax.vmap(
+            lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0)
+        )(*rollout_runner)
         return rollout_runners
 
     @partial(jax.jit, static_argnums=(0,))
@@ -664,7 +691,17 @@ class IPPOBase(ABC):
 
         step_runner = (next_envstate, next_obs, actor_training, critic_training, rng)
 
-        transition = self._make_transition(obs, actions, values, log_prob, reward, next_obs, terminated, info)
+        terminated = info["terminated"]
+
+        transition = self._make_transition(
+            obs=obs,
+            actions=actions,
+            value=values,
+            log_prob=log_prob,
+            reward=reward,
+            next_obs=next_obs,
+            terminated=terminated,
+        )
 
         return step_runner, transition
 
@@ -1198,7 +1235,7 @@ class IPPOBase(ABC):
             jnp.zeros(1, dtype=jnp.bool).squeeze(),
             jnp.zeros(self.n_actors),
             jnp.zeros(self.n_actors),
-            rng
+            rng,
         )
 
         eval_runners = jax.vmap(
@@ -1217,7 +1254,7 @@ class IPPOBase(ABC):
             truncated: Bool[Array, "1"],
             final_rewards: Float[Array, "1"],
             returns: Float[Array, "1"]
-    ) -> Dict[str, Float[Array, "1"]]:
+    ) -> Dict[str, Float[Array, "1"] | Bool[Array, "1"]]:
         """
         Evaluate the metrics.
         :param terminated: Whether the episode finished by termination.
@@ -1250,8 +1287,9 @@ class IPPOBase(ABC):
         actions = self.policy(actor_training, obs)
 
         rng, next_obs, next_envstate, reward, terminated, info = self._env_step(rng, envstate, actions)
-        truncated = info["truncated"] if "truncated" in list(info.keys()) else jnp.asarray([0], dtype=jnp.bool)
-        truncated = truncated.squeeze()
+
+        terminated = info["terminated"]
+        truncated = info["truncated"]
 
         returns += reward
 
