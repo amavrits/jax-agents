@@ -60,6 +60,25 @@ CriticLossInputType = Tuple[
 ]
 
 
+"""
+NOTE ABOUT TERMINATION, TRUNCATION AND EPISODE COMPLETION:
+
+An episode in complete upon termination (an agent succeeds or fails) or truncation (maximum step in episode reached). In
+the union of the two event, the environment step return done. However, gymnax doesn't guarantee that a way of
+distinguishing truncation and termination is provided. Mind that gymnax resets the environment in the step function upon
+done. This is important for enhancing training; in case of long episodes, truncating before termination and resetting
+can improve exploration of the observation domain.
+ 
+Using the truncation_utils.TruncationWrapper, a distinction is made. The environment step returns the variable for done,
+while info return information about termination and truncation. The done variable resets the environment if needed. The
+termination and trunction inforamtion is passed to the batch of trajectories for estimation of returns and advantages.
+With this implementation, no further calculations are required; now terminated reflects situation where true episode 
+termination is reached (e.g. the pole falls in Cartpole-v1, or the agents succeeds in keeping the pole for 500 steps).
+For example, if in Cartpole-v1 the maximum steps per episode where 450 (lower than the 500 steps needed for the agent to
+succeed), termination is only true when the pole falls. This can be checked by comparing the terminated and truncated
+trajectories. In any case, the environment is reset whenever any of them is true.
+"""
+
 class PPOAgentBase(ABC):
     """
     Base for PPO agents.
@@ -509,7 +528,14 @@ class PPOAgentBase(ABC):
             last_obs: ObsType,
             critic_training: TrainState
     ) -> Transition:
-
+        """
+        Concatenates all state values but the first one with the value estimate of the final state, to represent the
+        values of the next state (1-step lag).
+        :param traj_batch: The batch of trajectories.
+        :param last_obs: The obs at the end of every trajectory in the batch.
+        :param critic_training: The critic TrainState object (either mid- or post-training).
+        :return: The batch of trajectories with the updated next-state values.
+        """
         last_state_value_vmap = jax.vmap(critic_training.apply_fn, in_axes=(None, 0))
         last_state_value = last_state_value_vmap(lax.stop_gradient(critic_training.params), last_obs)
 
@@ -524,7 +550,12 @@ class PPOAgentBase(ABC):
 
     @partial(jax.jit, static_argnums=(0,))
     def _add_advantages(self, traj_batch: Transition, advantage: ReturnsType) -> Transition:
-
+        """
+        Simply inputs the advantages in the batch of trajectories.
+        :param traj_batch: The batch of trajectories.
+        :param advantage: The advantage over the trajectory batch.
+        :return: The batch of trajectories with the updated advantage.
+        """
         traj_batch = traj_batch._replace(advantage=advantage)
 
         return traj_batch
