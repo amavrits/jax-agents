@@ -158,8 +158,9 @@ class PPOAgentBase(ABC):
         """
 
         env = TruncationWrapper(env, self.config.max_episode_steps)
-        env = FlattenObservationWrapper(env)
-        self.env = LogWrapper(env)
+        # env = FlattenObservationWrapper(env)
+        # self.env = LogWrapper(env)
+        self.env = env
         self.env_params = env_params
 
     def _init_checkpointer(self) -> None:
@@ -272,7 +273,7 @@ class PPOAgentBase(ABC):
         empty_critic_training = self._create_empty_trainstate(self.config.critic_network)
 
         # Get some obs and envstate for restoring the checkpoint.
-        _, obs, envstate = self._reset(jax.random.PRNGKey(1))
+        _, obs, envstate = self.env_reset(jax.random.PRNGKey(1))
 
         empty_runner = Runner(
             actor_training=empty_actor_training,
@@ -366,7 +367,7 @@ class PPOAgentBase(ABC):
         return network, params
 
     @partial(jax.jit, static_argnums=(0,))
-    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, ObsType, LogEnvState | EnvState | TruncationEnvState]:
+    def env_reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, ObsType, LogEnvState | EnvState | TruncationEnvState]:
         """
         Environment reset.
         :param rng: Random key for initialization.
@@ -378,7 +379,7 @@ class PPOAgentBase(ABC):
         return rng, obs, envstate
 
     @partial(jax.jit, static_argnums=(0,))
-    def _env_step(
+    def env_step(
             self,
             rng: PRNGKeyArray,
             envstate: LogEnvState | EnvState | TruncationEnvState,
@@ -508,7 +509,7 @@ class PPOAgentBase(ABC):
         reset_rngs = jax.random.split(reset_rng, self.config.batch_size)
         runner_rngs = jax.random.split(runner_rng, self.config.batch_size)
 
-        _, obs, envstate = jax.vmap(self._reset)(reset_rngs)
+        _, obs, envstate = jax.vmap(self.env_reset)(reset_rngs)
 
         update_runner = Runner(
             actor_training=actor_training,
@@ -696,7 +697,7 @@ class PPOAgentBase(ABC):
 
         log_prob = self._log_prob(actor_training, lax.stop_gradient(actor_training.params), obs, action)
 
-        rng, next_obs, next_envstate, reward, done, info = self._env_step(rng, envstate, action)
+        rng, next_obs, next_envstate, reward, done, info = self.env_step(rng, envstate, action)
 
         step_runner = (next_envstate, next_obs, actor_training, critic_training, rng)
 
@@ -1231,7 +1232,7 @@ class PPOAgentBase(ABC):
         """
 
         rng_eval = jax.random.split(rng, n_episodes)
-        rng, obs, envstate = jax.vmap(self._reset)(rng_eval)
+        rng, obs, envstate = jax.vmap(self.env_reset)(rng_eval)
 
         eval_runner = (
             envstate,
@@ -1291,7 +1292,7 @@ class PPOAgentBase(ABC):
 
         action = self.policy(actor_training, obs)
 
-        rng, next_obs, next_envstate, reward, done, info = self._env_step(rng, envstate, action)
+        rng, next_obs, next_envstate, reward, done, info = self.env_step(rng, envstate, action)
 
         terminated = info["terminated"]
         truncated = info["truncated"]
