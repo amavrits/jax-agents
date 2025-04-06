@@ -13,7 +13,7 @@ from jax_tqdm import scan_tqdm
 import optax
 from flax.core import FrozenDict
 from jaxagents.utils.ippo_utils import *
-from gymnax.environments.environment import Environment, EnvParams
+from gymnax.environments.environment import Environment, EnvParams, EnvState
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from flax.training.train_state import TrainState
 from flax.training import orbax_utils
@@ -33,16 +33,17 @@ warnings.filterwarnings("ignore")
 
 ObsType = Float[Array, "obs_size"]
 ActionType = Int[Array, "n_actors"] | Float[Array, "n_actors"]
-StepRunnerType = Tuple[LogEnvState, ObsType, TrainState, TrainState, PRNGKeyArray]
+StepRunnerType = Tuple[LogEnvState | EnvState, ObsType, TrainState, TrainState, PRNGKeyArray, Int[Array, "1"]]
 EvalRunnerType = Tuple[
-    LogEnvState,
+    LogEnvState | EnvState,
     ObsType,
     TrainState,
     Bool[Array, "1"],
     Bool[Array, "1"],
     Float[Array, "n_agents"],
     Float[Array, "n_agents"],
-    PRNGKeyArray
+    PRNGKeyArray,
+    Int[Array, "1"],
 ]
 ReturnsType = Float[Array, "batch_size n_rollout"]
 ActorLossInputType = Tuple[
@@ -341,7 +342,7 @@ class IPPOBase(ABC):
         return network, params
 
     @partial(jax.jit, static_argnums=(0,))
-    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, ObsType, type[LogEnvState]]:
+    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, ObsType, LogEnvState | EnvState]:
         """
         Environment reset.
         :param rng: Random key for initialization.
@@ -357,12 +358,12 @@ class IPPOBase(ABC):
     def _env_step(
             self,
             rng: PRNGKeyArray,
-            envstate: LogEnvState,
+            envstate: LogEnvState | EnvState,
             actions: ActionType
     )-> Tuple[
         PRNGKeyArray,
         ObsType,
-        LogEnvState,
+        LogEnvState | EnvState,
         Float[Array, "1"],
         Bool[Array, "1"],
         Dict[str, float | bool]
@@ -495,7 +496,8 @@ class IPPOBase(ABC):
             rng=runner_rngs,
             hyperparams=hyperparams,
             actor_loss=jnp.zeros(1),
-            critic_loss=jnp.zeros(1)
+            critic_loss=jnp.zeros(1),
+            step=0
         )
 
         return update_runner
@@ -632,9 +634,12 @@ class IPPOBase(ABC):
             update_runner.obs,
             update_runner.actor_training,
             update_runner.critic_training,
-            update_runner.rng
+            update_runner.rng,
+            update_runner.step
         )
-        rollout_runners = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))(*rollout_runner)
+        rollout_runners = jax.vmap(
+            lambda u, v, w, x, y, z: (u, v, w, x, y, z), in_axes=(0, 0, None, None, 0, None)
+        )(*rollout_runner)
         return rollout_runners
 
     @partial(jax.jit, static_argnums=(0,))
@@ -651,7 +656,7 @@ class IPPOBase(ABC):
         :return: The updated step_runner tuple and the rollout step transition.
         """
 
-        envstate, obs, actor_training, critic_training, rng = step_runner
+        envstate, obs, actor_training, critic_training, rng, step = step_runner
 
         rng, rng_action = jax.random.split(rng)
         actions = self._sample_actions(rng_action, actor_training, obs)
@@ -662,9 +667,23 @@ class IPPOBase(ABC):
 
         rng, next_obs, next_envstate, reward, terminated, info = self._env_step(rng, envstate, actions)
 
-        step_runner = (next_envstate, next_obs, actor_training, critic_training, rng)
+        step += 1
 
-        transition = self._make_transition(obs, actions, values, log_prob, reward, next_obs, terminated, info)
+        step_runner = (next_envstate, next_obs, actor_training, critic_training, rng, step)
+
+        truncated = jnp.greater_equal(step, self.config.max_episode_steps)
+
+        transition = self._make_transition(
+            obs=obs,
+            action=actions,
+            value=values,
+            log_prob=log_prob,
+            reward=reward,
+            next_obs=next_obs,
+            terminated=terminated,
+            truncated=truncated,
+            info=info
+        )
 
         return step_runner, transition
 
@@ -1198,16 +1217,17 @@ class IPPOBase(ABC):
             jnp.zeros(1, dtype=jnp.bool).squeeze(),
             jnp.zeros(self.n_actors),
             jnp.zeros(self.n_actors),
-            rng
+            rng,
+            0
         )
 
         eval_runners = jax.vmap(
-            lambda s, t, u, v, w, x, y, z: (s, t, u, v, w, x, y, z),
-            in_axes=(0, 0, None, None, None, None, None, 0)
+            lambda r, s, t, u, v, w, x, y, z: (r, s, t, u, v, w, x, y, z),
+            in_axes=(0, 0, None, None, None, None, None, 0, None)
         )(*eval_runner)
 
         eval_runner = jax.vmap(lambda x: lax.while_loop(self._eval_cond, self._eval_body, x))(eval_runners)
-        _, _, _, terminated, truncated, final_rewards, returns, _ = eval_runner
+        _, _, _, terminated, truncated, final_rewards, returns, _, _ = eval_runner
 
         return self._eval_metrics(terminated, truncated, final_rewards, returns)
 
@@ -1217,7 +1237,7 @@ class IPPOBase(ABC):
             truncated: Bool[Array, "1"],
             final_rewards: Float[Array, "1"],
             returns: Float[Array, "1"]
-    ) -> Dict[str, Float[Array, "1"]]:
+    ) -> Dict[str, Float[Array, "1"] | Bool[Array, "1"]]:
         """
         Evaluate the metrics.
         :param terminated: Whether the episode finished by termination.
@@ -1245,17 +1265,19 @@ class IPPOBase(ABC):
         :return: The updated eval_runner tuple.
         """
 
-        envstate, obs, actor_training, terminated, truncated, reward, returns, rng = eval_runner
+        envstate, obs, actor_training, terminated, truncated, reward, returns, rng, step = eval_runner
 
         actions = self.policy(actor_training, obs)
 
         rng, next_obs, next_envstate, reward, terminated, info = self._env_step(rng, envstate, actions)
-        truncated = info["truncated"] if "truncated" in list(info.keys()) else jnp.asarray([0], dtype=jnp.bool)
-        truncated = truncated.squeeze()
+
+        step += 1
+
+        truncated = jnp.greater_equal(step, self.config.max_episode_steps)
 
         returns += reward
 
-        eval_runner = (next_envstate, next_obs, actor_training, terminated, truncated, reward, returns, rng)
+        eval_runner = (next_envstate, next_obs, actor_training, terminated, truncated, reward, returns, rng, step)
 
         return eval_runner
 
@@ -1269,7 +1291,7 @@ class IPPOBase(ABC):
         :return: Whether the episode is terminated, which means that the while loop must stop.
         """
 
-        _, _, _, terminated, truncated, _, _, _ = eval_runner
+        _, _, _, terminated, truncated, _, _, _, _ = eval_runner
         return jnp.logical_and(jnp.logical_not(terminated), jnp.logical_not(truncated))
 
     def eval(self, rng: PRNGKeyArray, n_evals: int = 32) -> Float[Array, "n_evals"]:

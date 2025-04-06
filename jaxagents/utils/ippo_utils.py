@@ -31,7 +31,10 @@ class Transition(NamedTuple):
     next_obs: Float[Array, "obs_size"]
 
     """Boolean variable indicating episode termination"""
-    terminated: Bool[Array, "n_agents"]
+    terminated: Bool[Array, "1"]
+
+    """Boolean variable indicating episode truncation"""
+    truncation: Bool[Array, "1"]
 
     """Dictionary of additional information about step"""
     info: Dict[str, float | bool]
@@ -118,6 +121,9 @@ class Runner:
     """The loss value of the critics"""
     critic_loss: Float[Array, "1"]
 
+    """Current episode step (useful for episode truncation)"""
+    step: int = 0
+
 
 class AgentConfig(NamedTuple):
     """Configuration of the IPPO training algorithm agents, passed at initialization of instance."""
@@ -168,6 +174,9 @@ class AgentConfig(NamedTuple):
 
     """Whether an agent should be restored from training checkpoints, for continuing training or deploying."""
     restore_agent: bool = False
+
+    "Maximum steps per episode for flagging episode truncation"
+    max_episode_steps: int = np.inf
 
 
 @struct.dataclass

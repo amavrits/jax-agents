@@ -13,7 +13,8 @@ from jax_tqdm import scan_tqdm
 import optax
 from flax.core import FrozenDict
 from jaxagents.utils.ppo_utils import *
-from gymnax.environments.environment import Environment, EnvParams
+from jaxagents.utils.truncation_utils import *
+from gymnax.environments.environment import Environment, EnvParams, EnvState
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from flax.training.train_state import TrainState
 from flax.training import orbax_utils
@@ -33,16 +34,16 @@ warnings.filterwarnings("ignore")
 
 ObsType = Float[Array, "obs_size"]
 ActionType = Int[Array, "1"] | Float[Array, "1"]
-StepRunnerType = tuple[LogEnvState, ObsType, TrainState, TrainState, PRNGKeyArray]
+StepRunnerType = Tuple[LogEnvState | EnvState | TruncationEnvState, ObsType, TrainState, TrainState, PRNGKeyArray]
 EvalRunnerType = Tuple[
-    LogEnvState,
+    LogEnvState | EnvState | TruncationEnvState,
     ObsType,
     TrainState,
     Bool[Array, "1"],
     Bool[Array, "1"],
     Float[Array, "1"],
     Float[Array, "1"],
-    PRNGKeyArray
+    PRNGKeyArray,
 ]
 ReturnsType = Float[Array, "batch_size n_rollout"]
 ActorLossInputType = Tuple[
@@ -339,7 +340,7 @@ class PPOAgentBase(ABC):
         return network, params
 
     @partial(jax.jit, static_argnums=(0,))
-    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, ObsType, LogEnvState]:
+    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, ObsType, LogEnvState | EnvState | TruncationEnvState]:
         """
         Environment reset.
         :param rng: Random key for initialization.
@@ -354,12 +355,12 @@ class PPOAgentBase(ABC):
     def _env_step(
             self,
             rng: PRNGKeyArray,
-            envstate: LogEnvState,
+            envstate: LogEnvState | EnvState | TruncationEnvState,
             action: ActionType
     ) -> Tuple[
         PRNGKeyArray,
         ObsType,
-        LogEnvState,
+        LogEnvState | EnvState | TruncationEnvState,
         Float[Array, "1"],
         Bool[Array, "1"],
         Dict[str, float | bool]
@@ -393,6 +394,7 @@ class PPOAgentBase(ABC):
             reward: Float[Array, "1"],
             next_obs: ObsType,
             terminated: Bool[Array, "1"],
+            truncated: Bool[Array, "1"],
             info: Dict[str, float | bool]
     ) -> Transition:
         """
@@ -404,12 +406,13 @@ class PPOAgentBase(ABC):
         :param reward: The collected reward after executing the action.
         :param next_obs: The next obs of the episode step in array format.
         :param terminated: Episode termination.
+        :param truncated: Episode truncation.
         :param info: Dictionary of optional additional information.
         :return: A transition object storing information about the state before and after executing the episode step,
                  the executed action, the collected reward, episode termination and optional additional information.
         """
 
-        transition = Transition(obs.squeeze(), action, value, log_prob, reward, next_obs, terminated, info)
+        transition = Transition(obs.squeeze(), action, value, log_prob, reward, next_obs, terminated, truncated, info)
         transition = jax.tree_util.tree_map(lambda x: jnp.expand_dims(x, axis=0), transition)
 
         return transition
@@ -493,7 +496,7 @@ class PPOAgentBase(ABC):
             rng=runner_rngs,
             hyperparams=hyperparams,
             actor_loss=jnp.zeros(1),
-            critic_loss=jnp.zeros(1)
+            critic_loss=jnp.zeros(1),
         )
 
         return update_runner
@@ -629,9 +632,11 @@ class PPOAgentBase(ABC):
             update_runner.obs,
             update_runner.actor_training,
             update_runner.critic_training,
-            update_runner.rng
+            update_runner.rng,
         )
-        rollout_runners = jax.vmap(lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0))(*rollout_runner)
+        rollout_runners = jax.vmap(
+            lambda v, w, x, y, z: (v, w, x, y, z), in_axes=(0, 0, None, None, 0)
+        )(*rollout_runner)
         return rollout_runners
 
     @partial(jax.jit, static_argnums=(0,))
@@ -657,11 +662,24 @@ class PPOAgentBase(ABC):
 
         log_prob = self._log_prob(actor_training, lax.stop_gradient(actor_training.params), obs, action)
 
-        rng, next_obs, next_envstate, reward, terminated, info = self._env_step(rng, envstate, action)
+        rng, next_obs, next_envstate, reward, done, info = self._env_step(rng, envstate, action)
 
         step_runner = (next_envstate, next_obs, actor_training, critic_training, rng)
 
-        transition = self._make_transition(obs, action, value, log_prob, reward, next_obs, terminated, info)
+        terminated = info["terminated"]
+        truncated = info["truncated"]
+
+        transition = self._make_transition(
+            obs=obs,
+            action=action,
+            value=value,
+            log_prob=log_prob,
+            reward=reward,
+            next_obs=next_obs,
+            terminated=terminated,
+            truncated=truncated,
+            info=info
+        )
 
         return step_runner, transition
 
@@ -1192,7 +1210,7 @@ class PPOAgentBase(ABC):
             jnp.zeros(1, dtype=jnp.bool).squeeze(),
             jnp.zeros(1).squeeze(),
             jnp.zeros(1).squeeze(),
-            rng
+            rng,
         )
         eval_runners = jax.vmap(
             lambda s, t, u, v, w, x, y, z: (s, t, u, v, w, x, y, z),
@@ -1210,7 +1228,7 @@ class PPOAgentBase(ABC):
             truncated: Bool[Array, "1"],
             final_rewards: Float[Array, "1"],
             returns: Float[Array, "1"]
-    ) -> Dict[str, Float[Array, "1"]]:
+    ) -> Dict[str, Float[Array, "1"] | Bool[Array, "1"]]:
         """
         Evaluate the metrics.
         :param terminated: Whether the episode finished by termination.
@@ -1242,9 +1260,10 @@ class PPOAgentBase(ABC):
 
         action = self.policy(actor_training, obs)
 
-        rng, next_obs, next_envstate, reward, terminated, info = self._env_step(rng, envstate, action)
-        truncated = info["truncated"] if "truncated" in list(info.keys()) else jnp.asarray([0], dtype=jnp.bool)
-        truncated = truncated.squeeze()
+        rng, next_obs, next_envstate, reward, done, info = self._env_step(rng, envstate, action)
+
+        terminated = info["terminated"]
+        truncated = info["truncated"]
 
         returns += reward
 

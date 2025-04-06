@@ -28,10 +28,13 @@ class Transition(NamedTuple):
     reward: Float[Array, "1"]
 
     """Next environment state"""
-    next_state: Float[Array, "state_size"]
+    next_obs: Float[Array, "state_size"]
 
     """Boolean variable indicating episode termination"""
     terminated: Bool[Array, "1"]
+
+    """Boolean variable indicating episode truncation"""
+    truncation: Bool[Array, "1"]
 
     """Dictionary of additional information about step"""
     info: Dict[str, float | bool]
