@@ -510,7 +510,7 @@ class IPPOBase(ABC):
         reset_rngs = jax.random.split(reset_rng, self.config.batch_size)
         runner_rngs = jax.random.split(runner_rng, self.config.batch_size)
 
-        _, obs, envstate = jax.vmap(self._reset)(reset_rngs)
+        _, obs, envstate = jax.vmap(self.env_reset)(reset_rngs)
 
         update_runner = Runner(
             actor_training=actor_training,
@@ -1225,7 +1225,7 @@ class IPPOBase(ABC):
         """
 
         rng_eval = jax.random.split(rng, n_episodes)
-        rng, obs, envstate = jax.vmap(self._reset)(rng_eval)
+        rng, obs, envstate = jax.vmap(self.env_reset)(rng_eval)
 
         eval_runner = (
             envstate,
