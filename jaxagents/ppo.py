@@ -402,10 +402,10 @@ class PPOAgentBase(ABC):
         """
 
         rng, step_rng = jax.random.split(rng)
-        next_obs, next_envstate, reward, terminated, info = \
-            self.env.step(step_rng, envstate, action.squeeze(), self.env_params)
+        next_obs, next_envstate, reward, done, info = (
+            self.env.step(step_rng, envstate, action.squeeze(), self.env_params))
 
-        return rng, next_obs, next_envstate, reward, terminated, info
+        return rng, next_obs, next_envstate, reward, done, info
 
 
     """ METHODS FOR TRAINING """

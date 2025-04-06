@@ -405,10 +405,10 @@ class IPPOBase(ABC):
         """
 
         rng, step_rng = jax.random.split(rng)
-        next_obs, next_envstate, reward, terminated, info = \
+        next_obs, next_envstate, reward, done, info = \
             self.env.step(step_rng, envstate, actions.squeeze(), self.env_params)
 
-        return rng, next_obs, next_envstate, reward, terminated, info
+        return rng, next_obs, next_envstate, reward, done, info
     
     """ METHODS FOR TRAINING """
 
@@ -1286,7 +1286,7 @@ class IPPOBase(ABC):
 
         actions = self.policy(actor_training, obs)
 
-        rng, next_obs, next_envstate, reward, terminated, info = self._env_step(rng, envstate, actions)
+        rng, next_obs, next_envstate, reward, done, info = self._env_step(rng, envstate, actions)
 
         terminated = info["terminated"]
         truncated = info["truncated"]
