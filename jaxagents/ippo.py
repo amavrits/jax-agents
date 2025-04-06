@@ -15,7 +15,7 @@ import distrax
 import optax
 from flax.core import FrozenDict
 
-from jaxagents.agent_utils.ippo_utils import *
+from jaxagents.utils.ippo_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from flax.training.train_state import TrainState
@@ -24,7 +24,7 @@ import orbax
 from abc import abstractmethod
 from functools import partial
 from abc import ABC
-from typing import Tuple, Dict, NamedTuple, Type, Union, Optional, ClassVar, List
+from typing import Tuple, Dict, NamedTuple, Union, Optional, ClassVar, List
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 import warnings
 import os
@@ -32,9 +32,9 @@ import shutil
 
 warnings.filterwarnings("ignore")
 
-STATE_TYPE = Float[Array, "state_size"]
-STEP_RUNNER_TYPE = Tuple[LogEnvState, STATE_TYPE, TrainState, TrainState, PRNGKeyArray]
-RETURNS_TYPE = Float[Array, "batch_size n_rollout n_actors"]
+StateType = Float[Array, "state_size"]
+StepRunnerType = Tuple[LogEnvState, StateType, TrainState, TrainState, PRNGKeyArray]
+ReturnsType = Float[Array, "batch_size n_rollout"]
 
 
 class IPPOBase(ABC):
@@ -279,8 +279,8 @@ class IPPOBase(ABC):
 
         return tx
 
-    def _init_network(self, rng: PRNGKeyArray, network: Type[flax.linen.Module])\
-            -> Tuple[Type[flax.linen.Module], FrozenDict]:
+    def _init_network(self, rng: PRNGKeyArray, network: type[flax.linen.Module])\
+            -> Tuple[type[flax.linen.Module], FrozenDict]:
         """
         Initialization of the actor or critic network.
         :param rng: Random key for initialization.
@@ -301,7 +301,7 @@ class IPPOBase(ABC):
         return network, params
 
     @partial(jax.jit, static_argnums=(0,))
-    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, Float[Array, "state_size"], Type[LogEnvState]]:
+    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, Float[Array, "state_size"], type[LogEnvState]]:
         """
         Environment reset.
         :param rng: Random key for initialization.
@@ -314,9 +314,9 @@ class IPPOBase(ABC):
         return rng, state, env_state
 
     @partial(jax.jit, static_argnums=(0,))
-    def _env_step(self, rng: PRNGKeyArray, env_state: Type[NamedTuple], actions: Union[Int[Array, "n_actors"], int])\
+    def _env_step(self, rng: PRNGKeyArray, env_state: type[NamedTuple], actions: Union[Int[Array, "n_actors"], int])\
             -> Tuple[
-                PRNGKeyArray, Float[Array, "state_size"], Type[LogEnvState], Union[float, Float[Array, "1"]],
+                PRNGKeyArray, Float[Array, "state_size"], type[LogEnvState], Union[float, Float[Array, "1"]],
                 Union[bool, Bool[Array, "1"]], dict
             ]:
         """
@@ -339,12 +339,12 @@ class IPPOBase(ABC):
 
     @partial(jax.jit, static_argnums=(0,))
     def _make_transition(self,
-                         state: STATE_TYPE,
+                         state: STATE_type,
                          actions: Int[Array, "n_actors"],
                          value: Float[Array, "n_actors"],
                          log_prob: Float[Array, "n_actors"],
                          reward: Float[Array, "n_actors"],
-                         next_state: STATE_TYPE,
+                         next_state: STATE_type,
                          terminated: Bool[Array, "1"],
                          info: Dict) -> Transition:
         """
@@ -394,7 +394,7 @@ class IPPOBase(ABC):
 
         return metric
 
-    def _create_training(self, rng: PRNGKeyArray, network: Type[flax.linen.Module], optimizer_params: OptimizerParams)\
+    def _create_training(self, rng: PRNGKeyArray, network: type[flax.linen.Module], optimizer_params: OptimizerParams)\
             -> TrainState:
         """
          Creates a TrainState object for the actor or the critic.
@@ -468,7 +468,7 @@ class IPPOBase(ABC):
 
     @partial(jax.jit, static_argnums=(0,))
     def _returns(self, traj_batch: Transition, last_next_state_value: Float[Array, "batch_size"], gamma: float,
-                 gae_lambda: float) -> RETURNS_TYPE:
+                 gae_lambda: float) -> RETURNS_type:
         """
         Calculates the returns of every step in the trajectory batch. To do so, it identifies episodes in the
         trajectories. Note that because lax.scan is used in sampling trajectories, they do not necessarily finish with
@@ -505,7 +505,7 @@ class IPPOBase(ABC):
         return returns
 
     @partial(jax.jit, static_argnums=(0,))
-    def _advantages(self, traj_batch: Transition, gamma: float, gae_lambda: float) -> RETURNS_TYPE:
+    def _advantages(self, traj_batch: Transition, gamma: float, gae_lambda: float) -> RETURNS_type:
         """
         Calculates the advantage of every step in the trajectory batch. To do so, it identifies episodes in the
         trajectories. Note that because lax.scan is used in sampling trajectories, they do not necessarily finish with
@@ -565,7 +565,7 @@ class IPPOBase(ABC):
         return rollout_runners
 
     @partial(jax.jit, static_argnums=(0,))
-    def _rollout(self, step_runner: STEP_RUNNER_TYPE, i_step: int) -> Tuple[STEP_RUNNER_TYPE, Transition]:
+    def _rollout(self, step_runner: STEP_RUNNER_type, i_step: int) -> Tuple[STEP_RUNNER_type, Transition]:
         """
         Evaluation of trajectory rollout. In each step the agent:
         - evaluates policy and value
@@ -596,7 +596,7 @@ class IPPOBase(ABC):
         return step_runner, transition
 
     @partial(jax.jit, static_argnums=(0,))
-    def _process_trajectory(self, update_runner: Runner, traj_batch: Transition, last_state: STATE_TYPE) -> Transition:
+    def _process_trajectory(self, update_runner: Runner, traj_batch: Transition, last_state: STATE_type) -> Transition:
         """
         Estimates the value and advantages for a batch of trajectories. For the last state of trajectory, which is not
         guaranteed to end with termination, the value is estimated using the critic network. This assumption has been
@@ -973,7 +973,7 @@ class IPPOBase(ABC):
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
                     action: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
-                    advantage: RETURNS_TYPE, hyperparams: HyperParameters) \
+                    advantage: RETURNS_type, hyperparams: HyperParameters) \
             -> Tuple[Union[float, Float[Array, "1"]], Float[Array, "1"]]:
         """
         Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
@@ -1031,23 +1031,23 @@ class IPPOBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _entropy(self, actor_training: TrainState, state: STATE_TYPE)-> Float[Array, "n_actors"]:
+    def _entropy(self, actor_training: TrainState, state: STATE_type)-> Float[Array, "n_actors"]:
         raise NotImplemented
 
     @abstractmethod
-    def _log_prob(self, actor_training: TrainState, params: Union[dict, FrozenDict], state: STATE_TYPE,
+    def _log_prob(self, actor_training: TrainState, params: Union[dict, FrozenDict], state: STATE_type,
                   actions: Int[Array, "n_actors"]) -> Float[Array, "n_actors"]:
         raise NotImplemented
 
     @abstractmethod
-    def _sample_actions(self, rng: PRNGKeyArray, actor_training: TrainState, state: STATE_TYPE)\
+    def _sample_actions(self, rng: PRNGKeyArray, actor_training: TrainState, state: STATE_type)\
         -> Union[Int[Array, "n_actors"], Float[Array, "n_actors"]]:
         raise NotImplemented
 
     """ METHODS FOR APPLYING AGENT"""
 
     @abstractmethod
-    def policy(self, actor_training: TrainState, state: STATE_TYPE) -> Int[Array, "1"]:
+    def policy(self, actor_training: TrainState, state: STATE_type) -> Int[Array, "1"]:
         """
         Evaluates the action of the optimal policy (argmax) according to the trained agent for the given state.
         :param state: The current state of the episode step in array format.
@@ -1265,7 +1265,7 @@ class IPPO(IPPOBase):
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
                     actions: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
-                    advantage: RETURNS_TYPE, hyperparams: HyperParameters) \
+                    advantage: RETURNS_type, hyperparams: HyperParameters) \
             -> Tuple[Union[float, Float[Array, "1"]], Float[Array, "1"]]:
         """
         Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
@@ -1311,7 +1311,7 @@ class IPPO(IPPOBase):
 
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                     targets: RETURNS_TYPE, hyperparams: HyperParameters) -> Float[Array, "1"]:
+                     targets: RETURNS_type, hyperparams: HyperParameters) -> Float[Array, "1"]:
         """
         Calculates the critic loss.
         :param training: The critic TrainState object.

@@ -10,7 +10,7 @@ from jax import lax
 from jax_tqdm import scan_tqdm
 import distrax
 from flax.core import FrozenDict
-from jaxagents.agent_utils.vpg_utils import *
+from jaxagents.utils.vpg_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from flax.training.train_state import TrainState

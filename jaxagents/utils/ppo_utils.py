@@ -5,7 +5,7 @@ from flax import struct
 from optax._src import base
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
-from typing import Dict, NamedTuple, Callable, Type, Union, Optional, Any, Tuple, List
+from typing import Dict, NamedTuple, Callable, Union, Optional, Any
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 from dataclasses import dataclass, field
 import os
@@ -96,10 +96,10 @@ class Runner:
     """
 
     """Training status (params, training step and optimizer) of the actor"""
-    actor_training: List[TrainState]
+    actor_training: TrainState
 
     """Training status (params, training step and optimizer) of the critic"""
-    critic_training: List[TrainState]
+    critic_training: TrainState
 
     """State of the environment"""
     env_state: LogEnvState
@@ -113,15 +113,15 @@ class Runner:
     """Training hyperparameters"""
     hyperparams: HyperParameters
 
-    """The loss value of the actors"""
+    """The loss value of the actor"""
     actor_loss: Float[Array, "1"]
 
-    """The loss value of the critics"""
+    """The loss value of the critic"""
     critic_loss: Float[Array, "1"]
 
 
-class IPPOConfig(NamedTuple):
-    """Configuration of the IPPO training algorithm agents, passed at initialization of instance."""
+class AgentConfig(NamedTuple):
+    """Configuration of the PPO agents, passed at initialization of instance."""
 
     """
     Number of training steps (not episodes).
@@ -138,21 +138,22 @@ class IPPOConfig(NamedTuple):
     """Number of steps to be collected when sampling trajectories"""
     rollout_length: int
 
+    """Architecture of the actor network"""
+    actor_network: type[flax.linen.Module]
+
+    """Architecture of the critic network"""
+    critic_network: type[flax.linen.Module]
+
     """Epochs for actor training per update step"""
     actor_epochs: int
 
     """Epochs for critic training per update step"""
     critic_epochs: int
 
-    """Architecture of the actor network"""
-    actor_network: Type[flax.linen.Module]
-
-    """Architecture of the critic network"""
-    critic_network: Type[flax.linen.Module]
-
     """Optax optimizer to be used in training. Giving only the optimizer class allows for initializing within the 
     self.train method and eventually running multiple combinations of the optimizer parameters via jax.vmap.
     """
+    # optimizer: Callable[[Dict], Optional[base.GradientTransformation]]
     optimizer: Callable[[Any], Optional[base.GradientTransformation]]
 
     """Frequency of evaluating the agent in update steps."""

@@ -40,7 +40,6 @@ class CartpolePPO(PPOAgent):
         return actions
 
 
-
 def plot_loss(training_metrics, eval_frequency, env_params, path):
     actor_loss = training_metrics["actor_loss"].squeeze()
     critic_loss = training_metrics["critic_loss"].squeeze()

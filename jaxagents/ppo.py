@@ -7,13 +7,11 @@ Author: Antonis Mavritsakis
 """
 
 import jax
-import jax.numpy as jnp
 from jax import lax
 from jax_tqdm import scan_tqdm
-import distrax
 import optax
 from flax.core import FrozenDict
-from jaxagents.agent_utils.ppo_utils import *
+from jaxagents.utils.ppo_utils import *
 from gymnax.environments.environment import Environment, EnvParams
 from gymnax.wrappers.purerl import FlattenObservationWrapper, LogWrapper, LogEnvState
 from flax.training.train_state import TrainState
@@ -22,7 +20,7 @@ import orbax
 from abc import abstractmethod
 from functools import partial
 from abc import ABC
-from typing import Tuple, Dict, NamedTuple, Type, Union, Optional, ClassVar, List
+from typing import Tuple, Dict, NamedTuple, Union, Optional, ClassVar, Annotated
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
 import warnings
 import os
@@ -30,10 +28,9 @@ import shutil
 
 warnings.filterwarnings("ignore")
 
-STATE_TYPE = Float[Array, "state_size"]
-STEP_RUNNER_TYPE = Tuple[LogEnvState, STATE_TYPE, TrainState, TrainState, PRNGKeyArray]
-PI_DIST_TYPE = distrax.Categorical
-RETURNS_TYPE = Float[Array, "batch_size n_rollout"]
+StateType = Float[Array, "state_size"]
+StepRunnerType = Tuple[LogEnvState, StateType, TrainState, TrainState, PRNGKeyArray]
+ReturnsType = Float[Array, "batch_size n_rollout"]
 
 
 class PPOAgentBase(ABC):
@@ -64,7 +61,7 @@ class PPOAgentBase(ABC):
     # restoring or passing a trained agent (from serial training or restoring)
     previous_training_max_step: ClassVar[int] = 0
 
-    def __init__(self, env: Type[Environment], env_params: EnvParams, config: AgentConfig,
+    def __init__(self, env: type[Environment], env_params: EnvParams, config: AgentConfig,
                  eval_during_training: bool = True) -> None:
         """
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
@@ -89,7 +86,7 @@ class PPOAgentBase(ABC):
 
     """ GENERAL METHODS"""
 
-    def _init_env(self, env: Type[Environment], env_params: EnvParams) -> None:
+    def _init_env(self, env: type[Environment], env_params: EnvParams) -> None:
         """
         Environment initialization.
         :param env: A gymnax or custom environment that inherits from the basic gymnax class.
@@ -274,8 +271,8 @@ class PPOAgentBase(ABC):
 
         return tx
 
-    def _init_network(self, rng: PRNGKeyArray, network: Type[flax.linen.Module])\
-            -> Tuple[Type[flax.linen.Module], FrozenDict]:
+    def _init_network(self, rng: PRNGKeyArray, network: type[flax.linen.Module])\
+            -> Tuple[type[flax.linen.Module], FrozenDict]:
         """
         Initialization of the actor or critic network.
         :param rng: Random key for initialization.
@@ -299,7 +296,7 @@ class PPOAgentBase(ABC):
         return network, params
 
     @partial(jax.jit, static_argnums=(0,))
-    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, Float[Array, "state_size"], Type[LogEnvState]]:
+    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, Float[Array, "state_size"], type[LogEnvState]]:
         """
         Environment reset.
         :param rng: Random key for initialization.
@@ -311,9 +308,9 @@ class PPOAgentBase(ABC):
         return rng, state, env_state
 
     @partial(jax.jit, static_argnums=(0,))
-    def _env_step(self, rng: PRNGKeyArray, env_state: Type[NamedTuple], action: Union[Int[Array, "1"], int]) -> \
+    def _env_step(self, rng: PRNGKeyArray, env_state: type[NamedTuple], action: Union[Int[Array, "1"], int]) -> \
         Tuple[
-            PRNGKeyArray, Float[Array, "state_size"], Type[LogEnvState], Union[float, Float[Array, "1"]],
+            PRNGKeyArray, Float[Array, "state_size"], type[LogEnvState], Union[float, Float[Array, "1"]],
             Union[bool, Bool[Array, "1"]], dict
         ]:
         """
@@ -337,12 +334,12 @@ class PPOAgentBase(ABC):
 
     @partial(jax.jit, static_argnums=(0,))
     def _make_transition(self,
-                         state: STATE_TYPE,
+                         state: StateType,
                          action: Int[Array, "1"],
                          value: Float[Array, "1"],
                          log_prob: Float[Array, "1"],
                          reward: Float[Array, "1"],
-                         next_state: STATE_TYPE,
+                         next_state: StateType,
                          terminated: Bool[Array, "1"],
                          info: Dict) -> Transition:
         """
@@ -392,7 +389,7 @@ class PPOAgentBase(ABC):
 
         return metric
 
-    def _create_training(self, rng: PRNGKeyArray, network: Type[flax.linen.Module], optimizer_params: OptimizerParams)\
+    def _create_training(self, rng: PRNGKeyArray, network: type[flax.linen.Module], optimizer_params: OptimizerParams)\
             -> TrainState:
         """
          Creates a TrainState object for the actor or the critic.
@@ -464,7 +461,7 @@ class PPOAgentBase(ABC):
 
     @partial(jax.jit, static_argnums=(0,))
     def _returns(self, traj_batch: Transition, last_next_state_value: Float[Array, "batch_size"], gamma: float,
-                 gae_lambda: float) -> RETURNS_TYPE:
+                 gae_lambda: float) -> ReturnsType:
         """
         Calculates the returns of every step in the trajectory batch. To do so, it identifies episodes in the
         trajectories. Note that because lax.scan is used in sampling trajectories, they do not necessarily finish with
@@ -501,7 +498,7 @@ class PPOAgentBase(ABC):
         return returns
 
     @partial(jax.jit, static_argnums=(0,))
-    def _advantages(self, traj_batch: Transition, gamma: float, gae_lambda: float) -> RETURNS_TYPE:
+    def _advantages(self, traj_batch: Transition, gamma: float, gae_lambda: float) -> ReturnsType:
         """
         Calculates the advantage of every step in the trajectory batch. To do so, it identifies episodes in the
         trajectories. Note that because lax.scan is used in sampling trajectories, they do not necessarily finish with
@@ -562,7 +559,7 @@ class PPOAgentBase(ABC):
         return rollout_runners
 
     @partial(jax.jit, static_argnums=(0,))
-    def _rollout(self, step_runner: STEP_RUNNER_TYPE, i_step: int) -> Tuple[STEP_RUNNER_TYPE, Transition]:
+    def _rollout(self, step_runner: StepRunnerType, i_step: int) -> Tuple[StepRunnerType, Transition]:
         """
         Evaluation of trajectory rollout. In each step the agent:
         - evaluates policy and value
@@ -594,7 +591,7 @@ class PPOAgentBase(ABC):
 
 
     @partial(jax.jit, static_argnums=(0,))
-    def _process_trajectory(self, update_runner: Runner, traj_batch: Transition, last_state: STATE_TYPE) -> Transition:
+    def _process_trajectory(self, update_runner: Runner, traj_batch: Transition, last_state: StateType) -> Transition:
         """
         Estimates the value and advantages for a batch of trajectories. For the last state of trajectory, which is not
         guaranteed to end with termination, the value is estimated using the critic network. This assumption has been
@@ -972,7 +969,7 @@ class PPOAgentBase(ABC):
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
                     action: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
-                    advantage: RETURNS_TYPE, hyperparams: HyperParameters) \
+                    advantage: ReturnsType, hyperparams: HyperParameters) \
             -> Tuple[Union[float, Float[Array, "1"]], Float[Array, "1"]]:
         """
         Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
@@ -1030,23 +1027,23 @@ class PPOAgentBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _entropy(self, training: TrainState, state: STATE_TYPE)-> Float[Array, "1"]:
+    def _entropy(self, training: TrainState, state: StateType)-> Float[Array, "1"]:
         raise NotImplemented
 
     @abstractmethod
-    def _log_prob(self, training: TrainState, params: Union[dict, FrozenDict], state: STATE_TYPE,
+    def _log_prob(self, training: TrainState, params: Union[dict, FrozenDict], state: StateType,
                   action: Int[Array, "1"]) -> Float[Array, "n_actors"]:
         raise NotImplemented
 
     @abstractmethod
-    def _sample_action(self, rng: PRNGKeyArray, training: TrainState, state: STATE_TYPE)\
+    def _sample_action(self, rng: PRNGKeyArray, training: TrainState, state: StateType)\
         -> Union[Int[Array, "1"], Float[Array, "1"]]:
         raise NotImplemented
 
     """ METHODS FOR APPLYING AGENT"""
 
     @abstractmethod
-    def policy(self, training: TrainState, state: STATE_TYPE) -> Int[Array, "1"]:
+    def policy(self, training: TrainState, state: StateType) -> Int[Array, "1"]:
         """
         Evaluates the action of the optimal policy (argmax) according to the trained agent for the given state.
         :param state: The current state of the episode step in array format.
@@ -1266,7 +1263,7 @@ class PPOAgent(PPOAgentBase):
     @partial(jax.jit, static_argnums=(0,))
     def _actor_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
                     action: Float[Array, "n_rollout batch_size"], log_prob_old: Float[Array, "n_rollout batch_size"],
-                    advantage: RETURNS_TYPE, hyperparams: HyperParameters) \
+                    advantage: ReturnsType, hyperparams: HyperParameters) \
             -> Tuple[Union[float, Float[Array, "1"]], Float[Array, "1"]]:
         """
         Calculates the actor loss. For the REINFORCE agent, the advantage function is the difference between the
@@ -1311,7 +1308,7 @@ class PPOAgent(PPOAgentBase):
 
     @partial(jax.jit, static_argnums=(0,))
     def _critic_loss(self, training: TrainState, state: Float[Array, "n_rollout batch_size state_size"],
-                     targets: RETURNS_TYPE, hyperparams: HyperParameters) -> Float[Array, "1"]:
+                     targets: ReturnsType, hyperparams: HyperParameters) -> Float[Array, "1"]:
         """
         Calculates the critic loss.
         :param training: The critic TrainState object.
@@ -1399,6 +1396,6 @@ class PPOAgent(PPOAgentBase):
         )
 
 
-
 if __name__ == "__main__":
     pass
+
