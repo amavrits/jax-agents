@@ -63,21 +63,27 @@ CriticLossInputType = Tuple[
 """
 NOTE ABOUT TERMINATION, TRUNCATION AND EPISODE COMPLETION:
 
-An episode in complete upon termination (an agent succeeds or fails) or truncation (maximum step in episode reached). In
-the union of the two event, the environment step return done. However, gymnax doesn't guarantee that a way of
-distinguishing truncation and termination is provided. Mind that gymnax resets the environment in the step function upon
-done. This is important for enhancing training; in case of long episodes, truncating before termination and resetting
-can improve exploration of the observation domain.
- 
-Using the truncation_utils.TruncationWrapper, a distinction is made. The environment step returns the variable for done,
-while info return information about termination and truncation. The done variable resets the environment if needed. The
-termination and truncation information is passed to the batch of trajectories for estimation of returns and advantages.
-With this implementation, no further calculations are required; now terminated reflects situation where true episode 
-termination is reached (e.g. the pole falls in Cartpole-v1, or the agents succeeds in keeping the pole for 500 steps).
-For example, if in Cartpole-v1 the maximum steps per episode where 450 (lower than the 500 steps needed for the agent to
-succeed), termination is only true when the pole falls. This can be checked by comparing the terminated and truncated
-trajectories. In any case, the environment is reset whenever any of them is true.
+An episode ends either by termination (e.g., agent fails or succeeds) or by truncation (e.g., reaching the max episode
+length). In both cases, the environment returns `done = True`, and Gymnax resets the environment automatically inside
+the `step` function.
+
+However, Gymnax does not guarantee a distinction between termination and truncation, which is often useful for training
+and analysis. This wrapper adds that distinction.
+
+Specifically:
+- `done` is `True` when either termination or truncation occurs (preserving Gymnax behavior).
+- The `info` dictionary includes two boolean flags: `terminated` and `truncated`.
+- These are used in trajectory processing (e.g., return and advantage estimation) to provide better learning signals.
+
+This is especially valuable when episodes are long and agents benefit from periodic resets. For example, in Cartpole-v1,
+the goal is to keep the pole balanced for 500 steps. If we truncate episodes at 450 steps:
+- `terminated = True` only when the pole falls.
+- `truncated = True` when the agent reaches 450 steps without failure.
+
+In both cases, the environment resets, but this wrapper allows distinguishing between a failure and a timeout, which
+can significantly enhance learning and performance diagnostics.
 """
+
 
 class PPOAgentBase(ABC):
     """
@@ -414,8 +420,6 @@ class PPOAgentBase(ABC):
             reward: Float[Array, "1"],
             next_obs: ObsType,
             terminated: Bool[Array, "1"],
-            truncated: Bool[Array, "1"],
-            info: Dict[str, float | bool]
     ) -> Transition:
         """
         Creates a transition object based on the input and output of an episode step.
@@ -426,13 +430,11 @@ class PPOAgentBase(ABC):
         :param reward: The collected reward after executing the action.
         :param next_obs: The next obs of the episode step in array format.
         :param terminated: Episode termination.
-        :param truncated: Episode truncation.
-        :param info: Dictionary of optional additional information.
         :return: A transition object storing information about the state before and after executing the episode step,
                  the executed action, the collected reward, episode termination and optional additional information.
         """
 
-        transition = Transition(obs.squeeze(), action, value, log_prob, reward, next_obs, terminated, truncated, info)
+        transition = Transition(obs.squeeze(), action, value, log_prob, reward, next_obs, terminated)
         transition = jax.tree_util.tree_map(lambda x: jnp.expand_dims(x, axis=0), transition)
 
         return transition
@@ -699,7 +701,6 @@ class PPOAgentBase(ABC):
         step_runner = (next_envstate, next_obs, actor_training, critic_training, rng)
 
         terminated = info["terminated"]
-        truncated = info["truncated"]
 
         transition = self._make_transition(
             obs=obs,
@@ -709,8 +710,6 @@ class PPOAgentBase(ABC):
             reward=reward,
             next_obs=next_obs,
             terminated=terminated,
-            truncated=truncated,
-            info=info
         )
 
         return step_runner, transition

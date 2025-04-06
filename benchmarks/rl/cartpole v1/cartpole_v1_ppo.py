@@ -106,8 +106,7 @@ if __name__ == '__main__':
 
     """Train agent"""
     t0 = time.time()
-    # runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
-    with jax.disable_jit(True): runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
+    runner, training_metrics = jax.block_until_ready(agent.train(rng_train, hyperparams))
     print(f"time: {time.time() - t0:.2f} s")
 
     """ Post-process results"""

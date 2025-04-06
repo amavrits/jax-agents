@@ -130,8 +130,8 @@ if __name__ == "__main__":
         checkpoint_dir = os.path.join("/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting_2_players", folder, "checkpoints")
 
     config = AgentConfig(
-        n_steps=5_000,
-        batch_size=256,
+        n_steps=1_000,
+        batch_size=64,
         minibatch_size=16,
         rollout_length=int(env_params.max_time//env_params.dt+1),
         actor_epochs=10,
@@ -139,6 +139,7 @@ if __name__ == "__main__":
         actor_network=PGActorContinuous,
         critic_network=PGCritic,
         optimizer=optax.adam,
+        max_episode_steps=22,
         eval_frequency=100,
         eval_rng=jax.random.PRNGKey(18),
         n_evals=100,
@@ -207,6 +208,6 @@ if __name__ == "__main__":
     env.animate(render_metrics["time"].squeeze(), render_metrics["positions"], render_metrics["actions"],
                 render_metrics["values"], env_params, gif_path, export_pdf=True)
 
-    with open(r"../../../../hunting-game/training/models/pretrained/actor_{n_steps}.pkl".format(n_steps=config.n_steps), 'wb') as handle:
-        pickle.dump(runner.actor_training.params, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    # with open(r"../../../../hunting-game/training/models/pretrained/actor_{n_steps}.pkl".format(n_steps=config.n_steps), 'wb') as handle:
+    #     pickle.dump(runner.actor_training.params, handle, protocol=pickle.HIGHEST_PROTOCOL)
 

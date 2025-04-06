@@ -1,3 +1,4 @@
+import jax
 from flax.struct import dataclass
 import jax.numpy as jnp
 from gymnax.environments.environment import Environment, EnvParams, EnvState

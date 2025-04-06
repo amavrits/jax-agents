@@ -33,12 +33,6 @@ class Transition(NamedTuple):
     """Boolean variable indicating episode termination"""
     terminated: Bool[Array, "1"]
 
-    """Boolean variable indicating episode truncation"""
-    truncated: Bool[Array, "1"]
-
-    """Dictionary of additional information about step"""
-    info: Dict[str, float | bool]
-
     """Value of next state"""
     next_value: Optional[Float[Array, "1"]] = None
 
