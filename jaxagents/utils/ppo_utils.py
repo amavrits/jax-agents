@@ -172,6 +172,9 @@ class AgentConfig(NamedTuple):
     """Whether an agent should be restored from training checkpoints, for continuing training or deploying."""
     restore_agent: bool = False
 
+    "Maximum steps per episode for flagging episode truncation"
+    max_episode_steps: int = np.inf
+
 
 @struct.dataclass
 class MetricStats:

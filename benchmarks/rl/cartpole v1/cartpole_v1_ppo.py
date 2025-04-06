@@ -59,8 +59,6 @@ if __name__ == '__main__':
 
     env, env_params = gymnax.make("CartPole-v1")
 
-    env = TruncationWrapper(env, 450)
-
     if sys.platform == "win32":
         checkpoint_dir = 'C:\\Users\\mavritsa\\Repositories\\jax-agents\\benchmarks\\rl\\cartpole v1\\checkpoints\\ppo'
     else:
@@ -77,6 +75,7 @@ if __name__ == '__main__':
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
+        max_episode_steps=450,
         eval_frequency=100,
         eval_rng=jax.random.PRNGKey(18),
         # checkpoint_dir=checkpoint_dir,

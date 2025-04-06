@@ -132,6 +132,7 @@ class PPOAgentBase(ABC):
         :return:
         """
 
+        env = TruncationWrapper(env, self.config.max_episode_steps)
         env = FlattenObservationWrapper(env)
         self.env = LogWrapper(env)
         self.env_params = env_params
