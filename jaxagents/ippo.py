@@ -277,7 +277,7 @@ class IPPOBase(ABC):
         empty_critic_training = self._create_empty_trainstate(self.config.critic_network)
 
         # Get some state and envstate for restoring the checkpoint.
-        _, obs, envstate = self._reset(jax.random.PRNGKey(1))
+        _, obs, envstate = self.env_reset(jax.random.PRNGKey(1))
 
         empty_runner = Runner(
             actor_training=empty_actor_training,
@@ -360,7 +360,7 @@ class IPPOBase(ABC):
         rng, *_rng = jax.random.split(rng, 3)
         dummy_reset_rng, network_init_rng = _rng
 
-        _, dummy_obs, _ = self._reset(dummy_reset_rng)
+        _, dummy_obs, _ = self.env_reset(dummy_reset_rng)
         init_x = jnp.zeros((1, dummy_obs.size))
 
         params = network.init(network_init_rng, init_x)
@@ -368,7 +368,7 @@ class IPPOBase(ABC):
         return network, params
 
     @partial(jax.jit, static_argnums=(0,))
-    def _reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, ObsType, LogEnvState | EnvState | TruncationEnvState]:
+    def env_reset(self, rng: PRNGKeyArray) -> Tuple[PRNGKeyArray, ObsType, LogEnvState | EnvState | TruncationEnvState]:
         """
         Environment reset.
         :param rng: Random key for initialization.
@@ -381,7 +381,7 @@ class IPPOBase(ABC):
         return rng, obs, envstate
 
     @partial(jax.jit, static_argnums=(0,))
-    def _env_step(
+    def env_step(
             self,
             rng: PRNGKeyArray,
             envstate: LogEnvState | EnvState | TruncationEnvState,
@@ -687,7 +687,7 @@ class IPPOBase(ABC):
 
         log_prob = self._log_prob(actor_training, lax.stop_gradient(actor_training.params), obs, actions)
 
-        rng, next_obs, next_envstate, reward, terminated, info = self._env_step(rng, envstate, actions)
+        rng, next_obs, next_envstate, reward, terminated, info = self.env_step(rng, envstate, actions)
 
         step_runner = (next_envstate, next_obs, actor_training, critic_training, rng)
 
@@ -1286,7 +1286,7 @@ class IPPOBase(ABC):
 
         actions = self.policy(actor_training, obs)
 
-        rng, next_obs, next_envstate, reward, done, info = self._env_step(rng, envstate, actions)
+        rng, next_obs, next_envstate, reward, done, info = self.env_step(rng, envstate, actions)
 
         terminated = info["terminated"]
         truncated = info["truncated"]

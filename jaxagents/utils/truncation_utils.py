@@ -1,55 +1,56 @@
 import jax
-from flax.struct import dataclass
 import jax.numpy as jnp
+from flax import struct
+from gymnax.environments import spaces
 from gymnax.environments.environment import Environment, EnvParams, EnvState
-from gymnax.wrappers.purerl import LogEnvState
-from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
+from gymnax.environments.classic_control.cartpole import CartPole
 from typing import Tuple, Dict
+from jaxtyping import Int, Float, Bool, Array
 
-
-@dataclass
+@struct.dataclass
 class TruncationEnvState:
-    envstate: EnvState | LogEnvState
-    steps: int
+    envstate: EnvState
+    step: int
 
 
 class TruncationWrapper(Environment):
+    def __init__(self, env: Environment, max_steps: int = 500):
+        self._env = env
+        self.max_steps = max_steps
 
-    def __init__(self, env: Environment, max_episode_steps: int = jnp.inf):
-        self.env = env
-        self.max_steps = max_episode_steps
+    def reset(self, rng: jax.random.PRNGKey, params: EnvParams) -> Tuple[jnp.ndarray, TruncationEnvState]:
+        obs, envstate = self._env.reset(rng, params)
+        return obs, TruncationEnvState(envstate=envstate, step=0)
 
-    def reset(self, rng: PRNGKeyArray, params: EnvParams) -> Tuple[Float[Array, "obs_size"], TruncationEnvState]:
-        obs, envstate = self.env.reset(rng, params)
-        return obs, TruncationEnvState(envstate, steps=0)
-
-    def step(self,
-             rng: PRNGKeyArray,
-             envstate: TruncationEnvState,
-             action: Int[Array, "n_actors"] | Float[Array, "n_actors"],
-             params: EnvParams
-             ) -> Tuple[
-        Float[Array, "obs_size"],
+    def step(
+            self,
+            rng: jax.random.PRNGKey,
+            envstate: TruncationEnvState,
+            action: Int[Array, "n_actors"] | Float[Array, "n_actors"],
+            params: EnvParams
+    ) -> Tuple[
+        Float[Array, "state_size"],
         TruncationEnvState,
         Float[Array, "n_agents"],
         Bool[Array, "1"],
-        Dict[str, bool | float]
+        Dict[str, float | bool]
     ]:
 
-        obs, next_envstate, reward, terminated, info = self.env.step(rng, envstate.envstate, action, params)
+        next_obs, next_envstate, reward, done, info = self._env.step(rng, envstate.envstate, action, params)
 
-        steps = envstate.steps + 1
-        truncated = jnp.greater_equal(steps, self.max_steps)
-        info.update({"terminated": terminated})
-        info.update({"truncated": truncated})
+        next_step = envstate.step + 1
+        truncated = jnp.greater_equal(next_step, self.max_steps)
 
-        done = jnp.logical_or(terminated, truncated)
+        terminated = done  # Termination is determined by whether the environment is done (no other info is available)
+        truncated = jnp.logical_and(done, truncated)
 
-        return (
-            obs,
-            TruncationEnvState(next_envstate, steps),
-            reward,
-            done,
-            info
-        )
+        next_step = jnp.where(done, 0, next_step)
+
+        info = info.copy()
+        info["terminated"] = terminated
+        info["truncated"] = truncated
+
+        next_envstate = TruncationEnvState(envstate=next_envstate, step=next_step)
+
+        return next_obs, next_envstate, reward, done, info
 
