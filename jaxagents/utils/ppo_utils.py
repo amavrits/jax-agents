@@ -167,7 +167,7 @@ class AgentConfig(NamedTuple):
     restore_agent: bool = False
 
     "Maximum steps per episode for flagging episode truncation"
-    max_episode_steps: int = np.inf
+    max_episode_steps: int = 9999
 
 
 @struct.dataclass

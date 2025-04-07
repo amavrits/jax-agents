@@ -687,7 +687,7 @@ class IPPOBase(ABC):
 
         log_prob = self._log_prob(actor_training, lax.stop_gradient(actor_training.params), obs, actions)
 
-        rng, next_obs, next_envstate, reward, terminated, info = self.env_step(rng, envstate, actions)
+        rng, next_obs, next_envstate, reward, done, info = self.env_step(rng, envstate, actions)
 
         step_runner = (next_envstate, next_obs, actor_training, critic_training, rng)
 
