@@ -104,9 +104,12 @@ def export_csv(render_metrics, csv_path):
             render_metrics["next_positions"].reshape(n_eval_steps, 4),
             render_metrics["reward"],
             render_metrics["terminated"],
+            render_metrics["truncated"],
+            render_metrics["done"],
+            render_metrics["distance"],
         ], 2),
     columns=["Step", "Time"]+["Positions_"+str(i+1) for i in range(4)]+["Action1", "Action2", "Value1", "Value2"]+
-            ["Next_positions_" + str(i + 1) for i in range(4)]+["Reward1", "Reward2", "Terminated"]
+            ["Next_positions_" + str(i + 1) for i in range(4)]+["Reward1", "Reward2", "Terminated", "Truncated", "Done", "distance"]
     )
     df.to_csv(csv_path, index=False)
 
@@ -130,16 +133,16 @@ if __name__ == "__main__":
         checkpoint_dir = os.path.join("/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting_2_players", folder, "checkpoints")
 
     config = AgentConfig(
-        n_steps=1_000,
-        batch_size=64,
+        n_steps=5_000,
+        batch_size=128,
         minibatch_size=16,
-        rollout_length=int(env_params.max_time//env_params.dt+1),
+        rollout_length=int(env_params.max_time//env_params.dt)+1,
         actor_epochs=10,
         critic_epochs=10,
         actor_network=PGActorContinuous,
         critic_network=PGCritic,
         optimizer=optax.adam,
-        max_episode_steps=22,
+        # max_episode_steps=200,  # <--- Test if truncation works as expected (check log.csv)
         eval_frequency=100,
         eval_rng=jax.random.PRNGKey(18),
         n_evals=100,
@@ -170,44 +173,55 @@ if __name__ == "__main__":
 
     training_plot_path = os.path.join(fig_folder, "ippo_policy_training_{steps}steps.png".format(steps=config.n_steps))
     plot_training(training_metrics, config.eval_frequency, env_params, training_plot_path)
+    print("Exported policy plot!")
 
     training_plot_path = os.path.join(fig_folder, "ippo_losses_{steps}steps.png".format(steps=config.n_steps))
     plot_loss(training_metrics, config.eval_frequency, env_params, training_plot_path)
+    print("Exported loss plot!")
 
     def f(runner, i):
-        rng, actor_training, critic_training, state, state_env = runner
-        actions = ippo.policy(actor_training, state)
-        values = critic_training.apply_fn(critic_training.params, state)
-        rng, rng_step = jax.random.split(rng)
-        next_state, next_env_state, reward, terminated, info = env.step(rng_step, state_env, actions, env_params)
-        runner = rng, actor_training, critic_training, next_state, next_env_state
+        rng, actor_training, critic_training, obs, envstate = runner
+        actions = ippo.policy(actor_training, obs)
+        values = critic_training.apply_fn(critic_training.params, obs)
+        rng, next_obs, next_envstate, reward, done, info = ippo.env_step(rng, envstate, actions)
+        terminated = info["terminated"]
+        truncated = info["truncated"]
+        runner = rng, actor_training, critic_training, next_obs, next_envstate
         metrics = {
-            "step": i,
-            "time": state_env.time,
-            "positions": state_env.positions,
+            "step": envstate.step,
+            "time": envstate.envstate.time,
+            "positions": envstate.envstate.positions,
             "actions": actions,
-            "next_positions": next_env_state.positions,
+            "next_positions": next_envstate.envstate.positions,
             "reward": reward,
             "terminated": terminated,
+            "truncated": truncated,
+            "done": jnp.logical_or(terminated, truncated),
+            "distance": jnp.linalg.norm(jnp.diff(envstate.envstate.positions, axis=0)),
             "values": values,
         }
         return runner, metrics
 
     n_eval_steps = 500
-    rng = jax.random.PRNGKey(43)
-    state, state_env = env.reset(rng, env_params)
-    render_runner = rng, runner.actor_training, runner.critic_training, state, state_env
+    rng = jax.random.PRNGKey(18)
+    rng, obs, envstate = ippo.env_reset(rng)
+    render_runner = rng, runner.actor_training, runner.critic_training, obs, envstate
     render_runner, render_metrics = jax.lax.scan(scan_tqdm(n_eval_steps)(f), render_runner, jnp.arange(n_eval_steps))
     render_metrics = {key: np.asarray(val) for (key, val) in render_metrics.items()}
 
-    csv_path = os.path.join(fig_folder, "details.csv")
+    csv_path = os.path.join(fig_folder, "log.csv")
     export_csv(render_metrics, csv_path)
-    print("Exported csv")
+    print("Exported evaluation log!")
 
     gif_path = os.path.join(fig_folder, "ippo_{steps}steps.gif".format(steps=config.n_steps))
-    env.animate(render_metrics["time"].squeeze(), render_metrics["positions"], render_metrics["actions"],
-                render_metrics["values"], env_params, gif_path, export_pdf=True)
-
-    # with open(r"../../../../hunting-game/training/models/pretrained/actor_{n_steps}.pkl".format(n_steps=config.n_steps), 'wb') as handle:
-    #     pickle.dump(runner.actor_training.params, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    env.animate(
+        render_metrics["time"].squeeze(),
+        render_metrics["positions"],
+        render_metrics["actions"],
+        render_metrics["values"],
+        env_params,
+        gif_path,
+        export_pdf=False
+    )
+    print("Exported animation!")
 
