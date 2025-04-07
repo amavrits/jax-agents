@@ -7,6 +7,18 @@ from gymnax.environments.classic_control.cartpole import CartPole
 from typing import Tuple, Dict
 from jaxtyping import Int, Float, Bool, Array
 
+
+"""
+IMPORTANT NOTE RESETTING TRUNCATION:
+In order to truncation to behave as expected, the gymnax.environment.Environment parent must be able to reset within the
+step() method. Also, the TruncationWrapper inherits gymnax.environment.Environment directly. Thus, the truncation
+wrapper needs to call the reset_env() and step_env() methods of the environment, not the reset() and step() methods,
+which would lead to the respective methods of the gymnax.environment.Environment inheritance of the environment. This is 
+confusing, but many premade environments already inherit from gymnax, so the TruncationWrapper needs to work around in
+this way.
+"""
+
+
 @struct.dataclass
 class TruncationEnvState:
     envstate: EnvState
@@ -18,11 +30,11 @@ class TruncationWrapper(Environment):
         self._env = env
         self.max_steps = max_steps
 
-    def reset(self, rng: jax.random.PRNGKey, params: EnvParams) -> Tuple[jnp.ndarray, TruncationEnvState]:
-        obs, envstate = self._env.reset(rng, params)
+    def reset_env(self, rng: jax.random.PRNGKey, params: EnvParams) -> Tuple[jnp.ndarray, TruncationEnvState]:
+        obs, envstate = self._env.reset_env(rng, params)
         return obs, TruncationEnvState(envstate=envstate, step=0)
 
-    def step(
+    def step_env(
             self,
             rng: jax.random.PRNGKey,
             envstate: TruncationEnvState,
@@ -37,14 +49,12 @@ class TruncationWrapper(Environment):
     ]:
 
         # Termination is determined by whether the environment is done (no other info is available)
-        next_obs, next_envstate, reward, terminated, info = self._env.step(rng, envstate.envstate, action, params)
+        next_obs, next_envstate, reward, terminated, info = self._env.step_env(rng, envstate.envstate, action, params)
 
         next_step = envstate.step + 1
 
         truncated = jnp.greater_equal(next_step, self.max_steps)
         done = jnp.logical_or(terminated, truncated)
-
-        next_step = jnp.where(done, 0, next_step)
 
         info = info.copy()
         info["terminated"] = terminated

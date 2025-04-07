@@ -117,7 +117,7 @@ class HuntingBase(environment.Environment):
         next_state = EnvState(time=next_time, positions=next_positions, directions=next_directions, distance=next_distance, action_mask=next_action_mask)
 
         prey_caught = jnp.less_equal(next_distance, env_params.predator_radius)
-        truncated = jnp.greater_equal(time, env_params.max_time)  # Truncation = time over
+        truncated = jnp.greater_equal(time, env_params.max_time-env_params.dt*0.01)  # Truncation = time over
         terminated = jnp.logical_or(prey_caught, truncated)
 
         # movement = jnp.linalg.norm(next_positions-positions, axis=-1)
