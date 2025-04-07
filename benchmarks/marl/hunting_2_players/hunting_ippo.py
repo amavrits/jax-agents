@@ -133,8 +133,8 @@ if __name__ == "__main__":
         checkpoint_dir = os.path.join("/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/marl/hunting_2_players", folder, "checkpoints")
 
     config = AgentConfig(
-        n_steps=50,
-        batch_size=256,
+        n_steps=5_000,
+        batch_size=128,
         minibatch_size=16,
         rollout_length=int(env_params.max_time//env_params.dt)+1,
         actor_epochs=10,
@@ -203,7 +203,7 @@ if __name__ == "__main__":
         return runner, metrics
 
     n_eval_steps = 500
-    rng = jax.random.PRNGKey(19)
+    rng = jax.random.PRNGKey(18)
     rng, obs, envstate = ippo.env_reset(rng)
     render_runner = rng, runner.actor_training, runner.critic_training, obs, envstate
     render_runner, render_metrics = jax.lax.scan(scan_tqdm(n_eval_steps)(f), render_runner, jnp.arange(n_eval_steps))
