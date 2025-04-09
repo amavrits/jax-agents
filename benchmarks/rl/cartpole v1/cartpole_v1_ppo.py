@@ -4,9 +4,8 @@ import distrax
 import jax
 import optax
 import gymnax
-import numpy as np
-from jaxagents.ppo import PPOAgent, TrainState, STATE_TYPE, AgentConfig, OptimizerParams, HyperParameters
-from jaxtyping import Float, Int, Array, PRNGKeyArray
+from jaxagents.ppo import *
+from jaxtyping import Float, Array, PRNGKeyArray
 from cartpole_nn_gallery import *
 from functools import partial
 import sys
@@ -16,29 +15,28 @@ import matplotlib.pyplot as plt
 class CartpolePPO(PPOAgent):
 
     @partial(jax.jit, static_argnums=(0,))
-    def _entropy(self, training: TrainState, state: STATE_TYPE)-> Float[Array, "1"]:
+    def _entropy(self, training: TrainState, state: ObsType)-> Float[Array, "1"]:
         logits = training.apply_fn(training.params, state).squeeze()
         pis = distrax.Categorical(logits=logits)
         return pis.entropy()
 
     @partial(jax.jit, static_argnums=(0, 4,))
-    def _log_prob(self, training: TrainState, params: dict, state: STATE_TYPE, actions: Int[Array, "1"])\
+    def _log_prob(self, training: TrainState, params: dict, state: ObsType, actions: ActionType)\
             -> Float[Array, "1"]:
         logits = training.apply_fn(params, state).squeeze()
         log_probs = distrax.Categorical(logits=logits).log_prob(actions)
         return log_probs
 
     @partial(jax.jit, static_argnums=(0,))
-    def policy(self, training: TrainState, state: STATE_TYPE) -> Float[Array, "1"]:
+    def policy(self, training: TrainState, state: ObsType) -> ActionType:
         logits = training.apply_fn(jax.lax.stop_gradient(training.params), state).squeeze()
         return jnp.argmax(logits)
 
     @partial(jax.jit, static_argnums=(0,))
-    def _sample_action(self, rng: PRNGKeyArray, training: TrainState, state: STATE_TYPE) -> Float[Array, "1"]:
+    def _sample_action(self, rng: PRNGKeyArray, training: TrainState, state: ObsType) -> ActionType:
         logits = training.apply_fn(jax.lax.stop_gradient(training.params), state).squeeze()
         actions = distrax.Categorical(logits=logits).sample(seed=rng)
         return actions
-
 
 
 def plot_loss(training_metrics, eval_frequency, env_params, path):
@@ -77,9 +75,11 @@ if __name__ == '__main__':
         actor_epochs=10,
         critic_epochs=10,
         optimizer=optax.adam,
+        max_episode_steps=550,
         eval_frequency=100,
         eval_rng=jax.random.PRNGKey(18),
-        checkpoint_dir=checkpoint_dir,
+        # checkpoint_dir=checkpoint_dir,
+        checkpoint_dir=None,
         n_evals=100,
         restore_agent=False
     )

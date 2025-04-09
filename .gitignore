@@ -161,9 +161,6 @@ cython_debug/
 #.idea/
 !/env/
 checkpoints/
-.pdf
-/benchmarks/marl/hunting_2_players/mlp/prey3.0_pred1.0_maxtime2.0/figures/ippo_5000steps.pdf
-/benchmarks/marl/hunting_3_players/mlp/prey3.0_pred1_1.0_pred2_1.0_maxtime2.0/figures/ippo_5000steps.pdf
-/venv_wsl/bin/python
-/venv_wsl/bin/python3
-/venv_wsl/bin/python3.11
+*.pdf
+*.gif
+*.png
