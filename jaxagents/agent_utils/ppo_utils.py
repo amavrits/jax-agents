@@ -1,73 +1,77 @@
+import numpy as np
+import jax.numpy as jnp
 from flax.training.train_state import TrainState
 from flax import struct
 from optax._src import base
 import flax.linen
 from gymnax.wrappers.purerl import LogEnvState
-import numpy as np
-from numpy.typing import NDArray
-from typing import Dict, NamedTuple, Callable, Optional, Any, List, Annotated
+from typing import Dict, NamedTuple, Callable, Type, Union, Optional, Any
 from jaxtyping import Array, Float, Int, Bool, PRNGKeyArray
+from dataclasses import dataclass, field
 import os
 
 
 class Transition(NamedTuple):
     """Template for step transition"""
     """Environment state"""
-    obs: Float[Array, "obs_size"]
+    state: Float[Array, "state_size"]
 
     """Action selecetd by agent"""
-    action: Int[Array, "n_actors"] | Float[Array, "n_actors"]
+    action: Int[Array, "1"]
 
     """Value of the state"""
-    value: Float[Array, "n_agents"]
+    value: Float[Array, "1"]
 
     """Log-probability of selected policy action"""
-    log_prob: Float[Array, "n_agents"]
+    log_prob: Float[Array, "1"]
 
     """Collected reward"""
-    reward: Float[Array, "n_agents"]
+    reward: Float[Array, "1"]
 
     """Next environment state"""
-    next_obs: Float[Array, "obs_size"]
+    next_state: Float[Array, "state_size"]
 
     """Boolean variable indicating episode termination"""
     terminated: Bool[Array, "1"]
 
+    """Dictionary of additional information about step"""
+    info: Dict
+
     """Value of next state"""
-    next_value: Optional[Float[Array, "n_agents"]] = None
+    next_value: Optional[Float[Array, "1"]] = None
 
     """Advantage of step"""
-    advantage: Optional[Float[Array, "n_agents"]] = None
+    advantage: Optional[Float[Array, "1"]] = None
 
 
 class OptimizerParams(NamedTuple):
     """Parameters of the training optimizer"""
     """Learning rate"""
-    learning_rate: float | Float[Array, "n_hyperparam_sets"] = 1e-3
+    learning_rate: Union[float, Float[Array, "n_hyperparam_sets"]] = 1e-3
 
     """Epsilon of the optimizer"""
-    eps: float | Float[Array, "n_hyperparam_sets"] = 1e-8
+    eps: Union[float, Float[Array, "n_hyperparam_sets"]] = 1e-8
 
     """Maximum value for gradient clipping"""
-    grad_clip: float | Float[Array, "n_hyperparam_sets"] = 10.
+    grad_clip: Union[float, Float[Array, "n_hyperparam_sets"]] = 10.0
 
 
 class HyperParameters(NamedTuple):
     """Training hyperparameters for the DQN and DDQN agents"""
     """Gamma (discount parameter) of Bellman equation"""
-    gamma: float | Float[Array, "n_hyperparam_sets"]
+    gamma: Union[float, Float[Array, "n_hyperparam_sets"]]
 
     """λ for weighting the discounted returns and the value as estimated by the critic in evaluating returns."""
-    gae_lambda: float | Float[Array, "n_hyperparam_sets"]
+    gae_lambda: Union[float, Float[Array, "n_hyperparam_sets"]]
 
     """Epsilon for policy ratio clipping"""
-    eps_clip: float | Float[Array, "n_hyperparam_sets"]
+    eps_clip: Union[float, Float[Array, "n_hyperparam_sets"]]
 
     """Entropy coefficient for actor loss function"""
-    ent_coeff: float | Float[Array, "n_hyperparam_sets"]
+    ent_coeff: Union[float, Float[Array, "n_hyperparam_sets"]]
 
     """KL divergence threshold for early stopping of the actor training"""
-    kl_threshold: float | Float[Array, "n_hyperparam_sets"]
+    kl_threshold: Union[float, Float[Array, "n_hyperparam_sets"]]
 
     """Optimizer parameters for the actor network"""
     actor_optimizer_params: OptimizerParams
@@ -80,7 +84,7 @@ class HyperParameters(NamedTuple):
     Not relevant for the VPG-REINFORCE agent but help in using the same optimizer parameters for both actor and critic
     training.
     """
-    vf_coeff: float | Float[Array, "n_hyperparam_sets"] = 1.
+    vf_coeff: Union[float, Float[Array, "n_hyperparam_sets"]] = 1.0
 
 
 @struct.dataclass
@@ -92,16 +96,16 @@ class Runner:
     """
 
     """Training status (params, training step and optimizer) of the actor"""
-    actor_training: Annotated[List[TrainState], "n_agents"]
+    actor_training: TrainState
 
     """Training status (params, training step and optimizer) of the critic"""
-    critic_training: Annotated[List[TrainState], "n_agents"]
+    critic_training: TrainState
 
     """State of the environment"""
-    envstate: LogEnvState
+    env_state: LogEnvState
 
     """State of the environment in array"""
-    obs: Float[Array, "obs_size"]
+    state: Float[Array, "state_size"]
 
     """Random key, required for reproducibility of results and control of randomness"""
     rng: PRNGKeyArray
@@ -109,15 +113,15 @@ class Runner:
     """Training hyperparameters"""
     hyperparams: HyperParameters
 
-    """The loss value of the actors"""
+    """The loss value of the actor"""
     actor_loss: Float[Array, "1"]
 
-    """The loss value of the critics"""
+    """The loss value of the critic"""
     critic_loss: Float[Array, "1"]
 
 
 class AgentConfig(NamedTuple):
-    """Configuration of the IPPO training algorithm agents, passed at initialization of instance."""
+    """Configuration of the PPO agents, passed at initialization of instance."""
 
     """
     Number of training steps (not episodes).
@@ -134,21 +138,22 @@ class AgentConfig(NamedTuple):
     """Number of steps to be collected when sampling trajectories"""
     rollout_length: int
 
+    """Architecture of the actor network"""
+    actor_network: Type[flax.linen.Module]
+
+    """Architecture of the critic network"""
+    critic_network: Type[flax.linen.Module]
+
     """Epochs for actor training per update step"""
     actor_epochs: int
 
     """Epochs for critic training per update step"""
     critic_epochs: int
 
-    """Architecture of the actor network"""
-    actor_network: flax.linen.Module
-
-    """Architecture of the critic network"""
-    critic_network: flax.linen.Module
-
     """Optax optimizer to be used in training. Giving only the optimizer class allows for initializing within the 
     self.train method and eventually running multiple combinations of the optimizer parameters via jax.vmap.
     """
+    # optimizer: Callable[[Dict], Optional[base.GradientTransformation]]
     optimizer: Callable[[Any], Optional[base.GradientTransformation]]
 
     """Frequency of evaluating the agent in update steps."""
@@ -161,22 +166,10 @@ class AgentConfig(NamedTuple):
     n_evals: Optional[int] = None
 
     """Absolute path for checkpointing"""
-    checkpoint_dir: Optional[str | os.PathLike] = None
+    checkpoint_dir: Optional[Union[str, os.PathLike]] = None
 
     """Whether an agent should be restored from training checkpoints, for continuing training or deploying."""
     restore_agent: bool = False
-
-    "Maximum steps per episode for flagging episode truncation"
-    max_episode_steps: int = 9999
-
-    """
-     Deterministic running on GPU based on the flags:
-     - os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops"  ("minimal")
-     - os.environ["JAX_DISABLE_MOST_FASTER_PATHS"] = "1"  ("full")
-     By experience, using the "minimal" mode leads to deterministic calculations which are faster than the ones of the
-     "full" mode.
-     """
-    deterministic_mode: str = "off"
 
 
 @struct.dataclass
@@ -187,26 +180,25 @@ class MetricStats:
     struct.dataclass, which is required for using jax.vmap.
     """
     """Metric per episode"""
-    episode_metric: Annotated[NDArray[np.float32], "size_metrics"] | Float[Array, "size_metrics"]
+    episode_metric: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample average"""
-    mean: Annotated[NDArray[np.float32], "n_batch"] | Float[Array, "n_batch"]
+    mean: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample variance"""
-    var: Annotated[NDArray[np.float32], "n_batch"] | Float[Array, "n_batch"]
+    var: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample standard deviation"""
-    std: Annotated[NDArray[np.float32], "n_batch"] | Float[Array, "n_batch"]
+    std: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample minimum"""
-    min: Annotated[NDArray[np.float32], "n_batch"] | Float[Array, "n_batch"]
+    min: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample maximum"""
-    max: Annotated[NDArray[np.float32], "n_batch"] | Float[Array, "n_batch"]
+    max: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Sample median"""
-    median: Annotated[NDArray[np.float32], "n_batch"] | Float[Array, "n_batch"]
+    median: Union[np.ndarray["size_metrics", float], Float[Array, "size_metrics"]]
 
     """Whether the sample contains nan values"""
-    has_nans: Annotated[NDArray[np.bool], "n_batch"] | Bool[Array, "n_batch"]
-
+    has_nans: Union[np.ndarray["size_metrics", bool], Bool[Array, "size_metrics"]]

@@ -6,7 +6,8 @@ from gymnax.environments import environment, spaces
 from jaxtyping import Array, Int, Float, Bool
 from typing import Optional
 import chex
-from typing import Tuple, Union
+import jumanji
+from typing import Tuple
 from abc import abstractmethod
 from functools import partial
 import matplotlib.pyplot as plt
@@ -19,7 +20,7 @@ import io
 POSITIONS = Float[Array, "n_predators+n_prey 2"]
 STATE = Float[Array, "1+n_predators+n_prey 2"]
 ACTIONS = Int[Array, "n_predators+n_prey"]
-DIRECTIONS = Union[Int[Array, "n_predators+n_prey"], Float[Array, "n_predators+n_prey"]]
+DIRECTIONS = Int[Array, "n_predators+n_prey"]
 VELOCITIES = Int[Array, "n_predators+n_prey"]
 REWARDS = Float[Array, "n_predators+n_prey"]
 
@@ -28,9 +29,7 @@ REWARDS = Float[Array, "n_predators+n_prey"]
 class EnvState:
     time: jnp.float32
     positions: STATE
-    directions: DIRECTIONS
     distance: jnp.float32
-    action_mask: Float[Array, "2"]
 
 
 @struct.dataclass
@@ -41,96 +40,36 @@ class EnvParams:
     predator_velocity: float = 1.
     predator_radius: float = .2
     max_time: float = 1.
-    time_step_reward: float = 1.
     dt: float = .01
     caught_reward: float = 100.
     x_lims: Tuple[float, float] = (0., 1.)
     y_lims: Tuple[float, float] = (0., 1.)
 
 
-class HuntingBase(environment.Environment):
+class Cleaner(environment.Environment):
 
     def __init__(self):
-        self.n_actors = 2
+        self.env = jumanji.make('Cleaner-v0')
+        self.n_actors = 3
 
     def get_obs(self, state: EnvState) -> STATE:
-        return jnp.hstack((jnp.expand_dims(state.time, axis=-1), state.positions.reshape(1, -1), state.directions.reshape(1, -1)), dtype=jnp.float32)
-        # return jnp.hstack((state.positions.reshape(1, -1), state.directions.reshape(1, -1)), dtype=jnp.float32)
+        return jnp.hstack((state.agents_locations.flatten(), state.grid.flatten(), state.action_mask.flatten()))
 
     def reset_env(self, key: chex.PRNGKey, env_params: Optional[EnvParams] = None) -> Tuple[STATE, EnvState]:
 
-        rng, *rngs = jax.random.split(key, 3)
-        rng_x, rng_y = rngs
-
-        x_coords = jax.random.uniform(rng_x, minval=env_params.x_lims[0], maxval=env_params.x_lims[1], shape=(self.n_actors,))
-        y_coords = jax.random.uniform(rng_y, minval=env_params.y_lims[0], maxval=env_params.y_lims[1], shape=(self.n_actors,))
-
-        positions = jnp.stack((x_coords.T, y_coords.T), axis=-1)
-
-        directions = jnp.zeros(self.n_actors)
-
-        distance = self._distance(positions)
-
-        action_mask = jnp.asarray([-jnp.pi, +jnp.pi])
-
-        state = EnvState(time=jnp.zeros(1), positions=positions, directions=directions, distance=distance, action_mask=action_mask)
+        state, timestep = self.env.reset(key)
 
         return self.get_obs(state), state
-
-    @abstractmethod
-    def _adjust_bnds(self, positions: POSITIONS, env_params: EnvParams):
-        raise NotImplementedError
-
-    def update_positions(self, positions:POSITIONS, directions: DIRECTIONS, velocities: VELOCITIES,
-                         env_params: EnvParams) -> POSITIONS:
-
-        displacement = env_params.dt * velocities * directions
-
-        next_positions = positions + displacement
-
-        next_positions = self._adjust_bnds(next_positions, env_params)
-
-        return next_positions
-
-    def _distance(self, positions: POSITIONS) -> Float[Array, "1"]:
-        return jnp.linalg.norm(jnp.diff(positions, axis=0))
-
-    def _rewards(self, prey_caught: Bool[Array, "1"], env_params: EnvParams) -> REWARDS:
-        step_rewards = jnp.asarray([+1, -1]) * env_params.time_step_reward
-        caught_rewards = jnp.asarray([-1, +1]) * env_params.caught_reward
-        rewards = step_rewards * (1 - prey_caught) + caught_rewards * prey_caught
-        return rewards
 
     def step_env(self, key: chex.PRNGKey, state: EnvState, actions: ACTIONS, env_params: EnvParams) \
             -> Tuple[STATE, EnvState, REWARDS, bool, bool, dict]:
 
-        directions = self._directions(actions)
-
-        velocities = jnp.expand_dims(jnp.asarray([env_params.prey_velocity, env_params.predator_velocity]), axis=-1)
-
-        time, positions, distance = state.time, state.positions, state.distance
-        next_time = time + env_params.dt
-        next_positions = self.update_positions(positions, directions, velocities, env_params)
-        next_distance = self._distance(next_positions)
-        next_action_mask = jnp.asarray([-jnp.pi, +jnp.pi])
-        next_directions = jnp.clip(actions, -jnp.pi, +jnp.pi)
-        next_state = EnvState(time=next_time, positions=next_positions, directions=next_directions, distance=next_distance, action_mask=next_action_mask)
-
-        prey_caught = jnp.less_equal(next_distance, env_params.predator_radius)
-        truncated = jnp.greater_equal(time, env_params.max_time)  # Truncation = time over
-        terminated = jnp.logical_or(prey_caught, truncated)
-
-        # movement = jnp.linalg.norm(next_positions-positions, axis=-1)
-        # eff_velocity = movement / env_params.dt
-        # # Avoid numerical inaccuracy of velocity --> stuck when effective velocity is 95% of maximum
-        # stuck = jnp.less(eff_velocity.squeeze(), velocities.squeeze()*0.95)
-
-        rewards = self._rewards(prey_caught, env_params)
-
-        info = {
-            "truncated": truncated.squeeze(),
-            "rewards": rewards,
-        }
+        actions = jax.random.randint(key, (self.env.num_agents,), 0, self.env.action_spec.num_values)
+        next_state, next_timestep = self.env.step(state, actions)
+        reward = next_timestep.reward
+        rewards = jnp.repeat(reward, self.env.num_agents)
+        terminated = next_timestep.last()
+        info = {"truncated": False}
 
         return (lax.stop_gradient(self.get_obs(next_state)),
                 lax.stop_gradient(next_state),
@@ -218,45 +157,10 @@ class HuntingBase(environment.Environment):
         return jnp.asarray([angle.squeeze(), angle.squeeze()])
 
 
-class HuntingDiscrete(HuntingBase):
-    
-    def _directions(self, actions: ACTIONS) -> DIRECTIONS:
-        cond_list = [actions == 0, actions == 1, actions == 2, actions == 3]
-        choice_list = [0, jnp.pi / 2, jnp.pi, 3 / 2 * jnp.pi]
-        directions_rad = jnp.select(cond_list, choice_list)
-        directions = jnp.stack((jnp.cos(directions_rad), jnp.sin(directions_rad)), axis=-1)
-        return directions
-
-    def _adjust_bnds(self, positions: POSITIONS, env_params: EnvParams):
-        positions = jnp.stack((
-            jnp.clip(jnp.take(positions, 0, axis=1), env_params.x_lims[0], env_params.x_lims[1]),
-            jnp.clip(jnp.take(positions, 1, axis=1), env_params.y_lims[0], env_params.y_lims[1])
-        ), axis=1)
-        return positions
-
-
-class HuntingContinuous(HuntingBase):
-
-    def _directions(self, actions: ACTIONS) -> DIRECTIONS:
-        actions_clip = jnp.clip(actions, -jnp.pi, +jnp.pi)
-        directions = jnp.stack((jnp.cos(actions_clip), jnp.sin(actions_clip)), axis=-1)
-        return directions
-
-    def _adjust_bnds(self, positions: POSITIONS, env_params: EnvParams):
-        positions = jnp.stack((
-            jnp.clip(jnp.take(positions, 0, axis=1), env_params.x_lims[0], env_params.x_lims[1]),
-            jnp.clip(jnp.take(positions, 1, axis=1), env_params.y_lims[0], env_params.y_lims[1])
-        ), axis=1)
-        return positions
-
-
 if __name__ == "__main__":
 
     import numpy as np
     from jax_tqdm import scan_tqdm
-
-    discrete = True
-    # discrete = False
 
     env_params = EnvParams(prey_velocity=2, predator_velocity=1)
     env = HuntingDiscrete() if discrete else HuntingContinuous()
