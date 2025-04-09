@@ -169,6 +169,15 @@ class AgentConfig(NamedTuple):
     "Maximum steps per episode for flagging episode truncation"
     max_episode_steps: int = 9999
 
+    """
+     Deterministic running on GPU based on the flags:
+     - os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops"  ("minimal")
+     - os.environ["JAX_DISABLE_MOST_FASTER_PATHS"] = "1"  ("full")
+     By experience, using the "minimal" mode leads to deterministic calculations which are faster than the ones of the
+     "full" mode.
+     """
+    deterministic_mode: str = "off"
+
 
 @struct.dataclass
 class MetricStats:
