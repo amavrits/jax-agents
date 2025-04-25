@@ -164,3 +164,5 @@ checkpoints/
 *.pdf
 *.gif
 *.png
+*.xml
+*.iml
