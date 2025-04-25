@@ -20,7 +20,7 @@ JAXAgents is a high-performance (Multi-Agent) Reinforcement Learning library bui
 
 - **Modular Design**: Structured for easy extension and customization, facilitating experimentation with new algorithms and environments.
 
-## 📦 Installation
+## Installation
 
 Ensure you have Python 3.10 or higher installed. Then, install JAX Agents via pip:
 
@@ -56,7 +56,7 @@ Comprehensive documentation is available at [jax-agents.readthedocs.io](https://
 - Tutorials and examples
 - Advanced topics and customization
 
-## 🛠️ Development
+## Development
 
 To contribute or modify the library:
 
@@ -66,7 +66,7 @@ cd jax-agents
 pip install -e .
 ```
 
-## 📄 License
+## License
 
 This project is licensed under a proprietary license. For more information, please refer to the [LICENSE](https://github.com/amavrits/jax-agents/blob/main/LICENSE) file.
 

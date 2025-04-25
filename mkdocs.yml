@@ -1,0 +1,47 @@
+site_name: JAX Agents
+site_url: https://amavrits.github.io/jax-agents
+repo_url: https://github.com/amavrits/jax-agents
+repo_name: amavrits/jax-agents
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - search.highlight
+    - content.code.annotate
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: true
+  - gen-files:
+      scripts:
+        - scripts/gen_reference_nav.py
+  - literate-nav
+
+markdown_extensions:
+  - admonition
+  - codehilite
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Reference:
+      - PPOAgentBase: reference/ppoagentbase.md
+      - PPOAgent: reference/ppoagent.md
+      - IPPOBase: reference/ippobase.md
+      - IPPO: reference/ippo.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/amavrits/jax-agents
+  copyright:
+    text: '© 2025 Antonis Mavritsakis. Built with JAX.'
