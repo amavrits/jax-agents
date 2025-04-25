@@ -5,11 +5,23 @@
          <lastmod>2025-04-25</lastmod>
     </url>
     <url>
-         <loc>https://amavrits.github.io/jax-agents/reference/</loc>
+         <loc>https://amavrits.github.io/jax-agents/reference/SUMMARY/</loc>
          <lastmod>2025-04-25</lastmod>
     </url>
     <url>
-         <loc>https://amavrits.github.io/jax-agents/reference/SUMMARY/</loc>
+         <loc>https://amavrits.github.io/jax-agents/reference/ippo/</loc>
+         <lastmod>2025-04-25</lastmod>
+    </url>
+    <url>
+         <loc>https://amavrits.github.io/jax-agents/reference/ippobase/</loc>
+         <lastmod>2025-04-25</lastmod>
+    </url>
+    <url>
+         <loc>https://amavrits.github.io/jax-agents/reference/ppoagent/</loc>
+         <lastmod>2025-04-25</lastmod>
+    </url>
+    <url>
+         <loc>https://amavrits.github.io/jax-agents/reference/ppoagentbase/</loc>
          <lastmod>2025-04-25</lastmod>
     </url>
 </urlset>
