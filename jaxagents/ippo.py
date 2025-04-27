@@ -939,7 +939,12 @@ class IPPOBase(ABC):
         return update_runner
 
     @partial(jax.jit, static_argnums=(0,))
-    def _checkpoint(self, update_runner: Runner, metrics: Dict[str, Float[Array, "n_agents"]], i_training_step: int) -> None:
+    def _checkpoint(
+            self,
+            update_runner: Runner,
+            metrics: Dict[str, Float[Array, "n_agents"]],
+            i_training_step: int
+    ) -> None:
         """
         Wraps the base checkpointing method in a Python callback.
         :param update_runner: The runner object, containing information about the current status of the actor's/

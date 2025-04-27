@@ -1,14 +1,8 @@
 # JAXAgents
 
-<p align="center">
-  <img src="https://img.shields.io/pypi/v/jaxagents" alt="PyPI version" />
-  <img src="https://img.shields.io/pypi/pyversions/jaxagents" alt="Python versions" />
-  <img src="https://img.shields.io/github/license/amavrits/jax-agents" alt="License" />
-</p>
-
 JAXAgents is a high-performance (Multi-Agent) Reinforcement Learning library built on [JAX](https://github.com/google/jax), designed for rapid experimentation, scalable training of RL agents and fast hyperparameter tuning. It supports a variety of algorithms and environments, making it suitable for both research and practical applications.
 
-## 🛠️ Features
+## Features
 
 - **RL**: Implementations of popular RL algorithms, including:
   - **Q-learning**:
@@ -26,7 +20,7 @@ JAXAgents is a high-performance (Multi-Agent) Reinforcement Learning library bui
 
 - **Modular Design**: Structured for easy extension and customization, facilitating experimentation with new algorithms and environments.
 
-## 📦 Installation
+## Installation
 
 Ensure you have Python 3.10 or higher installed. Then, install JAX Agents via pip:
 
@@ -36,7 +30,7 @@ pip install jaxagents
 
 *Note*: Also available on [PyPI](https://pypi.org/project/jaxagents/)
 
-## 🏁 Getting Started
+## Getting Started
 
 Here's a simple example to train a PPO agent:
 
@@ -53,19 +47,7 @@ agent.train(num_episodes=1000)
 
 For more detailed examples and usage, refer to the [documentation](https://jax-agents.readthedocs.io/en/latest/).
 
-## 🚀 Performance
-
-JAXAgents enables extremely fast optimization. Below is an example of a PPO agent trained on CartPole-v1 — achieving near-optimal performance within approximately 100 episodes:
-
-<p align="center">
-  <img src="docs/assets/cartpole_returns.png" alt="Training Returns on CartPole-v1" />
-</p>
-
-<p align="center">
-  <em>Minimum and maximum returns per training episode.<br>JAXAgents enables lightning-fast learning: PPO solves CartPole-v1 in approximately 100 episodes.</em>
-</p>
-
-## 📖 Documentation
+## Documentation
 
 Comprehensive documentation is available at [jax-agents.readthedocs.io](https://jax-agents.readthedocs.io/en/latest/), covering:
 
@@ -74,7 +56,7 @@ Comprehensive documentation is available at [jax-agents.readthedocs.io](https://
 - Tutorials and examples
 - Advanced topics and customization
 
-## 🛠️ Development
+## Development
 
 To contribute or modify the library:
 
@@ -84,7 +66,7 @@ cd jax-agents
 pip install -e .
 ```
 
-## 📄 License
+## License
 
 This project is licensed under a proprietary license. For more information, please refer to the [LICENSE](https://github.com/amavrits/jax-agents/blob/main/LICENSE) file.
 

@@ -124,6 +124,7 @@ if __name__ == '__main__':
     plt.fill_between(agent.eval_steps_in_training, training_returns.min, training_returns.max, color='b', alpha=0.4)
     plt.xlabel("Episode", fontsize=14)
     plt.ylabel("Training reward [-]", fontsize=14)
+    plt.grid()
     plt.close()
-    fig.savefig(os.path.join(os.getcwd(), r'figures/PPO Clip training.png'))
+    fig.savefig(os.path.join(os.getcwd(), r'figures/cartpole_returns.png'))
 
