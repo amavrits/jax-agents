@@ -166,3 +166,4 @@ checkpoints/
 *.png
 *.xml
 *.iml
+.idea/
