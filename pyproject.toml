@@ -3,7 +3,7 @@ name = "jaxagents"
 version = "0.2.5"
 description = "JAX implementation of Reinforcement Learning agents"
 authors = ["Antonis Mavritsakis <amavrits@gmail.com>"]
-license = "Proprietary"
+license = "Apache-2.0"
 readme = "README_PYPI.md"
 
 [tool.poetry.dependencies]
