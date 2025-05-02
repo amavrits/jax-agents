@@ -66,7 +66,7 @@ JAXAgents enables extremely fast optimization. Below is an example of a PPO agen
 
 ## 📖 Documentation
 
-Comprehensive documentation is available at [jax-agents.readthedocs.io](https://amavrits.github.io/jax-agents/), covering:
+Comprehensive documentation is available at [amavrits.github.io/jax-agents](https://amavrits.github.io/jax-agents/), covering:
 
 - Installation and setup
 - Detailed API references
