@@ -28,13 +28,12 @@ JAXAgents is a high-performance (Multi-Agent) Reinforcement Learning library bui
 
 ## 📦 Installation
 
+JAXagents is also available on [PyPI](https://pypi.org/project/jaxagents/)
 Ensure you have Python 3.10 or higher installed. Then, install JAX Agents via pip:
 
 ```bash
 pip install jaxagents
 ```
-
-*Note*: Also available on [PyPI](https://pypi.org/project/jaxagents/)
 
 ## 🏁 Getting Started
 
@@ -73,16 +72,6 @@ Comprehensive documentation is available at [jax-agents.readthedocs.io](https://
 - Detailed API references
 - Tutorials and examples
 - Advanced topics and customization
-
-## 🛠️ Development
-
-To contribute or modify the library:
-
-```bash
-git clone https://github.com/amavrits/jax-agents.git
-cd jax-agents
-pip install -e .
-```
 
 ## 📄 License
 
