@@ -1,5 +1,5 @@
 import flax.linen as nn
-from flax.linen.initializers import constant, orthogonal
+from flax.linen.initializers import constant, orthogonal, lecun_normal, variance_scaling
 from typing import Sequence
 import jax.numpy as jnp
 import distrax
@@ -68,20 +68,65 @@ class QRDDQN_NN(nn.Module):
         return q
 
 
+# class PGActorNN(nn.Module):
+#     config: dict
+#
+#     @nn.compact
+#     def __call__(self, x):
+#
+#         action_dim = 2
+#         activation = nn.tanh
+#
+#         logits = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
+#         logits = activation(logits)
+#         logits = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(logits)
+#         logits = activation(logits)
+#         logits = nn.Dense(action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(logits)
+#
+#         return logits
+#
+#
+# class PGCriticNN(nn.Module):
+#     config: dict
+#
+#     @nn.compact
+#     def __call__(self, x):
+#
+#         action_dim = 2
+#         activation = nn.tanh
+#
+#         critic = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
+#         critic = activation(critic)
+#         critic = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(critic)
+#         critic = activation(critic)
+#         critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(critic)
+#
+#         return jnp.squeeze(critic, axis=-1)
+
+
+
 class PGActorNN(nn.Module):
     config: dict
 
     @nn.compact
     def __call__(self, x):
-
         action_dim = 2
         activation = nn.tanh
 
-        logits = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
+        print("actor/critic input shape:", x.shape)
+
+        if x.shape[0] == 4:
+            pass
+
+        init1 = variance_scaling(jnp.sqrt(2), 'fan_avg', 'truncated_normal')
+        init2 = variance_scaling(jnp.sqrt(2), 'fan_avg', 'truncated_normal')
+        init3 = variance_scaling(0.01, 'fan_avg', 'truncated_normal')
+
+        logits = nn.Dense(128, kernel_init=init1, bias_init=constant(0.0))(x)
         logits = activation(logits)
-        logits = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(logits)
+        logits = nn.Dense(64, kernel_init=init2, bias_init=constant(0.0))(logits)
         logits = activation(logits)
-        logits = nn.Dense(action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))(logits)
+        logits = nn.Dense(action_dim, kernel_init=init3, bias_init=constant(0.0))(logits)
 
         return logits
 
@@ -91,14 +136,22 @@ class PGCriticNN(nn.Module):
 
     @nn.compact
     def __call__(self, x):
-
-        action_dim = 2
         activation = nn.tanh
 
-        critic = nn.Dense(128, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(x)
+        print("actor/critic input shape:", x.shape)
+
+        if x.shape[0] == 4:
+            pass
+
+        init1 = variance_scaling(jnp.sqrt(2), 'fan_avg', 'truncated_normal')
+        init2 = variance_scaling(jnp.sqrt(2), 'fan_avg', 'truncated_normal')
+        init3 = variance_scaling(1.0, 'fan_avg', 'truncated_normal')
+
+        critic = nn.Dense(128, kernel_init=init1, bias_init=constant(0.0))(x)
         critic = activation(critic)
-        critic = nn.Dense(64, kernel_init=orthogonal(jnp.sqrt(2)), bias_init=constant(0.0))(critic)
+        critic = nn.Dense(64, kernel_init=init2, bias_init=constant(0.0))(critic)
         critic = activation(critic)
-        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(critic)
+        critic = nn.Dense(1, kernel_init=init3, bias_init=constant(0.0))(critic)
 
         return jnp.squeeze(critic, axis=-1)
+

@@ -9,7 +9,7 @@ Author: Antonis Mavritsakis
 import jax
 import jax.numpy as jnp
 from jax import lax
-from jax_tqdm import scan_tqdm
+# from jax_tqdm import scan_tqdm
 import optax
 from flax.core import FrozenDict
 from jaxagents.utils.ppo_utils import *
@@ -540,12 +540,15 @@ class PPOAgentBase(ABC):
         :return: The batch of trajectories with the updated next-state values.
         """
         last_state_value_vmap = jax.vmap(critic_training.apply_fn, in_axes=(None, 0))
-        last_state_value = last_state_value_vmap(lax.stop_gradient(critic_training.params), last_obs)
+
+        last_obs_expanded = jnp.expand_dims(last_obs, axis=0)
+        last_state_value = last_state_value_vmap(lax.stop_gradient(critic_training.params), last_obs_expanded)
 
         """Remove first entry so that the next state values per step are in sync with the state rewards."""
-        next_values_t = jnp.concatenate(
-            [traj_batch.value.squeeze(), last_state_value[..., jnp.newaxis]],
-            axis=-1)[:, 1:]
+        next_values_t = jnp.concatenate((
+            traj_batch.value.squeeze(),
+            jnp.expand_dims(last_state_value.squeeze(), axis=-1)
+        ), axis=-1)[:, 1:]
 
         traj_batch = traj_batch._replace(next_value=next_values_t)
 
@@ -693,7 +696,8 @@ class PPOAgentBase(ABC):
         rng, rng_action = jax.random.split(rng)
         action = self._sample_action(rng_action, actor_training, obs)
 
-        value = critic_training.apply_fn(lax.stop_gradient(critic_training.params), obs)
+        obs_expanded = jnp.expand_dims(obs, axis=0)
+        value = critic_training.apply_fn(lax.stop_gradient(critic_training.params), obs_expanded)
 
         log_prob = self._log_prob(actor_training, lax.stop_gradient(actor_training.params), obs, action)
 
@@ -1072,7 +1076,8 @@ class PPOAgentBase(ABC):
         progressbar_desc = f'Training batch (training steps = batch x {self.config.eval_frequency})'
 
         runner, metrics = lax.scan(
-            scan_tqdm(n_training_batches, desc=progressbar_desc)(self._training_step),
+            # scan_tqdm(n_training_batches, desc=progressbar_desc)(self._training_step),
+            self._training_step,
             update_runner,
             jnp.arange(n_training_batches),
             n_training_batches
@@ -1509,8 +1514,11 @@ class PPOAgent(PPOAgentBase):
         """
 
         value_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
-        value = value_vmap(training.params, obs)
-        residuals = value - targets
+
+        obs_expanded = jnp.expand_dims(obs, axis=-2)
+
+        value = value_vmap(training.params, obs_expanded)
+        residuals = value.squeeze() - targets
         value_loss = jnp.mean(residuals ** 2)
         critic_total_loss = hyperparams.vf_coeff * value_loss
 

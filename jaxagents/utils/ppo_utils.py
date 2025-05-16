@@ -208,4 +208,4 @@ class MetricStats:
     median: Annotated[NDArray[np.float32], "n_batch"] | Float[Array, "n_batch"]
 
     """Whether the sample contains nan values"""
-    has_nans: Annotated[NDArray[np.bool], "n_batch"] | Bool[Array, "n_batch"]
+    has_nans: Annotated[NDArray[bool], "n_batch"] | Bool[Array, "n_batch"]

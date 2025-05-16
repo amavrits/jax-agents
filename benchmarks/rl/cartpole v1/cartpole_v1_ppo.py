@@ -1,4 +1,9 @@
 import os
+
+from flax.core.lift import checkpoint
+
+os.environ["JAX_TRACEBACK_FILTERING"] = "off"
+
 import time
 import distrax
 import jax
@@ -15,26 +20,30 @@ import matplotlib.pyplot as plt
 class CartpolePPO(PPOAgent):
 
     @partial(jax.jit, static_argnums=(0,))
-    def _entropy(self, training: TrainState, state: ObsType)-> Float[Array, "1"]:
-        logits = training.apply_fn(training.params, state).squeeze()
+    def _entropy(self, training: TrainState, obs: ObsType)-> Float[Array, "1"]:
+        obs = jnp.expand_dims(obs, axis=0)
+        logits = training.apply_fn(training.params, obs).squeeze()
         pis = distrax.Categorical(logits=logits)
         return pis.entropy()
 
-    @partial(jax.jit, static_argnums=(0, 4,))
-    def _log_prob(self, training: TrainState, params: dict, state: ObsType, actions: ActionType)\
+    @partial(jax.jit, static_argnums=(0,))
+    def _log_prob(self, training: TrainState, params: dict, obs: ObsType, actions: ActionType)\
             -> Float[Array, "1"]:
-        logits = training.apply_fn(params, state).squeeze()
+        obs = jnp.expand_dims(obs, axis=0)
+        logits = training.apply_fn(params, obs).squeeze()
         log_probs = distrax.Categorical(logits=logits).log_prob(actions)
         return log_probs
 
     @partial(jax.jit, static_argnums=(0,))
-    def policy(self, training: TrainState, state: ObsType) -> ActionType:
-        logits = training.apply_fn(jax.lax.stop_gradient(training.params), state).squeeze()
+    def policy(self, training: TrainState, obs: ObsType) -> ActionType:
+        obs = jnp.expand_dims(obs, axis=0)
+        logits = training.apply_fn(jax.lax.stop_gradient(training.params), obs).squeeze()
         return jnp.argmax(logits)
 
     @partial(jax.jit, static_argnums=(0,))
-    def _sample_action(self, rng: PRNGKeyArray, training: TrainState, state: ObsType) -> ActionType:
-        logits = training.apply_fn(jax.lax.stop_gradient(training.params), state).squeeze()
+    def _sample_action(self, rng: PRNGKeyArray, training: TrainState, obs: ObsType) -> ActionType:
+        obs = jnp.expand_dims(obs, axis=0)
+        logits = training.apply_fn(jax.lax.stop_gradient(training.params), obs).squeeze()
         actions = distrax.Categorical(logits=logits).sample(seed=rng)
         return actions
 
@@ -55,14 +64,16 @@ def plot_loss(training_metrics, eval_frequency, env_params, path):
     fig.savefig(path)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     env, env_params = gymnax.make("CartPole-v1")
 
     if sys.platform == "win32":
-        checkpoint_dir = 'C:\\Users\\mavritsa\\Repositories\\jax-agents\\benchmarks\\rl\\cartpole v1\\checkpoints\\ppo'
+        checkpoint_dir = "C:\\Users\\mavritsa\\Repositories\\jax-agents\\benchmarks\\rl\\cartpole v1\\checkpoints\\ppo"
+    elif sys.platform == "darwin":
+        checkpoint_dir = "/Users/amavrits/Repositories/jax-agents/benchmarks/rl/cartpole v1/checkpoints/ppo"
     else:
-        checkpoint_dir = '/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/rl/cartpole v1/checkpoints/ppo'
+        checkpoint_dir = "/mnt/c/Users/mavritsa/Repositories/jax-agents/benchmarks/rl/cartpole v1/checkpoints/ppo"
 
     """Define configuration for agent training"""
     config = AgentConfig(
