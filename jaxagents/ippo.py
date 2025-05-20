@@ -1057,7 +1057,7 @@ class IPPOBase(ABC):
             if self.checkpointing:
                 self._checkpoint(update_runner, metrics_start, self.previous_training_max_step)
 
-        # Initialize agent updating functions, which can be avoided to be done within the training loops.
+        # Initialize agent updating functions, which can be avoided within the training loops.
         actor_grad_fn = jax.grad(self._actor_loss, has_aux=True, allow_int=True)
         self._actor_minibatch_fn = lambda x, y: self._actor_minibatch_update(x, y, actor_grad_fn)
 

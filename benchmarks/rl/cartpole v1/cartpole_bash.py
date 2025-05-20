@@ -1,14 +1,11 @@
 import os
 # os.environ["JAX_PLATFORM_NAME"] = "cpu"
-
 # from jax import config
 # config.update("jax_disable_jit", True)
+# os.environ["JAX_PLATFORM_NAME"] = "cpu"
 
 # os.environ["XLA_FLAGS"] = "--xla_gpu_deterministic_ops"
 # os.environ["JAX_DISABLE_MOST_FASTER_PATHS"] = "1"
-
-# from jax import config
-# config.update("jax_enable_x64", False)
 
 import time
 import distrax
@@ -17,11 +14,57 @@ import optax
 import gymnax
 from jaxagents.ppo import *
 from jaxtyping import Float, Array, PRNGKeyArray
-from cartpole_nn_gallery import *
 from functools import partial
 import sys
 import matplotlib.pyplot as plt
 
+
+import flax.linen as nn
+from flax.linen.initializers import constant, orthogonal, lecun_normal, variance_scaling
+from typing import Sequence
+import jax.numpy as jnp
+import distrax
+
+
+class PGActorNN(nn.Module):
+    config: dict
+
+    @nn.compact
+    def __call__(self, x):
+        action_dim = 2
+        activation = nn.tanh
+
+        init1 = variance_scaling(jnp.sqrt(2), 'fan_avg', 'truncated_normal')
+        init2 = variance_scaling(jnp.sqrt(2), 'fan_avg', 'truncated_normal')
+        init3 = variance_scaling(0.01, 'fan_avg', 'truncated_normal')
+
+        logits = nn.Dense(128, kernel_init=init1, bias_init=constant(0.0))(x)
+        logits = activation(logits)
+        logits = nn.Dense(64, kernel_init=init2, bias_init=constant(0.0))(logits)
+        logits = activation(logits)
+        logits = nn.Dense(action_dim, kernel_init=init3, bias_init=constant(0.0))(logits)
+
+        return logits
+
+
+class PGCriticNN(nn.Module):
+    config: dict
+
+    @nn.compact
+    def __call__(self, x):
+        activation = nn.tanh
+
+        init1 = variance_scaling(jnp.sqrt(2), 'fan_avg', 'truncated_normal')
+        init2 = variance_scaling(jnp.sqrt(2), 'fan_avg', 'truncated_normal')
+        init3 = variance_scaling(1.0, 'fan_avg', 'truncated_normal')
+
+        critic = nn.Dense(128, kernel_init=init1, bias_init=constant(0.0))(x)
+        critic = activation(critic)
+        critic = nn.Dense(64, kernel_init=init2, bias_init=constant(0.0))(critic)
+        critic = activation(critic)
+        critic = nn.Dense(1, kernel_init=init3, bias_init=constant(0.0))(critic)
+
+        return jnp.squeeze(critic, axis=-1)
 
 class CartpolePPO(PPOAgent):
 
@@ -93,7 +136,7 @@ if __name__ == "__main__":
         critic_epochs=10,
         optimizer=optax.adam,
         max_episode_steps=550,
-        eval_frequency=10,
+        eval_frequency=1,
         eval_rng=jax.random.PRNGKey(18),
         # checkpoint_dir=checkpoint_dir,
         checkpoint_dir=None,
@@ -105,8 +148,6 @@ if __name__ == "__main__":
     agent = CartpolePPO(env, env_params, config)
     print(agent.__str__())
 
-    print("JAX default device:", jax.devices()[0])
-
     """Define optimizer parameters and training hyperparameters"""
     hyperparams = HyperParameters(
         gamma=0.99,
@@ -115,7 +156,7 @@ if __name__ == "__main__":
         gae_lambda=0.97,
         ent_coeff=0.0,
         vf_coeff=1.0,
-        actor_optimizer_params=OptimizerParams(learning_rate=3e-4, eps=1e-3, grad_clip=.01),
+        actor_optimizer_params=OptimizerParams(learning_rate=3e-4, eps=1e-3, grad_clip=1),
         critic_optimizer_params=OptimizerParams(learning_rate=1e-3, eps=1e-3, grad_clip=1)
     )
     agent.log_hyperparams(hyperparams)

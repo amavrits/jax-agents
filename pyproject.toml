@@ -8,16 +8,14 @@ readme = "README_PYPI.md"
 
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
-jax = [
-    {extras = ['cpu'], version = "0.4.28", markers = "sys_platform == 'win32'"},
-    {extras = ['cuda'], version = "^0.4.28", markers = "sys_platform == 'linux'"}
-]
+jax = "^0.5.1"  # Just the core package
+
 chex = "^0.1.86"
 distrax = "^0.1.5"
-flax = "^0.8.4"
+flax = "^0.10.6"
 flashbax = "^0.1.2"
 jaxtyping = "^0.2.29"
-gymnax = "^0.0.6"
+gymnax = "^0.0.8"
 jax-tqdm = "^0.2.1"
 optax = "^0.2.2"
 orbax = "^0.1.9"

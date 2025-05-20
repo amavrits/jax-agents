@@ -113,11 +113,6 @@ class PGActorNN(nn.Module):
         action_dim = 2
         activation = nn.tanh
 
-        print("actor/critic input shape:", x.shape)
-
-        if x.shape[0] == 4:
-            pass
-
         init1 = variance_scaling(jnp.sqrt(2), 'fan_avg', 'truncated_normal')
         init2 = variance_scaling(jnp.sqrt(2), 'fan_avg', 'truncated_normal')
         init3 = variance_scaling(0.01, 'fan_avg', 'truncated_normal')
@@ -137,11 +132,6 @@ class PGCriticNN(nn.Module):
     @nn.compact
     def __call__(self, x):
         activation = nn.tanh
-
-        print("actor/critic input shape:", x.shape)
-
-        if x.shape[0] == 4:
-            pass
 
         init1 = variance_scaling(jnp.sqrt(2), 'fan_avg', 'truncated_normal')
         init2 = variance_scaling(jnp.sqrt(2), 'fan_avg', 'truncated_normal')

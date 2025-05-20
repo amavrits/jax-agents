@@ -309,7 +309,6 @@ class PPOAgentBase(ABC):
         optimizer_params_dict = optimizer_params._asdict()  # Transform from NamedTuple to dict
         optimizer_params_dict.pop('grad_clip', None)  # Remove 'grad_clip', since it is not part of the optimizer args.
 
-
         """
         Get dictionary of optimizer parameters to pass in optimizer. The procedure preserves parameters that:
             - are given in the OptimizerParams NamedTuple and are requested as args by the optimizer
@@ -404,7 +403,8 @@ class PPOAgentBase(ABC):
 
         rng, step_rng = jax.random.split(rng)
         next_obs, next_envstate, reward, done, info = (
-            self.env.step(step_rng, envstate, action.squeeze(), self.env_params))
+            self.env.step(step_rng, envstate, action.squeeze(), self.env_params)
+        )
 
         return rng, next_obs, next_envstate, reward, done, info
 
@@ -540,14 +540,12 @@ class PPOAgentBase(ABC):
         :return: The batch of trajectories with the updated next-state values.
         """
         last_state_value_vmap = jax.vmap(critic_training.apply_fn, in_axes=(None, 0))
-
-        last_obs_expanded = jnp.expand_dims(last_obs, axis=0)
-        last_state_value = last_state_value_vmap(lax.stop_gradient(critic_training.params), last_obs_expanded)
+        last_state_value = last_state_value_vmap(lax.stop_gradient(critic_training.params), last_obs)
 
         """Remove first entry so that the next state values per step are in sync with the state rewards."""
         next_values_t = jnp.concatenate((
             traj_batch.value.squeeze(),
-            jnp.expand_dims(last_state_value.squeeze(), axis=-1)
+            jnp.expand_dims(last_state_value, axis=-1)
         ), axis=-1)[:, 1:]
 
         traj_batch = traj_batch._replace(next_value=next_values_t)
@@ -591,9 +589,10 @@ class PPOAgentBase(ABC):
         discounts_t = (terminated_t * gamma).astype(jnp.float32)
 
         """Remove first entry so that the next state values per step are in sync with the state rewards."""
-        next_state_values_t = jnp.concatenate(
-            [traj_batch.value.squeeze(), last_next_state_value[..., jnp.newaxis]],
-            axis=-1)[:, 1:]
+        next_state_values_t = jnp.concatenate((
+            traj_batch.value.squeeze(),
+            last_next_state_value[..., jnp.newaxis]
+        ), axis=-1)[:, 1:]
 
         rewards_t, discounts_t, next_state_values_t = jax.tree_util.tree_map(
             lambda x: jnp.swapaxes(x, 0, 1), (rewards_t, discounts_t, next_state_values_t)
@@ -696,8 +695,7 @@ class PPOAgentBase(ABC):
         rng, rng_action = jax.random.split(rng)
         action = self._sample_action(rng_action, actor_training, obs)
 
-        obs_expanded = jnp.expand_dims(obs, axis=0)
-        value = critic_training.apply_fn(lax.stop_gradient(critic_training.params), obs_expanded)
+        value = critic_training.apply_fn(lax.stop_gradient(critic_training.params), obs)
 
         log_prob = self._log_prob(actor_training, lax.stop_gradient(actor_training.params), obs, action)
 
@@ -761,7 +759,31 @@ class PPOAgentBase(ABC):
         traj_minibatch = jax.tree_map(lambda x: jnp.take(x, i_minibatch, axis=0), traj_batch)
         grad_input_minibatch = (actor_training, *traj_minibatch, hyperparams)
         grads, kl = grad_fn(*grad_input_minibatch)
-        actor_training = actor_training.apply_gradients(grads=grads.params)
+        # actor_training = actor_training.apply_gradients(grads=grads.params)
+
+        grad_params = {
+            "params":{
+                "Dense_0":{
+                    "bias": jnp.zeros(128),
+                    "kernel": jnp.zeros((4, 128)),
+                },
+                "Dense_1": {
+                    "bias": jnp.zeros(64),
+                    "kernel": jnp.zeros((128, 64)),
+                },
+                "Dense_2": {
+                    "bias": jnp.zeros(2),
+                    "kernel": jnp.zeros((64, 2)),
+                }
+            }
+        }
+
+        # actor_training = actor_training.replace(
+        #     opt_state=actor_training.tx.init(grad_params)
+        # )
+
+        actor_training = actor_training.apply_gradients(grads=grad_params)
+
         return actor_training, actor_loss_input, kl
 
     @staticmethod
@@ -1063,7 +1085,7 @@ class PPOAgentBase(ABC):
             if self.checkpointing:
                 self._checkpoint(update_runner, metrics_start, self.previous_training_max_step)
 
-        # Initialize agent updating functions, which can be avoided to be done within the training loops.
+        # Initialize agent updating functions, which can be avoided within the training loops.
         actor_grad_fn = jax.grad(self._actor_loss, has_aux=True, allow_int=True)
         self._actor_minibatch_fn = lambda x, y: self._actor_minibatch_update(x, y, actor_grad_fn)
 
@@ -1514,10 +1536,7 @@ class PPOAgent(PPOAgentBase):
         """
 
         value_vmap = jax.vmap(jax.vmap(training.apply_fn, in_axes=(None, 0)), in_axes=(None, 0))
-
-        obs_expanded = jnp.expand_dims(obs, axis=-2)
-
-        value = value_vmap(training.params, obs_expanded)
+        value = value_vmap(training.params, obs)
         residuals = value.squeeze() - targets
         value_loss = jnp.mean(residuals ** 2)
         critic_total_loss = hyperparams.vf_coeff * value_loss
