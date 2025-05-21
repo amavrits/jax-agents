@@ -9,7 +9,7 @@ Author: Antonis Mavritsakis
 import jax
 import jax.numpy as jnp
 from jax import lax
-# from jax_tqdm import scan_tqdm
+from jax_tqdm import scan_tqdm
 import optax
 from flax.core import FrozenDict
 from jaxagents.utils.ppo_utils import *
@@ -759,7 +759,7 @@ class PPOAgentBase(ABC):
         traj_minibatch = jax.tree_map(lambda x: jnp.take(x, i_minibatch, axis=0), traj_batch)
         grad_input_minibatch = (actor_training, *traj_minibatch, hyperparams)
         grads, kl = grad_fn(*grad_input_minibatch)
-        # actor_training = actor_training.apply_gradients(grads=grads.params)
+        actor_training = actor_training.apply_gradients(grads=grads.params)
 
         grad_params = {
             "params":{
@@ -782,7 +782,7 @@ class PPOAgentBase(ABC):
         #     opt_state=actor_training.tx.init(grad_params)
         # )
 
-        actor_training = actor_training.apply_gradients(grads=grad_params)
+        # actor_training = actor_training.apply_gradients(grads=grad_params)
 
         return actor_training, actor_loss_input, kl
 
